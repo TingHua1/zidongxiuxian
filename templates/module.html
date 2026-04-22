@@ -1,0 +1,412 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="section-header">
+    <p>模块详情</p>
+    <h1>{{ module.name }}</h1>
+    <span class="pill">{{ module.status }}</span>
+    <p class="hero-text">{{ module.summary }}</p>
+</section>
+
+{% if module.key == 'cultivation' %}
+    {% include 'modules/cultivation.html' %}
+{% endif %}
+
+{% if module.key == 'sect' %}
+    {% include 'modules/sect.html' %}
+{% endif %}
+
+{% if module.key == 'other' %}
+    {% include 'modules/other.html' %}
+{% endif %}
+
+{% if module.key == 'estate' %}
+    {% include 'modules/estate.html' %}
+{% endif %}
+
+{% if module.key == 'dungeon' %}
+    {% include 'modules/dungeon.html' %}
+{% endif %}
+
+{% if module.key == 'stock' %}
+    {% include 'modules/stock.html' %}
+{% endif %}
+
+{% if module.key == 'inventory' %}
+    {% include 'modules/inventory.html' %}
+{% endif %}
+
+{% if module.key == 'market' %}
+    {% include 'modules/market.html' %}
+{% endif %}
+
+<style>
+.overview-stat-value {
+    display: block;
+    font-size: 34px;
+    line-height: 1.15;
+}
+.other-overview-card {
+    min-height: 168px;
+}
+.pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.estate-action-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+.estate-action-btn {
+    width: 100%;
+    white-space: normal;
+}
+.estate-detail-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.estate-message-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.estate-message-item {
+    padding: 12px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.03);
+}
+.dungeon-composer-sticky {
+    position: sticky;
+    top: 12px;
+    z-index: 8;
+    backdrop-filter: blur(10px);
+}
+.dungeon-composer-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: center;
+}
+.dungeon-command-input {
+    flex: 1 1 420px;
+}
+.command-list.compact-list {
+    margin: 0;
+    padding-left: 18px;
+}
+.dungeon-feed-list {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+.dungeon-feed-item {
+    padding: 14px 16px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    background: var(--bg-surface);
+}
+.dungeon-feed-item.bot {
+    box-shadow: inset 0 0 0 1px rgba(212, 175, 55, 0.08);
+}
+.dungeon-feed-item.user {
+    border-color: rgba(255, 255, 255, 0.12);
+}
+.dungeon-feed-meta {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+.dungeon-reply-preview {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border-left: 3px solid rgba(212, 175, 55, 0.7);
+    border-radius: 10px;
+    background: rgba(212, 175, 55, 0.08);
+    color: var(--text-secondary);
+}
+.dungeon-feed-text {
+    margin: 0;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.stock-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+}
+.stock-card {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px;
+    background: var(--bg-surface);
+    overflow: hidden;
+    padding: 14px;
+}
+.stock-card-clickable {
+    cursor: pointer;
+    transition: border-color 0.18s ease, transform 0.18s ease, background 0.18s ease;
+}
+.stock-card-clickable:hover,
+.stock-card-clickable:focus-visible {
+    border-color: rgba(212, 175, 55, 0.45);
+    transform: translateY(-1px);
+    outline: none;
+    background: rgba(20, 20, 20, 0.94);
+}
+.stock-card-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+}
+.stock-card-price {
+    margin-top: 10px;
+    font-size: 22px;
+    line-height: 1.15;
+}
+.stock-card-subtitle {
+    margin-top: 4px;
+}
+.stock-compact-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    color: var(--muted);
+    font-size: 12px;
+}
+.stock-compact-meta span {
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.03);
+}
+.stock-card-details,
+.stock-history-block {
+    padding: 0;
+}
+.stock-history-head,
+.stock-history-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+}
+.stock-history-head {
+    margin-bottom: 8px;
+}
+.stock-sparkline {
+    width: 100%;
+    height: 72px;
+    color: rgba(212, 175, 55, 0.92);
+    border-radius: 10px;
+    background: rgba(212, 175, 55, 0.04);
+}
+.stock-history-meta {
+    margin-top: 6px;
+    font-size: 12px;
+}
+.stock-history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 220px;
+    overflow: auto;
+}
+.stock-card-footer {
+    display: flex;
+    justify-content: flex-end;
+}
+.stock-card-note {
+    font-size: 12px;
+}
+.stock-modal-card {
+    width: min(840px, 94vw);
+    margin: auto;
+    border-radius: 12px;
+}
+.stock-modal-toolbar {
+    display: grid;
+    grid-template-columns: minmax(180px, 220px) repeat(2, minmax(0, 1fr));
+    gap: 12px;
+    align-items: end;
+}
+.stock-modal-summary-row {
+    height: 100%;
+}
+.stock-modal-status {
+    min-height: 20px;
+}
+.stock-modal-chart-shell {
+    padding: 12px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.03);
+}
+.stock-modal-list {
+    max-height: 360px;
+}
+.stock-modal-empty {
+    margin: 0;
+}
+.stock-history-item {
+    padding: 6px 8px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    font-size: 12px;
+}
+.stock-feed-text {
+    max-height: 320px;
+    overflow: auto;
+}
+.stock-change {
+    font-weight: 700;
+}
+.stock-change.up {
+    color: var(--error);
+}
+.stock-change.down {
+    color: var(--success);
+}
+@media (max-width: 1080px) {
+    .overview-stat-value {
+        font-size: 28px;
+    }
+    .estate-detail-grid {
+        grid-template-columns: 1fr;
+    }
+    .stock-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .stock-modal-toolbar {
+        grid-template-columns: 1fr;
+    }
+}
+@media (max-width: 720px) {
+    .estate-action-grid {
+        grid-template-columns: 1fr;
+    }
+    .dungeon-composer-sticky {
+        top: 0;
+    }
+    .stock-grid {
+        grid-template-columns: 1fr;
+    }
+}
+</style>
+
+{% if module.key not in ['cultivation', 'sect', 'inventory', 'market', 'other', 'estate', 'dungeon', 'stock'] %}
+<section class="detail-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>基础法阵</p>
+            <h2>指令参阅</h2>
+        </div>
+        {% if module_commands %}
+        <ul>
+            {% for command in module_commands %}
+            <li style="font-family: var(--font-mono); color: var(--accent-gold);"><code>{{ command }}</code></li>
+            {% endfor %}
+        </ul>
+        {% else %}
+        <p class="muted">此偏门阵法尚未镌刻法旨参考。</p>
+        {% endif %}
+    </div>
+</section>
+{% endif %}
+
+{% if module.key not in ['cultivation', 'sect', 'inventory', 'market', 'other', 'estate', 'dungeon', 'stock'] %}
+<section class="detail-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>阵法脉络</p>
+            <h2>已成体系</h2>
+        </div>
+        <ul style="color: var(--text-primary);">
+            {% for item in module.capabilities %}
+            <li>{{ item }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>天机推演</p>
+            <h2>大道未尽</h2>
+        </div>
+        <ul>
+            {% for item in module.next_steps %}
+            <li>{{ item }}</li>
+            {% endfor %}
+        </ul>
+    </div>
+</section>
+{% endif %}
+
+{% if module.key not in ['cultivation', 'sect', 'inventory', 'market', 'other', 'estate', 'dungeon', 'stock'] %}
+<section class="detail-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>本命枢纽</p>
+            <h2>灵能运转周天</h2>
+        </div>
+        {% if active_profile and module_setting %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>修士道号</span><strong style="color: var(--accent-cyan);">{{ active_profile.name }}</strong></div>
+            <div class="kv-row"><span>聚灵状态</span><strong style="color: {% if module_setting.enabled %}var(--accent-jade){% else %}var(--text-muted){% endif %};">{{ '已激活' if module_setting.enabled else '已封印' }}</strong></div>
+            <div class="kv-row"><span>息阵时辰</span><strong>{{ module_setting.cooldown_seconds }} 息</strong></div>
+            <div class="kv-row"><span>轮转间隙</span><strong>{{ module_setting.check_interval_seconds }} 息</strong></div>
+            <div class="kv-row"><span>刻录法旨</span><strong style="font-family: var(--font-mono);">{{ module_setting.command_template or '未拓印' }}</strong></div>
+        </div>
+        <form class="top-gap" method="post" action="/modules/{{ module.key }}/toggle">
+            <input type="hidden" name="profile_id" value="{{ active_profile.id }}">
+            <input type="hidden" name="enabled" value="{{ '0' if module_setting.enabled else '1' }}">
+            <button class="button" type="submit" style="width: 100%;">{{ '切断灵力供给' if module_setting.enabled else '注入灵力激活' }}</button>
+        </form>
+        {% else %}
+        <p class="muted">未见神识入阵，或该阵法尚未镌刻于天机碑。</p>
+        {% endif %}
+    </div>
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>重塑阵图</p>
+            <h2>玉简铭刻</h2>
+        </div>
+        {% if active_profile %}
+        <form class="form-grid" method="post" action="/modules/{{ module.key }}/settings">
+            <input type="hidden" name="profile_id" value="{{ active_profile.id }}">
+            <label>
+                聚灵状态
+                <select name="enabled">
+                    <option value="1" {% if not module_setting or module_setting.enabled %}selected{% endif %}>灵力充盈 (enabled)</option>
+                    <option value="0" {% if module_setting and not module_setting.enabled %}selected{% endif %}>阵眼干涸 (disabled)</option>
+                </select>
+            </label>
+            <label>
+                息阵时辰 (秒)
+                <input name="cooldown_seconds" type="number" min="0" value="{{ module_setting.cooldown_seconds if module_setting else 30 }}">
+            </label>
+            <label>
+                轮转间隙 (秒)
+                <input name="check_interval_seconds" type="number" min="0" value="{{ module_setting.check_interval_seconds if module_setting else 300 }}">
+            </label>
+            <label class="full-span">
+                天道法旨
+                <input name="command_template" value="{{ module_setting.command_template if module_setting else '' }}" placeholder="例如：.查看闭关 / .宗门悬赏 / .进入秘境">
+            </label>
+            <label class="full-span">
+                道途感悟
+                <textarea name="notes" rows="4" placeholder="在此镌刻你的修仙心得与避劫要诀...">{{ module_setting.notes if module_setting else '' }}</textarea>
+            </label>
+            <div class="full-span">
+                <button class="button" type="submit" style="width: 100%; border-color: var(--accent-gold); color: var(--accent-gold);">重塑法阵铭文</button>
+            </div>
+        </form>
+        {% else %}
+        <p class="muted" style="color: var(--error);">神识迷失，请归原点 (首页) 重聚真身。</p>
+        {% endif %}
+    </div>
+</section>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,224 @@
+<section class="detail-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>三界游历</p>
+            <h2>卜卦与天机</h2>
+        </div>
+        <div class="stack-list">
+            <div class="kv-row"><span>今日已卜卦</span><strong>{{ divination_count_today }} 次</strong></div>
+            <div class="kv-row"><span>仙界声望</span><strong>{{ gambling_karma }}</strong></div>
+        </div>
+        
+        <form class="top-gap" method="post" action="/runtime/commands/send-raw" id="wheel-bet-form">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/other">
+            <input type="hidden" name="text" value="">
+            <div class="form-grid">
+                <label class="full-span">
+                    卜卦方式
+                    <select name="bet_mode">
+                        <option value="机选">机选 (由天道决断)</option>
+                        <option value="自选">自选 (凡人逆天改命)</option>
+                    </select>
+                </label>
+                <div class="full-span" style="display: flex; gap: 8px;">
+                    <input type="number" name="red_1" placeholder="红1" min="1" max="33" style="width: 100%;">
+                    <input type="number" name="red_2" placeholder="红2" min="1" max="33" style="width: 100%;">
+                    <input type="number" name="red_3" placeholder="红3" min="1" max="33" style="width: 100%;">
+                    <input type="number" name="red_4" placeholder="红4" min="1" max="33" style="width: 100%;">
+                    <input type="number" name="red_5" placeholder="红5" min="1" max="33" style="width: 100%;">
+                    <input type="number" name="red_6" placeholder="红6" min="1" max="33" style="width: 100%;">
+                    <input type="number" name="blue_ball" placeholder="蓝" min="1" max="16" style="width: 100%; border-color: var(--accent-cyan);">
+                </div>
+                <label>
+                    注数
+                    <input type="number" name="bet_count" min="1" value="1">
+                </label>
+                <div class="full-span">
+                    <button class="button" type="submit" style="width: 100%;">推演天机</button>
+                </div>
+            </div>
+        </form>
+    </div>
+</section>
+
+<script>
+const TIANJI_DICE_ODDS = {
+    4: '1:50',
+    5: '1:25',
+    6: '1:15',
+    7: '1:10',
+    8: '1:8',
+    9: '1:6',
+    10: '1:6',
+    11: '1:6',
+    12: '1:6',
+    13: '1:8',
+    14: '1:10',
+    15: '1:15',
+    16: '1:25',
+    17: '1:50'
+};
+
+function updateWheelBetForm() {
+    const form = document.getElementById('wheel-bet-form');
+    if (!form) {
+        return;
+    }
+    const mode = (form.elements.bet_mode?.value || '机选').trim();
+    for (let index = 1; index <= 6; index += 1) {
+        const redInput = form.elements["red_"];
+        if (!redInput) {
+            continue;
+        }
+        redInput.disabled = mode !== '自选';
+        redInput.required = mode === '自选';
+        if (mode !== '自选') {
+            redInput.value = '';
+        }
+    }
+    const blueInput = form.elements.blue_ball;
+    if (!blueInput) {
+        return;
+    }
+    blueInput.disabled = mode !== '自选';
+    blueInput.required = mode === '自选';
+    if (mode !== '自选') {
+        blueInput.value = '';
+    }
+}
+
+function buildWheelBetCommand(form) {
+    const mode = (form.elements.bet_mode.value || '').trim();
+    const betCount = Math.max(parseInt(form.elements.bet_count.value || '0', 10) || 0, 1);
+    if (mode === '机选') {
+        return .卜卦 机选*;
+    }
+
+    const redBalls = [];
+    for (let index = 1; index <= 6; index += 1) {
+        const value = parseInt(form.elements["red_"].value || '', 10);
+        if (!Number.isInteger(value) || value < 1 || value > 33) {
+            window.alert('自选红球需要填写 6 个 1-33 的数字！');
+            return '';
+        }
+        redBalls.push(value);
+    }
+    if (new Set(redBalls).size !== redBalls.length) {
+        window.alert('自选红球不能重复！');
+        return '';
+    }
+    const blueBall = parseInt(form.elements.blue_ball.value || '', 10);
+    if (!Number.isInteger(blueBall) || blueBall < 1 || blueBall > 16) {
+        window.alert('蓝球只能填写 1-16！');
+        return '';
+    }
+    return .卜卦  *;
+}
+
+function updateTianjiDiceForm() {
+    const form = document.getElementById('tianji-dice-form');
+    if (!form) {
+        return;
+    }
+    const kindInput = form.elements.bet_kind;
+    const pointInput = form.elements.point_value;
+    const oddsNode = document.getElementById('tianji-dice-odds');
+    const ruleNode = document.getElementById('tianji-dice-rule');
+    const kind = (kindInput?.value || '大').trim();
+    const pointValue = parseInt(pointInput?.value || '', 10);
+
+    pointInput.disabled = kind === '大' || kind === '小';
+    pointInput.required = kind === '点数';
+
+    if (kind === '点数') {
+        pointInput.min = '4';
+        pointInput.max = '17';
+        pointInput.placeholder = '可填 4-17';
+        oddsNode.textContent = Number.isInteger(pointValue) ? (TIANJI_DICE_ODDS[pointValue] || '无效点数') : '等待输入点数';
+        ruleNode.textContent = '点数玩法可填 4-17，提交时会生成 .押 点数X 金额。';
+        return;
+    }
+
+    if (kind === '豹子') {
+        pointInput.min = '1';
+        pointInput.max = '6';
+        pointInput.placeholder = '留空=任意豹子，或填 1-6';
+        oddsNode.textContent = Number.isInteger(pointValue) ? '1:180' : '1:30';
+        ruleNode.textContent = Number.isInteger(pointValue)
+            ? '指定豹子可填 1-6，提交时会生成 .押 豹子X 金额。'
+            : '留空时按任意豹子处理，提交时会生成 .押 豹子 金额。';
+        return;
+    }
+
+    pointInput.value = '';
+    pointInput.min = '1';
+    pointInput.max = '17';
+    pointInput.placeholder = '大/小不可填';
+    oddsNode.textContent = '1:1';
+    ruleNode.textContent = '大=11-17，小=4-10；若开出豹子，则所有大/小投注通杀。';
+}
+
+function buildTianjiDiceCommand(form) {
+    const kind = (form.elements.bet_kind.value || '').trim();
+    const amount = Math.max(parseInt(form.elements.amount.value || '0', 10) || 0, 1);
+    const pointValue = parseInt(form.elements.point_value.value || '', 10);
+    let betText = '';
+
+    if (kind === '大' || kind === '小') {
+        betText = kind;
+    } else if (kind === '点数') {
+        if (!Number.isInteger(pointValue) || pointValue < 4 || pointValue > 17) {
+            window.alert('点数玩法只能填写 4-17。');
+            return '';
+        }
+        betText = "点数";
+    } else if (kind === '豹子') {
+        if (!Number.isInteger(pointValue)) {
+            betText = '豹子';
+        } else if (pointValue >= 1 && pointValue <= 6) {
+            betText = "豹子";
+        } else {
+            window.alert('指定豹子时只能填写 1-6，留空则表示任意豹子。');
+            return '';
+        }
+    }
+
+    return betText ? .押   : '';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const wheelForm = document.getElementById('wheel-bet-form');
+    if (wheelForm) {
+        wheelForm.elements.bet_mode?.addEventListener('change', updateWheelBetForm);
+        updateWheelBetForm();
+        wheelForm.addEventListener('submit', (event) => {
+            const commandText = buildWheelBetCommand(wheelForm);
+            if (!commandText) {
+                event.preventDefault();
+                return;
+            }
+            wheelForm.elements.text.value = commandText;
+        });
+    }
+
+    const form = document.getElementById('tianji-dice-form');
+    if (!form) {
+        return;
+    }
+    form.elements.bet_kind?.addEventListener('change', updateTianjiDiceForm);
+    form.elements.point_value?.addEventListener('input', updateTianjiDiceForm);
+    updateTianjiDiceForm();
+    form.addEventListener('submit', (event) => {
+        const commandText = buildTianjiDiceCommand(form);
+        if (!commandText) {
+            event.preventDefault();
+            return;
+        }
+        form.elements.text.value = commandText;
+    });
+});
+</script>

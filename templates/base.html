@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>自动修仙</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', path='/brand-icon.svg') }}">
+    <link rel="stylesheet" href="{{ url_for('static', path='/app.css') }}">
+</head>
+<body>
+{% set current_path = request.url.path %}
+<div class="shell">
+    <aside class="sidebar">
+        <a class="brand" href="/">
+            <div class="brand-mark">
+                <!-- Using an abstract geometric icon for the jade slip array -->
+                <svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="50" cy="50" r="40" stroke="rgba(212,175,55,0.5)" />
+                    <circle cx="50" cy="50" r="30" stroke="var(--accent-cyan)" stroke-dasharray="10 5" />
+                    <path d="M50 10 L50 90 M10 50 L90 50" stroke="rgba(212,175,55,0.3)" />
+                    <path d="M22 22 L78 78 M22 78 L78 22" stroke="rgba(212,175,55,0.2)" />
+                </svg>
+            </div>
+            <div>
+                <strong>天机中枢</strong>
+                <p>凡人亦可修仙，步步皆是仙途</p>
+            </div>
+        </a>
+        <nav class="nav">
+            <a class="{% if current_path == '/' %}active{% endif %}" href="/">天机总览</a>
+            <a class="{% if current_path == '/profile' %}active{% endif %}" href="/profile">角色真身</a>
+            <a class="{% if current_path == '/messages' %}active{% endif %}" href="/messages">传音卷宗</a>
+            <a class="{% if current_path == '/modules/cultivation' %}active{% endif %}" href="/modules/cultivation">闭关洞府</a>
+            <a class="{% if current_path == '/modules/sect' %}active{% endif %}" href="/modules/sect">宗门大殿</a>
+            <a class="{% if current_path == '/modules/inventory' %}active{% endif %}" href="/modules/inventory">随身储物</a>
+            <a class="{% if current_path == '/modules/other' %}active{% endif %}" href="/modules/other">三界游历</a>
+            <a class="{% if current_path == '/modules/estate' %}active{% endif %}" href="/modules/estate">私人仙府</a>
+            <a class="{% if current_path == '/modules/market' %}active{% endif %}" href="/modules/market">修真市集</a>
+            <a class="{% if current_path == '/modules/stock' %}active{% endif %}" href="/modules/stock">仙股商会</a>
+            <a class="{% if current_path == '/modules/dungeon' %}active{% endif %}" href="/modules/dungeon">秘境降魔</a>
+        </nav>
+        {% if active_profile %}
+        <div class="sidebar-footer">
+            <p class="muted">当前神识链接</p>
+            <a class="inline-link" href="/login">{{ active_profile.name }}</a>
+            <p class="muted" style="margin-top: 8px;">天机阁阵法运作正常</p>
+        </div>
+        {% endif %}
+    </aside>
+    <main class="content">
+        {% if external_session_notice %}
+        <section class="detail-card status-card {% if external_session_notice.level == 'error' %}status-error{% else %}status-warning{% endif %}">
+            <strong>{{ external_session_notice.title }}</strong>
+            <p>{{ external_session_notice.message }} <a class="inline-link" href="/login">前往天机阁页</a></p>
+            {% if external_session_notice.detail %}
+            <p class="muted">最近错误: {{ external_session_notice.detail }}</p>
+            {% endif %}
+        </section>
+        {% endif %}
+        {% block content %}{% endblock %}
+    </main>
+</div>
+<dialog id="sect-exchange-modal" class="modal">
+    <div class="modal-content detail-card base-modal-card">
+        <div class="section-header compact">
+            <p id="sect-exchange-subtitle">宗门宝库</p>
+            <h2 id="sect-exchange-title">贡献兑换</h2>
+        </div>
+        <form class="form-grid top-gap" method="post" action="/runtime/commands/send-raw" id="sect-exchange-form">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="{{ request.url.path }}">
+            <label class="full-span">
+                宝库物品
+                <select id="sect-exchange-item-select">
+                    {% for item in sect_treasury_items or [] %}
+                    <option value="{{ item.display_name }}">{{ item.display_name }} / {{ item.display_type }} / {{ item.shop_price_text }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <div class="full-span exchange-meta-box" id="sect-exchange-meta">
+                暂无可兑换物品。
+            </div>
+            <label>
+                兑换数量
+                <input type="number" id="sect-exchange-quantity" min="1" value="1">
+            </label>
+            <label class="full-span">
+                生成指令
+                <input id="sect-exchange-command-input" name="text" required>
+            </label>
+            {% if not command_chat_ready %}
+            <p class="muted full-span">当前未绑定有效游戏群，无法直接发送兑换命令。</p>
+            {% endif %}
+            <div class="action-row full-span">
+                <button type="submit" {% if not command_chat_ready or not (sect_treasury_items or []) %}disabled{% endif %}>立即兑换</button>
+                <button type="button" class="inline-button" onclick="document.getElementById('sect-exchange-modal').close()">取消</button>
+            </div>
+        </form>
+    </div>
+</dialog>
+<script src="{{ url_for('static', path='/app.js') }}?v=20260418-1"></script>
+<script>
+const sectTreasuryItems = [
+    {% for item in sect_treasury_items or [] %}
+    {
+        name: {{ item.display_name | tojson }},
+        type: {{ item.display_type | tojson }},
+        priceText: {{ item.shop_price_text | tojson }},
+        description: {{ item.description | default('', true) | tojson }},
+        sectName: {{ item.sect_exclusive_label | default('通用', true) | tojson }}
+    }{% if not loop.last %},{% endif %}
+    {% endfor %}
+];
+
+function openSectExchangeModal() {
+    const modal = document.getElementById('sect-exchange-modal');
+    const subtitle = document.getElementById('sect-exchange-subtitle');
+    const title = document.getElementById('sect-exchange-title');
+    const quantityInput = document.getElementById('sect-exchange-quantity');
+    if (!modal) {
+        return;
+    }
+    subtitle.textContent = {{ (current_sect_name or '当前宗门') | tojson }} || '当前宗门';
+    title.textContent = '贡献兑换';
+    if (quantityInput) {
+        quantityInput.value = 1;
+    }
+    updateSectExchangeCommand();
+    modal.showModal();
+}
+
+function updateSectExchangeCommand() {
+    const select = document.getElementById('sect-exchange-item-select');
+    const quantityInput = document.getElementById('sect-exchange-quantity');
+    const commandInput = document.getElementById('sect-exchange-command-input');
+    const metaBox = document.getElementById('sect-exchange-meta');
+    if (!select || !commandInput || !metaBox) {
+        return;
+    }
+    const selectedName = (select.value || '').trim();
+    const quantity = Math.max(parseInt(quantityInput?.value || '1', 10) || 1, 1);
+    const selectedItem = sectTreasuryItems.find(item => item.name === selectedName);
+    if (!selectedItem) {
+        metaBox.textContent = '暂无可兑换物品。';
+        commandInput.value = '';
+        return;
+    }
+    metaBox.innerHTML = `类型：${selectedItem.type}　贡献：${selectedItem.priceText}　宗门：${selectedItem.sectName}${selectedItem.description ? `<br>${selectedItem.description}` : ''}`;
+    commandInput.value = `.兑换 ${selectedItem.name}*${quantity}`;
+}
+
+document.getElementById('sect-exchange-item-select')?.addEventListener('change', updateSectExchangeCommand);
+document.getElementById('sect-exchange-quantity')?.addEventListener('input', updateSectExchangeCommand);
+document.addEventListener('DOMContentLoaded', updateSectExchangeCommand);
+</script>
+<style>
+.base-modal-card {
+    width: 520px;
+    max-width: 92vw;
+    margin: auto;
+    border-radius: 10px;
+}
+.exchange-meta-box {
+    padding: 12px 14px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.02);
+    color: var(--text-secondary);
+    line-height: 1.6;
+}
+.contribution-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+}
+</style>
+</body>
+</html>

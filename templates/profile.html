@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="section-header">
+    <p>角色与认</p>
+    <h1>角色真身</h1>
+    <p class="hero-text">此处总揽修士身份，承接天机阁玉简，并绑定 Telegram 神识。</p>
+</section>
+
+<section class="workspace-grid">
+    <div class="detail-card" id="profiles" style="grid-column: 1 / -1;">
+        <div class="section-header compact">
+            <p>人物信息</p>
+            <h2>本命元神档案</h2>
+        </div>
+        {% if active_profile %}
+        <div class="profile-card-shell" style="border-color: var(--accent-gold);">
+            <div class="profile-card-body">
+                <h3 style="font-size: 24px; color: var(--accent-gold);">{{ active_profile.game_name or active_profile.display_name or '无名道友' }}</h3>
+                <div class="profile-info-grid">
+                    <div><span>天机阁玉简</span><strong>{{ active_profile.account_name or '未绑定' }}</strong></div>
+                    <div class="full-profile-span"><span>御使法宝</span><strong class="multiline-value" style="color: var(--accent-purple);">{{ active_profile.artifact_text or '赤手空拳' }}</strong></div>
+                    <div><span>仙门</span><strong>{{ active_profile.sect_name or '无门无派' }}</strong></div>
+                    {% if active_profile.sect_position %}
+                    <div><span>尊位</span><strong style="color: var(--accent-gold);">{{ active_profile.sect_position }}</strong></div>
+                    {% endif %}
+                    <div><span>阵法加持</span><strong>{{ (active_profile.sect_bonus_text ~ '%') if active_profile.sect_bonus_text else '无' }}</strong></div>
+                    <div><span>灵根资质</span><strong style="color: var(--accent-gold);">{{ active_profile.spirit_root or '未卜' }}</strong></div>
+                    <div><span>当前境界</span><strong style="color: var(--accent-jade);">{{ active_profile.stage_name or '未踏足' }}</strong></div>
+                    <div><span>法力源泉</span><strong>{{ active_profile.cultivation_text or '未修炼' }}</strong></div>
+                    <div><span>识海广度</span><strong>{{ character_state.shenshi_points }} 缕</strong></div>
+                    <div><span>体内丹毒</span><strong style="color: var(--error);">{{ active_profile.poison_text or '0' }}</strong></div>
+                    <div><span>造下杀孽</span><strong>{{ active_profile.kill_count_text or '清白' }}</strong></div>
+                    <div class="full-profile-span"><span>仙门贡献</span><strong class="contribution-action">{{ active_profile.sect_contribution_text or '0' }}<button type="button" class="inline-button small-btn" onclick="openSectExchangeModal()" {% if not command_chat_ready or not (sect_treasury_items or []) %}disabled{% endif %}>宝库兑换</button></strong></div>
+                </div>
+                <div class="action-row top-gap">
+                    <a class="button" href="/messages">翻阅传音卷宗</a>
+                    <form method="post" action="/profiles/{{ active_profile.id }}/refresh-info">
+                        <button class="button" type="submit" {% if not active_profile.telegram_verified_at or not external_account or external_account.status != 'connected' %}disabled{% endif %} style="border-color: var(--accent-gold);">探寻天机更新</button>
+                    </form>
+                    {% if not active_profile.telegram_verified_at %}
+                    <span class="muted" style="color: var(--error);">请先完成 Telegram 神识连接</span>
+                    {% elif external_account and external_account.status == 'expired' %}
+                    <span class="muted" style="color: var(--error);">天机阁会话已散去，请重聚灵气 (更新 Cookie)</span>
+                    {% elif external_account and external_account.status == 'logged_out' %}
+                    <span class="muted" style="color: var(--error);">已脱离天机阁，请重新打上神识印记</span>
+                    {% elif not external_account or external_account.status != 'connected' %}
+                    <span class="muted" style="color: var(--warning);">请先通过天机阁认证</span>
+                    {% endif %}
+                    <span class="muted" style="margin-left: auto;">天机推演时辰：{{ format_timestamp(active_profile.info_updated_at) }}</span>
+                </div>
+            </div>
+        </div>
+        {% else %}
+        <p class="muted">档案大殿空荡无物，请先凝聚元神创建角色。</p>
+        <form class="form-grid" method="post" action="/profiles">
+            <label class="full-span">
+                道号/代称
+                <input name="name" placeholder="例如：主修仙体" required>
+            </label>
+            <div class="full-span">
+                <button type="submit" class="button" style="width: 100%;">凝聚元神 (创建角色)</button>
+            </div>
+        </form>
+        {% endif %}
+    </div>
+
+    <div class="detail-card" id="chats">
+        <div class="section-header compact">
+            <p>神识连接</p>
+            <h2>当前锁定秘境 (Telegram 配置)</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>神识锚点 (Chat ID)</span><strong style="font-family: var(--font-mono);">{{ bound_chat_id or '未锁定' }}</strong></div>
+            <div class="kv-row"><span>分支因果 (Thread)</span><strong style="font-family: var(--font-mono);">{{ bound_thread_id or '主干道' }}</strong></div>
+            <div class="kv-row"><span>秘境类型</span><strong>{{ bound_chat_type or 'group' }}</strong></div>
+            <div class="kv-row"><span>接引仙使 (Bot)</span><strong>{{ bound_bot_username or '未寻见' }}</strong></div>
+            <div class="kv-row"><span>仙使印记 (Bot ID)</span><strong style="font-family: var(--font-mono);">{{ bound_bot_id or '未知' }}</strong></div>
+        </div>
+        <p class="muted top-gap">此为环境玉简 (.env) 固定之神识锚点，无法在界面篡改。</p>
+
+        <div class="section-header compact top-gap" style="margin-top: 32px; border-top: 1px dashed var(--border-color); padding-top: 24px;">
+            <p>TG 认证</p>
+            <h2>绑定当前降临的 Telegram 神识</h2>
+        </div>
+        {% if active_profile %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>神识印记 (TG ID)</span><strong style="font-family: var(--font-mono);">{{ active_profile.telegram_user_id or '未绑定' }}</strong></div>
+            <div class="kv-row"><span>名讳 (TG User)</span><strong>{{ ('@' ~ active_profile.telegram_username) if active_profile.telegram_username else '无名' }}</strong></div>
+            <div class="kv-row"><span>烙印时辰</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(active_profile.telegram_verified_at) }}</strong></div>
+        </div>
+        <form class="top-gap" method="post" action="/profiles/{{ active_profile.id }}/bind-current-telegram">
+            <button type="submit" class="button" style="width: 100%;">将当前 TG 神识烙印于此档案</button>
+        </form>
+        <p class="muted top-gap" style="font-size: 11px;">首次烙印将清空旧有因果（人物快照），并以新神识从天道（机器人）处重新索取属性。</p>
+        {% else %}
+        <p class="muted">元神未定，无法烙印 TG 神识。</p>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

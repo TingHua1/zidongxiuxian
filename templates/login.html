@@ -1,0 +1,163 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="tianji-hero detail-card">
+    <p class="eyebrow">本地模式 · 双重认证</p>
+    <h1>先以 Telegram 入阁，再接引天机灵纹</h1>
+    <p class="hero-text">本地模式会先绑定当前 TG 登录账号，再使用你手动提供的天机阁 `session=...` 调用 `/api/cultivator/&lt;tg_username&gt;`。如果失效，会提醒你重新复制新的 session 过来。</p>
+    <div class="action-row top-gap">
+        <a class="inline-link tianji-link" href="https://asc.aiopenai.app/login" target="_blank" rel="noreferrer">打开官方天机阁登录</a>
+        <button class="inline-button" id="paste-session-btn" type="button">从剪贴板粘贴 session</button>
+    </div>
+</section>
+
+{% if login_error %}
+<section class="detail-card status-card status-error">
+    <strong>连接失败</strong>
+    <p>{{ login_error }}</p>
+</section>
+{% endif %}
+
+{% if login_success %}
+<section class="detail-card status-card status-success">
+    <strong>连接成功</strong>
+    <p>{{ login_success }}</p>
+</section>
+{% endif %}
+
+<section class="workspace-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>第一步</p>
+            <h2>登录本地 Telegram 身份</h2>
+        </div>
+        {% if has_telegram_session and telegram_account %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>TG 账号</span><strong>{% if telegram_account.username %}@{{ telegram_account.username }}{% elif telegram_account.id %}{{ telegram_account.id }}{% else %}-{% endif %}</strong></div>
+            <div class="kv-row"><span>TG 用户 ID</span><strong>{{ telegram_account.id or '-' }}</strong></div>
+            <div class="kv-row"><span>TG 用户名</span><strong>{{ ('@' ~ telegram_account.username) if telegram_account.username else '-' }}</strong></div>
+        </div>
+        <p class="muted top-gap">TG 登录成功后会自动绑定到当前角色。</p>
+        <form class="top-gap" method="post" action="/auth/telegram/logout">
+            <button type="submit">退出 TG 登录</button>
+        </form>
+        {% else %}
+        <p class="muted">当前没有可复用的 Telegram 会话，请走标准手机号验证码登录。</p>
+        {% if login_challenge %}
+        <div class="stack-list compact-stack top-gap">
+            <div class="kv-row"><span>登录手机号</span><strong>{{ login_challenge.phone }}</strong></div>
+            <div class="kv-row"><span>当前阶段</span><strong>{{ '等待密码' if login_challenge.status == 'password_required' else '等待验证码' }}</strong></div>
+        </div>
+        {% else %}
+        <form class="form-grid top-gap" method="post" action="/auth/telegram/start">
+            <label class="full-span">
+                Telegram 手机号
+                <input name="phone" placeholder="+8613812345678" required>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit">发送验证码</button>
+            </div>
+        </form>
+        {% endif %}
+        {% if login_challenge and login_challenge.status != 'password_required' %}
+        <form class="form-grid top-gap" method="post" action="/auth/telegram/verify">
+            <label class="full-span">
+                Telegram 验证码
+                <input name="code" placeholder="12345" required>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit">验证验证码并登录</button>
+            </div>
+        </form>
+        {% endif %}
+        {% if login_challenge and login_challenge.status == 'password_required' %}
+        <form class="form-grid top-gap" method="post" action="/auth/telegram/password">
+            <label class="full-span">
+                二步验证密码
+                <input name="password" type="password" placeholder="Telegram Password" required>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit">提交密码完成登录</button>
+            </div>
+        </form>
+        {% endif %}
+        {% endif %}
+    </div>
+
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>第二步</p>
+            <h2>登录天机阁</h2>
+        </div>
+        {% if external_account and external_account.status == 'connected' %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>目标接口</span><strong>/api/cultivator/&lt;tg_username&gt;</strong></div>
+            <div class="kv-row"><span>当前状态</span><strong>已登录</strong></div>
+            <div class="kv-row"><span>同步结果</span><strong>人物卡基础信息与法宝</strong></div>
+            <div class="kv-row"><span>宗门资料</span><strong>按宗门静态资料映射描述与修炼加成</strong></div>
+        </div>
+        <p class="muted top-gap">当前天机阁会话可用。如需更换账号，可先退出当前天机阁登录。</p>
+        <form class="top-gap" method="post" action="/auth/external/logout">
+            <button type="submit">退出天机阁登录</button>
+        </form>
+        {% else %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>目标接口</span><strong>/api/cultivator/&lt;tg_username&gt;</strong></div>
+            <div class="kv-row"><span>当前状态</span><strong>{% if external_account and external_account.status == 'expired' %}Cookie 已失效{% elif external_account and external_account.status == 'logged_out' %}未登录{% else %}等待登录{% endif %}</strong></div>
+            <div class="kv-row"><span>同步结果</span><strong>人物卡基础信息与法宝</strong></div>
+            <div class="kv-row"><span>宗门资料</span><strong>按宗门静态资料映射描述与修炼加成</strong></div>
+        </div>
+        <form class="form-grid" method="post" action="/auth/external/connect">
+            <label class="full-span">
+                session Cookie
+                <textarea id="cookie-input" name="cookie_text" rows="10" placeholder="session=xxx" required></textarea>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit">验证并登录天机阁</button>
+            </div>
+        </form>
+        <p class="muted top-gap">只需要粘贴新的整串 Cookie 或单独 `session=...`，提交时会自动只保留 `session`。</p>
+        {% endif %}
+    </div>
+
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>当前状态</p>
+            <h2>天机阁状态</h2>
+        </div>
+        {% if active_profile and external_account %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>角色</span><strong>{{ active_profile.name }}</strong></div>
+            <div class="kv-row"><span>TG 用户 ID</span><strong>{{ external_account.telegram_user_id or '-' }}</strong></div>
+            <div class="kv-row"><span>TG 用户名</span><strong>{{ ('@' ~ external_account.telegram_username) if external_account.telegram_username else '-' }}</strong></div>
+            <div class="kv-row"><span>角色数量</span><strong>{{ external_character_count }}</strong></div>
+            <div class="kv-row"><span>状态</span><strong>{% if external_account.status == 'connected' %}已登录{% elif external_account.status == 'expired' %}天机阁会话已失效{% elif external_account.status == 'error' %}同步异常{% elif external_account.status == 'logged_out' %}已退出登录{% else %}{{ external_account.status or '-' }}{% endif %}</strong></div>
+            <div class="kv-row"><span>最近校验</span><strong>{{ format_timestamp(external_account.last_verified_at) }}</strong></div>
+            <div class="kv-row"><span>最近错误</span><strong>{{ external_account.last_error or '-' }}</strong></div>
+        </div>
+        {% if external_account.status == 'connected' %}
+        <form class="top-gap" method="post" action="/auth/external/refresh">
+            <button type="submit">重新验证天机阁会话</button>
+        </form>
+        {% endif %}
+        {% else %}
+        <p class="muted">当前还没有可用的天机阁会话。</p>
+        {% endif %}
+    </div>
+</section>
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const button = document.getElementById('paste-session-btn')
+  const input = document.getElementById('cookie-input')
+  if (!button || !input || !navigator.clipboard) return
+  button.addEventListener('click', async () => {
+    try {
+      input.value = await navigator.clipboard.readText()
+      input.focus()
+    } catch (_err) {
+      input.focus()
+    }
+  })
+})
+</script>
+{% endblock %}

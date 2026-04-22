@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="自动修仙图标">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="44%" r="65%">
+      <stop offset="0%" stop-color="#2f3035"/>
+      <stop offset="68%" stop-color="#16181d"/>
+      <stop offset="100%" stop-color="#0a0b0e"/>
+    </radialGradient>
+    <linearGradient id="bronze" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7b5a41"/>
+      <stop offset="45%" stop-color="#3e3128"/>
+      <stop offset="100%" stop-color="#967257"/>
+    </linearGradient>
+    <radialGradient id="gold" cx="50%" cy="50%" r="54%">
+      <stop offset="0%" stop-color="#fff8c9"/>
+      <stop offset="36%" stop-color="#ffe796"/>
+      <stop offset="72%" stop-color="#efc457"/>
+      <stop offset="100%" stop-color="#8e6423"/>
+    </radialGradient>
+    <radialGradient id="bottleGlass" cx="45%" cy="32%" r="72%">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.96"/>
+      <stop offset="35%" stop-color="#f4d8a3" stop-opacity="0.72"/>
+      <stop offset="100%" stop-color="#b07d34" stop-opacity="0.24"/>
+    </radialGradient>
+    <radialGradient id="elixir" cx="50%" cy="38%" r="64%">
+      <stop offset="0%" stop-color="#fff0aa"/>
+      <stop offset="42%" stop-color="#ffc94c"/>
+      <stop offset="100%" stop-color="#a76c14"/>
+    </radialGradient>
+    <filter id="ringGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <rect width="256" height="256" rx="40" fill="url(#bg)"/>
+
+  <circle cx="128" cy="128" r="118" fill="none" stroke="url(#bronze)" stroke-width="18"/>
+  <circle cx="128" cy="128" r="102" fill="none" stroke="#262118" stroke-width="4" opacity="0.55"/>
+
+  <g filter="url(#ringGlow)">
+    <circle cx="128" cy="128" r="72" fill="none" stroke="url(#gold)" stroke-width="7"/>
+    <circle cx="128" cy="128" r="60" fill="none" stroke="#ffe9a1" stroke-width="2.5" opacity="0.72"/>
+    <path d="M80 93c22-23 74-25 97 0" fill="none" stroke="#fff3bd" stroke-width="2" stroke-linecap="round" opacity="0.82"/>
+    <path d="M76 166c25 14 78 13 102-2" fill="none" stroke="#ffe39b" stroke-width="2" stroke-linecap="round" opacity="0.78"/>
+    <path d="M67 118c-3 18-2 31 3 45" fill="none" stroke="#ffe39b" stroke-width="2" stroke-linecap="round" opacity="0.74"/>
+    <path d="M188 118c3 18 2 31-4 46" fill="none" stroke="#ffe39b" stroke-width="2" stroke-linecap="round" opacity="0.74"/>
+  </g>
+
+  <g>
+    <circle cx="128" cy="128" r="36" fill="url(#bottleGlass)" stroke="#fff2d0" stroke-width="3"/>
+    <rect x="117" y="70" width="22" height="18" rx="4" fill="#8a6031" stroke="#d1af76" stroke-width="2"/>
+    <path d="M116 84h24l10 12v35c0 22-16 38-22 38s-22-16-22-38V96z" fill="url(#bottleGlass)" stroke="#f7e7c1" stroke-width="3"/>
+    <path d="M103 125c8-3 20-4 31-1 9 3 16 6 24 4v9c0 20-13 35-30 35s-30-15-30-35v-12c1 0 3 0 5 0z" fill="url(#elixir)" opacity="0.94"/>
+    <path d="M113 121c11-8 28-7 40 1" fill="none" stroke="#fff5cc" stroke-width="3" stroke-linecap="round" opacity="0.88"/>
+    <path d="M114 145c12 4 23 5 35 1" fill="none" stroke="#fff0bb" stroke-width="2.5" stroke-linecap="round" opacity="0.82"/>
+    <ellipse cx="119" cy="106" rx="9" ry="18" fill="#ffffff" opacity="0.22" transform="rotate(12 119 106)"/>
+  </g>
+
+  <g>
+    <circle cx="128" cy="58" r="21" fill="#5b4a33" stroke="#f0d18a" stroke-width="3"/>
+    <path d="M117 59c4-12 19-11 22 0-5-2-10-2-15 2 1-3 1-6-2-8-2 2-4 5-5 9z" fill="#f7e3b0"/>
+    <path d="M130 46c8 3 11 9 10 16-4-5-9-7-15-8 4-2 6-5 5-8z" fill="#fff0c2" opacity="0.9"/>
+  </g>
+
+  <g>
+    <circle cx="66" cy="120" r="22" fill="#5c1f18" stroke="#f0d18a" stroke-width="3"/>
+    <path d="M58 131c1-6 4-10 8-15 0 5 3 8 7 11-1-7 2-12 7-17 1 8 2 12 0 17 4-2 6-5 8-10 4 11-2 22-15 22-8 0-14-3-15-8z" fill="#ff7a2b"/>
+  </g>
+
+  <g>
+    <circle cx="189" cy="120" r="22" fill="#644216" stroke="#f0d18a" stroke-width="3"/>
+    <text x="189" y="129" text-anchor="middle" font-size="26" font-family="KaiTi, STKaiti, serif" fill="#fff0be">火</text>
+  </g>
+
+  <g>
+    <circle cx="84" cy="189" r="22" fill="#1e5830" stroke="#f0d18a" stroke-width="3"/>
+    <text x="84" y="198" text-anchor="middle" font-size="26" font-family="KaiTi, STKaiti, serif" fill="#d8ffd5">土</text>
+  </g>
+
+  <g>
+    <circle cx="172" cy="189" r="22" fill="#184b86" stroke="#f0d18a" stroke-width="3"/>
+    <text x="172" y="198" text-anchor="middle" font-size="26" font-family="KaiTi, STKaiti, serif" fill="#d8efff">水</text>
+  </g>
+</svg>

@@ -1,0 +1,1050 @@
+import asyncio
+import logging
+from abc import ABC, abstractmethod
+from typing import Optional
+
+import artifact_game
+import basic_game
+import battle_feature_game
+import breakthrough_game
+import companion_game
+import diplomacy_game
+import dungeon_feature_game
+import estate_game
+import fanren_game
+import market_trade_game
+import sect_game
+import shop_game
+import stock_trade_game
+import inventory_feature_game
+
+from tg_game.runtime.context import EventContext
+from tg_game.services.cultivation_sync import sync_cultivation_session
+from tg_game.storage import CompatDb as SQLiteCompatDb, Storage
+from tg_game.telegram.send_utils import send_message_with_thread_fallback
+
+
+logger = logging.getLogger(__name__)
+
+DIVINATION_COMMAND = ".卜筮问天"
+
+
+SECT_FEATURE_REPLY_WHITELISTS = {
+    "huangfeng": {
+        ".小药园",
+        ".播种",
+        ".采药",
+        ".除草",
+        ".除虫",
+        ".浇水",
+        ".扩建药园",
+    },
+    "xingong": {
+        ".启阵",
+        ".助阵",
+        ".观星台",
+        ".牵引星辰",
+        ".收集精华",
+        ".安抚星辰",
+        ".观星",
+        ".改换星移",
+        ".我的侍妾",
+        ".每日问安",
+    },
+    "lingxiao": {
+        ".凌霄宫",
+        ".天阶状态",
+        ".问心台",
+        ".登天阶",
+        ".引九天罡风",
+        ".借天门势",
+    },
+    "taiyi": {".引道", ".神识冲击"},
+    "wanling": {
+        ".寻觅灵兽",
+        ".我的灵兽",
+        ".喂养",
+        ".灵兽出战",
+        ".灵兽休息",
+        ".一键放养",
+        ".灵兽偷菜",
+        ".探渊",
+    },
+    "luoyun": {".灵树状态", ".灵树灌溉", ".协同守山", ".采摘灵果"},
+    "yinluo": {
+        ".我的阴罗幡",
+        ".升级阴罗幡",
+        ".每日献祭",
+        ".化功为煞",
+        ".血洗山林",
+        ".召唤魔影",
+        ".囚禁魂魄",
+        ".安抚幡灵",
+        ".收取精华",
+        ".下咒",
+        ".收割",
+    },
+    "yuanying": {
+        ".元婴状态",
+        ".元婴出窍",
+        ".元婴闭关",
+        ".元婴归窍",
+        ".问道",
+        ".参悟功法",
+    },
+    "hehuan": {
+        ".闭关双修",
+        ".缔结同参",
+        ".双修 温养",
+        ".种下心印",
+        ".双修 采补",
+        ".挣脱心印",
+        ".结印",
+    },
+}
+
+
+class BaseExecutor(ABC):
+    key = "base"
+
+    async def startup(self, client: object, storage: Storage) -> None:
+        return None
+
+    def _expected_profile_user_id(self, context: EventContext) -> str:
+        binding_user_id = (
+            context.chat_binding.telegram_user_id if context.chat_binding else ""
+        )
+        return binding_user_id or (
+            context.profile.telegram_user_id if context.profile else ""
+        )
+
+    async def _bot_message_targets_profile(
+        self, context: EventContext, storage: Storage
+    ) -> bool:
+        if await context.bot_message_targets_profile():
+            return True
+        if context.chat_id is None or context.message_id is None:
+            return False
+        expected_user_id = self._expected_profile_user_id(context)
+        if not expected_user_id:
+            return False
+        bound_message = storage.get_bound_message(context.chat_id, context.message_id)
+        if not bound_message:
+            return False
+        reply_to_msg_id = bound_message.get("reply_to_msg_id")
+        if not reply_to_msg_id:
+            return False
+        reply_message = storage.get_bound_message(context.chat_id, int(reply_to_msg_id))
+        if not reply_message:
+            return False
+        return str(reply_message.get("sender_id") or "") == str(expected_user_id)
+
+    def _get_stored_reply_message(
+        self, context: EventContext, storage: Storage
+    ) -> Optional[dict]:
+        if context.chat_id is None or context.message_id is None:
+            return None
+        bound_message = storage.get_bound_message(context.chat_id, context.message_id)
+        if not bound_message:
+            return None
+        reply_to_msg_id = bound_message.get("reply_to_msg_id")
+        if not reply_to_msg_id:
+            return None
+        return storage.get_bound_message(context.chat_id, int(reply_to_msg_id))
+
+    async def _get_reply_message_text(
+        self, context: EventContext, storage: Storage
+    ) -> str:
+        reply_text = await context.get_reply_message_text()
+        if reply_text:
+            return reply_text.strip()
+        reply_message = self._get_stored_reply_message(context, storage)
+        return ((reply_message or {}).get("text") or "").strip()
+
+    @abstractmethod
+    async def handle(self, context: EventContext, storage: Storage) -> bool:
+        raise NotImplementedError
+
+
+class FanrenExecutor(BaseExecutor):
+    key = "fanren"
+
+    def __init__(self) -> None:
+        self._runner_started = False
+
+    async def startup(self, client: object, storage: Storage) -> None:
+        if self._runner_started:
+            return
+        self._runner_started = True
+        db = SQLiteCompatDb(storage)
+        fanren_game.ensure_tables(db)
+        db.close()
+        asyncio.create_task(fanren_game.runner(client, storage))
+        logger.info("Fanren executor runner started")
+
+    async def handle(self, context: EventContext, storage: Storage) -> bool:
+        if not context.chat_binding:
+            return False
+
+        db = SQLiteCompatDb(storage)
+        try:
+            if context.text.startswith(".fanren") and context.is_profile_owner():
+                if context.profile:
+                    storage.set_chat_binding_thread_id(
+                        context.profile.id, context.chat_id, context.thread_id
+                    )
+                    fanren_game.update_session(
+                        db, context.chat_id, thread_id=context.thread_id
+                    )
+                return await self._handle_command(context, db)
+
+            binding_bot = (context.chat_binding.bot_username or "").lower().lstrip("@")
+            if (
+                context.is_bot_sender
+                and binding_bot
+                and context.bot_username == binding_bot
+                and await self._bot_message_targets_profile(context, storage)
+            ):
+                reply_text = await self._get_reply_message_text(context, storage)
+                if reply_text and reply_text not in {
+                    fanren_game.FANREN_CHECK_COMMAND,
+                    fanren_game.FANREN_NORMAL_COMMAND,
+                    fanren_game.FANREN_DEEP_COMMAND,
+                    ".强行出关",
+                }:
+                    return False
+                stored_reply_message = self._get_stored_reply_message(context, storage)
+                reply_message_id = context.reply_to_msg_id or int(
+                    (stored_reply_message or {}).get("message_id") or 0
+                )
+                parsed = await fanren_game.handle_bot_message(
+                    context.event, db, client=context.client
+                )
+                if parsed is not None:
+                    session = fanren_game.get_session(db, context.chat_id)
+                    await fanren_game.maybe_delete_normal_command_message(
+                        context.event,
+                        session,
+                        context.client,
+                        reply_text,
+                        reply_message_id=reply_message_id or None,
+                    )
+                    if context.profile and context.chat_id is not None:
+                        try:
+                            sync_cultivation_session(
+                                storage, context.profile.id, context.chat_id, db
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Cultivation API sync failed in chat %s: %s",
+                                context.chat_id,
+                                exc,
+                            )
+                    self._record_result(context, storage, parsed.event)
+                return parsed is not None
+            return False
+        finally:
+            db.close()
+
+    def _record_result(
+        self, context: EventContext, storage: Storage, event_name: str
+    ) -> None:
+        if event_name not in {
+            "retreat_complete",
+            "deep_retreat_summary",
+            "retreat_setback",
+        }:
+            return
+        session_setting = context.get_setting("cultivation") or context.get_setting(
+            "basic"
+        )
+        gain_value = fanren_game.parse_gain_value(context.text)
+        stage_name, progress_text = fanren_game.extract_stage_progress(context.text)
+        mode = "normal"
+        if context.chat_id is not None:
+            db = SQLiteCompatDb(storage)
+            try:
+                session = fanren_game.get_session(db, context.chat_id)
+                mode = (
+                    (session.get("retreat_mode") or "normal") if session else "normal"
+                )
+            finally:
+                db.close()
+        elif (
+            session_setting
+            and session_setting.command_template == fanren_game.FANREN_CHECK_COMMAND
+        ):
+            mode = "deep"
+        storage.record_cultivation_result(
+            profile_id=context.profile.id if context.profile else None,
+            chat_id=context.chat_id or 0,
+            mode=mode,
+            event=event_name,
+            gain_value=gain_value,
+            stage_name=stage_name,
+            progress_text=progress_text,
+            summary=fanren_game.parse_message(context.text).summary,
+            raw_text=context.text,
+        )
+
+    async def _handle_command(self, context: EventContext, db: SQLiteCompatDb) -> bool:
+        parts = context.text.split(maxsplit=2)
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        payload = parts[2].strip() if len(parts) > 2 else ""
+        chat_id = context.chat_id
+        if chat_id is None:
+            return False
+
+        setting = context.get_setting("cultivation") or context.get_setting("basic")
+        if setting:
+            fanren_game.set_interval(db, chat_id, setting.check_interval_seconds)
+            if setting.command_template:
+                fanren_game.set_check_command(db, chat_id, setting.command_template)
+
+        if action == "on":
+            if payload in {"normal", "deep"}:
+                fanren_game.set_mode(db, chat_id, payload)
+            if context.profile:
+                sync_cultivation_session(storage, context.profile.id, chat_id, db)
+            fanren_game.set_enabled(db, chat_id, True, reset_failure=True)
+            session = fanren_game.get_session(db, chat_id)
+            await context.reply(
+                f"凡人修仙自动化已开启，当前模式为 {'深度闭关' if session.get('retreat_mode') == 'deep' else '普通闭关'}，将按接口冷却时间自动调度。"
+            )
+            return True
+        if action == "off":
+            fanren_game.set_enabled(db, chat_id, False)
+            await context.reply("凡人修仙自动化已关闭。")
+            return True
+        if action == "status":
+            session = fanren_game.get_session(db, chat_id)
+            await context.reply(fanren_game.build_status_text(session))
+            return True
+        if action == "dry-run":
+            enabled = payload.lower() == "on"
+            fanren_game.set_dry_run(db, chat_id, enabled)
+            await context.reply(f"凡人修仙 dry-run 已{'开启' if enabled else '关闭'}。")
+            return True
+        if action == "interval":
+            try:
+                interval_seconds = fanren_game.parse_interval_input(payload)
+            except ValueError as exc:
+                await context.reply(f"设置失败: {exc}")
+                return True
+            fanren_game.set_interval(db, chat_id, interval_seconds)
+            await context.reply(
+                f"凡人修仙检查间隔已设置为 {fanren_game.format_duration(interval_seconds)}。"
+            )
+            return True
+        if action == "check":
+            try:
+                check_command = fanren_game.set_check_command(db, chat_id, payload)
+            except ValueError as exc:
+                await context.reply(f"设置失败: {exc}")
+                return True
+            await context.reply(f"凡人修仙检查指令已设置为: {check_command}")
+            return True
+        if action == "mode":
+            try:
+                retreat_mode = fanren_game.set_mode(db, chat_id, payload)
+            except ValueError as exc:
+                await context.reply(f"设置失败: {exc}")
+                return True
+            if context.profile:
+                sync_cultivation_session(storage, context.profile.id, chat_id, db)
+            await context.reply(
+                f"凡人修仙模式已设置为 {'深度闭关' if retreat_mode == 'deep' else '普通闭关'}，将按接口冷却时间自动调度。"
+            )
+            return True
+        if action == "run":
+            if context.profile:
+                sync_cultivation_session(storage, context.profile.id, chat_id, db)
+            _ok, status = await fanren_game.maybe_send_check(
+                context.client, db, chat_id, force=False
+            )
+            await context.reply(f"执行结果: {status}")
+            return True
+        if action == "reset":
+            fanren_game.reset_failures(db, chat_id)
+            await context.reply("凡人修仙失败计数已重置。")
+            return True
+
+        await context.reply(
+            "用法: .fanren status|on [normal|deep]|off|mode normal|deep|dry-run on|off|interval 5m|check 指令|run|reset"
+        )
+        return True
+
+
+class SectExecutor(BaseExecutor):
+    key = "sect"
+
+    def __init__(self) -> None:
+        self._runner_started = False
+
+    def _reply_matches_whitelist(self, reply_text: str, feature_key: str) -> bool:
+        reply_text = (reply_text or "").strip()
+        if not reply_text:
+            return False
+        for command in SECT_FEATURE_REPLY_WHITELISTS.get(feature_key, set()):
+            if reply_text == command or reply_text.startswith(f"{command} "):
+                return True
+        return False
+
+    async def startup(self, client: object, storage: Storage) -> None:
+        if self._runner_started:
+            return
+        self._runner_started = True
+        db = SQLiteCompatDb(storage)
+        sect_game.ensure_tables(db)
+        db.close()
+        asyncio.create_task(sect_game.runner(client, storage))
+        logger.info("Sect executor runner started")
+
+    async def handle(self, context: EventContext, storage: Storage) -> bool:
+        if not context.chat_binding:
+            return False
+
+        db = SQLiteCompatDb(storage)
+        try:
+            if context.text.startswith(".sect") and context.is_profile_owner():
+                if context.profile:
+                    storage.set_chat_binding_thread_id(
+                        context.profile.id, context.chat_id, context.thread_id
+                    )
+                    sect_game.update_session(
+                        db, context.chat_id, thread_id=context.thread_id
+                    )
+                return await self._handle_command(context, db)
+
+            binding_bot = (context.chat_binding.bot_username or "").lower().lstrip("@")
+            if (
+                context.is_bot_sender
+                and binding_bot
+                and context.bot_username == binding_bot
+                and await self._bot_message_targets_profile(context, storage)
+            ):
+                preview_parsed = sect_game.parse_message(context.text)
+                reply_text = await self._get_reply_message_text(context, storage)
+                if reply_text:
+                    if (
+                        preview_parsed.get("event")
+                        in {
+                            "sect_panel",
+                            "sect_panel_pending",
+                            "sect_info",
+                        }
+                        and reply_text != ".我的宗门"
+                    ):
+                        return False
+                    if (
+                        preview_parsed.get("event") == "lingxiao_step"
+                        and reply_text != ".登天阶"
+                    ):
+                        return False
+                parsed = await sect_game.handle_bot_message(
+                    context.event, db, client=context.client
+                )
+                if parsed is not None:
+                    return True
+                return parsed is not None
+            return False
+        finally:
+            db.close()
+
+    async def _handle_command(self, context: EventContext, db: SQLiteCompatDb) -> bool:
+        parts = context.text.split(maxsplit=2)
+        action = parts[1].lower() if len(parts) > 1 else "status"
+        payload = parts[2].strip() if len(parts) > 2 else ""
+        chat_id = context.chat_id
+        if chat_id is None:
+            return False
+
+        setting = context.get_setting("sect") or context.get_setting("basic")
+        if setting:
+            sect_game.set_interval(db, chat_id, setting.check_interval_seconds)
+            if setting.command_template:
+                sect_game.set_check_command(db, chat_id, setting.command_template)
+
+        if action == "on":
+            sect_game.set_enabled(db, chat_id, True)
+            await context.reply("宗门模块已开启。")
+            return True
+        if action == "off":
+            sect_game.set_enabled(db, chat_id, False)
+            await context.reply("宗门模块已关闭。")
+            return True
+        if action == "status":
+            session = sect_game.get_session(db, chat_id)
+            await context.reply(sect_game.build_status_text(session))
+            return True
+        if action == "dry-run":
+            enabled = payload.lower() == "on"
+            sect_game.set_dry_run(db, chat_id, enabled)
+            await context.reply(f"宗门 dry-run 已{'开启' if enabled else '关闭'}。")
+            return True
+        if action == "interval":
+            try:
+                interval_seconds = fanren_game.parse_interval_input(payload)
+            except ValueError as exc:
+                await context.reply(f"设置失败: {exc}")
+                return True
+            sect_game.set_interval(db, chat_id, interval_seconds)
+            await context.reply(
+                f"宗门检查间隔已设置为 {fanren_game.format_duration(interval_seconds)}。"
+            )
+            return True
+        if action == "check":
+            try:
+                check_command = sect_game.set_check_command(db, chat_id, payload)
+            except ValueError as exc:
+                await context.reply(f"设置失败: {exc}")
+                return True
+            await context.reply(f"宗门查询指令已设置为: {check_command}")
+            return True
+        if action == "panel":
+            _ok, status, _msg_id = await sect_game.maybe_send_check(
+                context.client, db, chat_id, force=True, command_text=".我的宗门"
+            )
+            await context.reply(f"执行结果: {status}")
+            return True
+        if action == "sign":
+            _ok, status, _msg_id = await sect_game.maybe_send_check(
+                context.client, db, chat_id, force=True, command_text=".宗门点卯"
+            )
+            await context.reply(f"执行结果: {status}")
+            return True
+        if action == "teach":
+            _ok, status, _msg_id = await sect_game.maybe_send_check(
+                context.client, db, chat_id, force=True, command_text=".宗门传功"
+            )
+            await context.reply(f"执行结果: {status}")
+            return True
+        if action == "bounty":
+            _ok, status, _msg_id = await sect_game.maybe_send_check(
+                context.client, db, chat_id, force=True, command_text=".宗门悬赏"
+            )
+            await context.reply(f"执行结果: {status}")
+            return True
+        if action == "submit":
+            if not payload:
+                await context.reply("用法: .sect submit 问候")
+                return True
+            _ok, status, _msg_id = await sect_game.maybe_send_check(
+                context.client,
+                db,
+                chat_id,
+                force=True,
+                command_text=f".提交任务 {payload}",
+            )
+            await context.reply(f"执行结果: {status}")
+            return True
+        if action == "hf":
+            return await self._handle_huangfeng_command(context, db, payload)
+        if action == "xg":
+            return await self._handle_xingong_command(context, db, payload)
+        if action == "lx":
+            return await self._handle_lingxiao_command(context, db, payload)
+        if action == "ty":
+            return await self._handle_taiyi_command(context, db, payload)
+        if action == "wl":
+            return await self._handle_wanling_command(context, db, payload)
+        if action == "ly":
+            return await self._handle_simple_feature_command(
+                context,
+                db,
+                payload,
+                {
+                    "status": ".灵树状态",
+                    "water": ".灵树灌溉",
+                    "guard": ".协同守山",
+                    "harvest": ".采摘灵果",
+                },
+                "用法: .sect ly status|water|guard|harvest",
+            )
+        if action == "yl":
+            return await self._handle_simple_feature_command(
+                context,
+                db,
+                payload,
+                {
+                    "banner": ".我的阴罗幡",
+                    "upgrade": ".升级阴罗幡",
+                    "daily": ".每日献祭",
+                    "convert": ".化功为煞",
+                    "hunt": ".血洗山林",
+                    "summon": ".召唤魔影",
+                    "prison": ".囚禁魂魄",
+                    "soothe": ".安抚幡灵",
+                    "collect": ".收取精华",
+                    "curse": ".下咒",
+                    "reap": ".收割",
+                },
+                "用法: .sect yl banner|upgrade|daily|convert|hunt|summon|prison|soothe|collect|curse|reap",
+            )
+        if action == "yy":
+            return await self._handle_simple_feature_command(
+                context,
+                db,
+                payload,
+                {
+                    "status": ".元婴状态",
+                    "trip": ".元婴出窍",
+                    "retreat": ".元婴闭关",
+                    "return": ".元婴归窍",
+                    "seek": ".问道",
+                    "skill": ".参悟功法",
+                },
+                "用法: .sect yy status|trip|retreat|return|seek|skill",
+            )
+        if action == "hh":
+            return await self._handle_simple_feature_command(
+                context,
+                db,
+                payload,
+                {
+                    "dual": ".闭关双修",
+                    "contract": ".缔结同参",
+                    "warm": ".双修 温养",
+                    "mark": ".种下心印",
+                    "harvest": ".双修 采补",
+                    "break": ".挣脱心印",
+                    "seal": ".结印",
+                },
+                "用法: .sect hh dual|contract|warm|mark|harvest|break|seal",
+            )
+        if action == "run":
+            _ok, status, _msg_id = await sect_game.maybe_send_check(
+                context.client, db, chat_id, force=True
+            )
+            await context.reply(f"执行结果: {status}")
+            return True
+
+        await context.reply(
+            "用法: .sect status|on|off|dry-run on|off|interval 30m|check 指令|panel|sign|teach|bounty|submit 内容|hf/xg/lx/ty/wl/ly/yl/yy/hh 子命令|run"
+        )
+        return True
+
+    async def _handle_simple_feature_command(
+        self,
+        context: EventContext,
+        db: SQLiteCompatDb,
+        payload: str,
+        action_map: dict,
+        usage: str,
+    ) -> bool:
+        chat_id = context.chat_id
+        if chat_id is None:
+            return False
+        action = (payload or "").strip().lower()
+        command_text = action_map.get(action)
+        if not command_text:
+            await context.reply(usage)
+            return True
+        _ok, status, _msg_id = await sect_game.maybe_send_check(
+            context.client, db, chat_id, force=True, command_text=command_text
+        )
+        await context.reply(f"执行结果: {status}")
+        return True
+
+
+class GeneralGameExecutor(BaseExecutor):
+    key = "game"
+
+    def __init__(self) -> None:
+        self._runner_started = False
+        self._parsers = [
+            ("basic", basic_game.parse_message),
+            ("breakthrough", breakthrough_game.parse_message),
+            ("battle", battle_feature_game.parse_message),
+            ("inventory", inventory_feature_game.parse_message),
+            ("artifact", artifact_game.parse_message),
+            ("estate", estate_game.parse_message),
+            ("companion", companion_game.parse_message),
+            ("dungeon", dungeon_feature_game.parse_message),
+            ("market", market_trade_game.parse_message),
+            ("stock", stock_trade_game.parse_message),
+            ("diplomacy", diplomacy_game.parse_message),
+            ("shop", shop_game.parse_message),
+        ]
+
+    async def startup(self, client: object, storage: Storage) -> None:
+        if self._runner_started:
+            return
+        self._runner_started = True
+        return
+
+    async def handle(self, context: EventContext, storage: Storage) -> bool:
+        if context.text.strip() == ".chatid" and context.is_profile_owner():
+            binding_ref = (
+                f"{context.chat_id}_{context.thread_id}"
+                if context.thread_id
+                else f"{context.chat_id}"
+            )
+            await context.reply(
+                "\n".join(
+                    [
+                        "当前聊天信息",
+                        f"绑定 ID: {binding_ref}",
+                        f"Chat ID: {context.chat_id}",
+                        f"Thread ID: {context.thread_id or '无'}",
+                        f"类型: {'私聊' if context.is_private else '群组/频道'}",
+                        f"发送者 ID: {context.sender_id}",
+                        f"线程状态: {'话题线程' if context.thread_id else '主会话'}",
+                    ]
+                )
+            )
+            return True
+        if not context.chat_binding:
+            return False
+
+        await self._maybe_advance_divination_batch(context, storage)
+
+        if context.is_bot_sender and await self._bot_message_targets_profile(
+            context, storage
+        ):
+            for module_key, parser in self._parsers:
+                parsed = parser(context.text)
+                if parsed is not None:
+                    if module_key == "basic" and parsed.get("event") in {
+                        "basic_profile",
+                        "basic_profile_pending",
+                    }:
+                        continue
+                    if (
+                        module_key == "battle"
+                        and parsed.get("event") == "battle_profile"
+                    ):
+                        continue
+                    if (
+                        module_key == "artifact"
+                        and parsed.get("event") == "artifact_status_profile"
+                    ):
+                        continue
+                    return True
+        return False
+
+    async def _maybe_advance_divination_batch(
+        self, context: EventContext, storage: Storage
+    ) -> None:
+        if not context.profile or context.chat_id is None:
+            return
+        batch = storage.get_active_divination_batch(context.profile.id, context.chat_id)
+        if not batch:
+            return
+
+        pending_command_msg_id = int(batch.get("pending_command_msg_id") or 0)
+        current_message = (
+            storage.get_bound_message(context.chat_id, context.message_id)
+            if context.message_id
+            else None
+        )
+        planned_rounds = max(
+            int(batch.get("target_count") or 0) - int(batch.get("initial_count") or 0),
+            0,
+        )
+        if await self._maybe_resume_idle_divination_batch(
+            context, storage, batch, planned_rounds
+        ):
+            return
+
+        if context.is_outgoing:
+            if context.text.strip() != DIVINATION_COMMAND or not context.message_id:
+                return
+            if pending_command_msg_id:
+                return
+            sent_count = min(int(batch.get("sent_count") or 0) + 1, planned_rounds)
+            storage.update_divination_batch(
+                int(batch["id"]),
+                thread_id=context.thread_id or batch.get("thread_id"),
+                sent_count=sent_count,
+                pending_command_msg_id=int(context.message_id),
+            )
+            return
+
+        message_is_bot = context.is_bot_sender or bool(
+            (current_message or {}).get("is_bot")
+        )
+        if not message_is_bot:
+            return
+        binding_bot = (context.chat_binding.bot_username or "").lower().lstrip("@")
+        effective_bot_username = context.bot_username or str(
+            (current_message or {}).get("sender_username") or ""
+        ).strip().lower().lstrip("@")
+        if (
+            binding_bot
+            and effective_bot_username
+            and effective_bot_username != binding_bot
+        ):
+            return
+        reply_message = current_message
+        if pending_command_msg_id:
+            stored_reply_message = storage.get_latest_bot_reply_message(
+                context.chat_id, pending_command_msg_id
+            )
+            if (
+                stored_reply_message
+                and int((reply_message or {}).get("reply_to_msg_id") or 0)
+                != pending_command_msg_id
+            ):
+                reply_message = stored_reply_message
+        reply_to_msg_id = int(
+            (reply_message or {}).get("reply_to_msg_id") or context.reply_to_msg_id or 0
+        )
+        if not pending_command_msg_id or reply_to_msg_id != pending_command_msg_id:
+            return
+
+        completed_count = min(
+            int(batch.get("completed_count") or 0) + 1, planned_rounds
+        )
+        if completed_count >= planned_rounds:
+            storage.update_divination_batch(
+                int(batch["id"]),
+                completed_count=completed_count,
+                pending_command_msg_id=0,
+            )
+            storage.finish_divination_batch(int(batch["id"]), status="completed")
+            return
+
+        storage.update_divination_batch(
+            int(batch["id"]),
+            completed_count=completed_count,
+            pending_command_msg_id=0,
+        )
+        storage.enqueue_outgoing_command(
+            profile_id=context.profile.id,
+            chat_id=int(batch.get("chat_id") or context.chat_id),
+            text=DIVINATION_COMMAND,
+            thread_id=int(batch.get("thread_id")) if batch.get("thread_id") else None,
+            chat_type=str(batch.get("chat_type") or "group"),
+            bot_username=str(batch.get("bot_username") or ""),
+        )
+
+    async def _maybe_resume_idle_divination_batch(
+        self,
+        context: EventContext,
+        storage: Storage,
+        batch: dict,
+        planned_rounds: int,
+    ) -> bool:
+        if planned_rounds <= 0:
+            storage.finish_divination_batch(int(batch["id"]), status="completed")
+            return True
+
+        pending_command_msg_id = int(batch.get("pending_command_msg_id") or 0)
+        if pending_command_msg_id:
+            return False
+
+        completed_count = max(int(batch.get("completed_count") or 0), 0)
+        if completed_count >= planned_rounds:
+            storage.finish_divination_batch(int(batch["id"]), status="completed")
+            return True
+
+        thread_id = int(batch.get("thread_id")) if batch.get("thread_id") else None
+        latest_command = storage.get_latest_outgoing_command(
+            int(batch.get("chat_id") or context.chat_id),
+            profile_id=context.profile.id,
+            text=DIVINATION_COMMAND,
+            thread_id=thread_id,
+        )
+        if latest_command:
+            latest_status = str(latest_command.get("status") or "").strip()
+            latest_updated_at = float(latest_command.get("updated_at") or 0)
+            batch_updated_at = float(batch.get("updated_at") or 0)
+            if latest_status in {"pending", "sending"}:
+                return True
+            if latest_status == "sent" and latest_updated_at >= batch_updated_at:
+                return True
+
+        storage.enqueue_outgoing_command(
+            profile_id=context.profile.id,
+            chat_id=int(batch.get("chat_id") or context.chat_id),
+            text=DIVINATION_COMMAND,
+            thread_id=thread_id,
+            chat_type=str(batch.get("chat_type") or "group"),
+            bot_username=str(batch.get("bot_username") or ""),
+        )
+        return True
+
+    async def _send(self, context: EventContext, command_text: str) -> bool:
+        await send_message_with_thread_fallback(
+            context.client,
+            context.chat_id,
+            command_text,
+            thread_id=context.thread_id,
+            storage=None,
+            profile_id=context.profile.id if context.profile else None,
+            bot_username=(
+                context.chat_binding.bot_username if context.chat_binding else ""
+            ),
+            log_prefix="Runtime executor",
+        )
+        await context.reply(f"执行结果: sent `{command_text}`")
+        return True
+
+    async def _handle_huangfeng_command(
+        self, context: EventContext, db: SQLiteCompatDb, payload: str
+    ) -> bool:
+        chat_id = context.chat_id
+        if chat_id is None:
+            return False
+        parts = (payload or "").split(maxsplit=2)
+        action = parts[0].lower() if parts else ""
+        command_text = None
+        if action == "garden":
+            command_text = ".小药园"
+        elif action == "sow" and len(parts) >= 3:
+            command_text = f".播种 {parts[1]} {parts[2]}"
+        elif action == "harvest" and len(parts) >= 2:
+            command_text = f".采药 {parts[1]}"
+        elif action == "weed" and len(parts) >= 2:
+            command_text = f".除草 {parts[1]}"
+        elif action == "bug" and len(parts) >= 2:
+            command_text = f".除虫 {parts[1]}"
+        elif action == "water" and len(parts) >= 2:
+            command_text = f".浇水 {parts[1]}"
+        elif action == "expand":
+            command_text = ".扩建药园"
+        if not command_text:
+            await context.reply(
+                "用法: .sect hf garden|sow 地块 种子|harvest 地块|weed 地块|bug 地块|water 地块|expand"
+            )
+            return True
+        _ok, status, _msg_id = await sect_game.maybe_send_check(
+            context.client, db, chat_id, force=True, command_text=command_text
+        )
+        await context.reply(f"执行结果: {status}")
+        return True
+
+    async def _handle_taiyi_command(
+        self, context: EventContext, db: SQLiteCompatDb, payload: str
+    ) -> bool:
+        chat_id = context.chat_id
+        if chat_id is None:
+            return False
+        parts = (payload or "").split(maxsplit=1)
+        action = parts[0].lower() if parts else ""
+        argument = parts[1] if len(parts) > 1 else ""
+        command_text = None
+        if action == "guide":
+            if argument not in {"金", "木", "水", "火", "土"}:
+                await context.reply("用法: .sect ty guide 金|木|水|火|土")
+                return True
+            command_text = f".引道 {argument}"
+        elif action == "shock":
+            command_text = ".神识冲击"
+        if not command_text:
+            await context.reply("用法: .sect ty guide 金|木|水|火|土|shock")
+            return True
+        _ok, status, _msg_id = await sect_game.maybe_send_check(
+            context.client, db, chat_id, force=True, command_text=command_text
+        )
+        await context.reply(f"执行结果: {status}")
+        return True
+
+    async def _handle_wanling_command(
+        self, context: EventContext, db: SQLiteCompatDb, payload: str
+    ) -> bool:
+        chat_id = context.chat_id
+        if chat_id is None:
+            return False
+        parts = (payload or "").split(maxsplit=2)
+        action = parts[0].lower() if parts else ""
+        command_text = None
+        if action == "search":
+            command_text = ".寻觅灵兽"
+        elif action == "status":
+            command_text = ".我的灵兽"
+        elif action == "feed" and len(parts) >= 3:
+            command_text = f".喂养 {parts[1]} {parts[2]}"
+        elif action == "battle" and len(parts) >= 2:
+            command_text = f".灵兽出战 {parts[1]}"
+        elif action == "rest":
+            command_text = ".灵兽休息"
+        elif action == "farm":
+            command_text = ".一键放养"
+        elif action == "steal":
+            command_text = ".灵兽偷菜"
+        elif action == "abyss":
+            command_text = ".探渊"
+        if not command_text:
+            await context.reply(
+                "用法: .sect wl search|status|feed 灵兽 物品*数量|battle 灵兽|rest|farm|steal|abyss"
+            )
+            return True
+        _ok, status, _msg_id = await sect_game.maybe_send_check(
+            context.client, db, chat_id, force=True, command_text=command_text
+        )
+        await context.reply(f"执行结果: {status}")
+        return True
+
+    async def _handle_lingxiao_command(
+        self, context: EventContext, db: SQLiteCompatDb, payload: str
+    ) -> bool:
+        chat_id = context.chat_id
+        if chat_id is None:
+            return False
+        action = (payload or "").strip().lower()
+        command_text = None
+        if action == "status":
+            command_text = ".天阶状态"
+        elif action == "mind":
+            command_text = ".问心台"
+        elif action == "step":
+            command_text = ".登天阶"
+        elif action == "wind":
+            command_text = ".引九天罡风"
+        elif action == "gate":
+            command_text = ".借天门势"
+        elif action == "overview":
+            command_text = ".凌霄宫"
+        if not command_text:
+            await context.reply("用法: .sect lx overview|status|mind|step|wind|gate")
+            return True
+        _ok, status, _msg_id = await sect_game.maybe_send_check(
+            context.client, db, chat_id, force=True, command_text=command_text
+        )
+        await context.reply(f"执行结果: {status}")
+        return True
+
+    async def _handle_xingong_command(
+        self, context: EventContext, db: SQLiteCompatDb, payload: str
+    ) -> bool:
+        chat_id = context.chat_id
+        if chat_id is None:
+            return False
+        parts = payload.split(maxsplit=2)
+        if not parts:
+            await context.reply(
+                "用法: .sect xg matrix|assist|starboard|pull 编号 星辰|collect 编号|soothe 编号|divine|shift @目标|companion"
+            )
+            return True
+        action = parts[0].lower()
+        command_text = None
+        if action == "matrix":
+            command_text = ".启阵"
+        elif action == "assist":
+            command_text = ".助阵"
+        elif action == "starboard":
+            command_text = ".观星台"
+        elif action == "pull" and len(parts) >= 3:
+            command_text = f".牵引星辰 {parts[1]} {parts[2]}"
+        elif action == "collect" and len(parts) >= 2:
+            command_text = f".收集精华 {parts[1]}"
+        elif action == "soothe" and len(parts) >= 2:
+            command_text = f".安抚星辰 {parts[1]}"
+        elif action == "divine":
+            command_text = ".观星"
+        elif action == "shift" and len(parts) >= 2:
+            command_text = f".改换星移 {parts[1]}"
+        elif action == "companion":
+            command_text = ".我的侍妾"
+        if not command_text:
+            await context.reply(
+                "用法: .sect xg matrix|assist|starboard|pull 编号 星辰|collect 编号|soothe 编号|divine|shift @目标|companion"
+            )
+            return True
+        _ok, status, _msg_id = await sect_game.maybe_send_check(
+            context.client, db, chat_id, force=True, command_text=command_text
+        )
+        await context.reply(f"执行结果: {status}")
+        return True

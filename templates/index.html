@@ -1,0 +1,149 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="hero">
+    <div>
+        <p class="eyebrow">Tianji Control Center</p>
+        <h1>阵法总览 · 万象尽收</h1>
+        <p class="hero-text">
+            纵览大千世界，洞察角色因果。此处乃自动修仙机枢，各堂口运转之源。
+        </p>
+    </div>
+    <div class="hero-panel">
+        <div class="stat">
+            <span>当前入阵修士</span>
+            <strong>{{ active_profile.name if active_profile else '未有凡人踏足' }}</strong>
+        </div>
+        <div class="stat">
+            <span>神识附身群落</span>
+            <strong>{{ chats | length }} 处秘境</strong>
+        </div>
+        <div class="stat">
+            <span>天机阁玉简状态</span>
+            <strong>{% if external_account and external_account.status == 'connected' %}灵气充盈 (已连接){% elif external_account and external_account.status == 'expired' %}灵气枯竭 (会话失效){% elif external_account and external_account.status == 'logged_out' %}闭关中 (已退出){% elif external_account %}阵法异常{% else %}玉简未激活{% endif %}</strong>
+        </div>
+    </div>
+</section>
+
+<section class="workspace-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>修士道果</p>
+            <h2>本命元神与修为</h2>
+        </div>
+        {% if active_profile %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>道号</span><strong>{{ active_profile.display_name or active_profile.game_name or active_profile.name }}</strong></div>
+            <div class="kv-row"><span>当前境界</span><strong>{{ active_profile.stage_name or '未踏足' }}</strong></div>
+            <div class="kv-row"><span>修为进度</span><strong>{{ active_profile.cultivation_text or '未踏足' }}</strong></div>
+            <div class="kv-row"><span>识海广度</span><strong>{{ character_state.shenshi_points }} 缕</strong></div>
+            <div class="kv-row"><span>灵根资质</span><strong>{{ active_profile.spirit_root or '未卜' }}</strong></div>
+            <div class="kv-row"><span>本命法宝</span><strong>{{ active_profile.artifact_text or '赤手空拳' }}</strong></div>
+        </div>
+        <div class="action-row top-gap">
+            <a class="button" href="/modules/cultivation">踏入修炼洞府</a>
+        </div>
+        {% else %}
+        <p class="muted">尚未凝结元神，请先通灵 Telegram 并创建角色。</p>
+        {% endif %}
+    </div>
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>天机推演</p>
+            <h2>最近闭关推演记录</h2>
+        </div>
+        <div class="stack-list">
+            {% for result in cultivation_results[:3] %}
+            <div class="list-item result-record-card" style="background: rgba(212, 175, 55, 0.02); border-color: rgba(212, 175, 55, 0.1);">
+                <div class="result-record-head">
+                    <strong style="color: var(--accent-gold);">{{ result.mode_label }}</strong>
+                    <span class="muted">{{ format_timestamp(result.created_at) }}</span>
+                </div>
+                <div class="result-record-row result-gain-row">
+                    <span class="result-record-label">纳气</span>
+                    <strong class="result-record-value" style="color: var(--accent-gold);">{{ result.gain_text }}</strong>
+                </div>
+                <div class="result-record-row">
+                    <span class="result-record-label">【仙缘奇遇】</span>
+                    <strong class="result-record-value multiline-value" style="color: var(--accent-gold);">{{ '风平浪静' if result.adventure_summary == '无奇遇信息' else result.adventure_summary }}</strong>
+                </div>
+                <div class="result-record-row">
+                    <span class="result-record-label">道行</span>
+                    <strong class="result-record-value">{{ result.stage_display }}</strong>
+                </div>
+                <div class="result-record-row">
+                    <span class="result-record-label">法力源泉</span>
+                    <strong class="result-record-value">{{ result.progress_display }}</strong>
+                </div>
+            </div>
+            {% else %}
+            <p class="muted">天机盘未曾转动，近十二时辰内无闭关演化。</p>
+            {% endfor %}
+        </div>
+        <div class="action-row top-gap">
+            <a class="button" href="/modules/cultivation">翻阅天机历</a>
+        </div>
+    </div>
+</section>
+
+<section class="workspace-grid">
+    <div class="detail-card" style="grid-column: 1 / -1;">
+        <div class="section-header compact">
+            <p>仙门玉牒</p>
+            <h2>宗门大殿状态</h2>
+        </div>
+        {% if active_profile and active_profile.sect_name %}
+        <div class="detail-grid three-column-grid" style="margin-bottom: 0;">
+            <div class="stack-list compact-stack">
+                <div class="kv-row"><span>仙门归属</span><strong style="color: var(--accent-cyan);">{{ active_profile.sect_name }}</strong></div>
+                <div class="kv-row"><span>尊位</span><strong style="color: var(--accent-gold);">{{ active_profile.sect_position or '外门' }}</strong></div>
+                <div class="kv-row"><span>阵法加持</span><strong>{{ (active_profile.sect_bonus_text ~ '%') if active_profile.sect_bonus_text else '无' }}</strong></div>
+            </div>
+            <div class="stack-list compact-stack">
+                <div class="kv-row"><span>宗门底蕴</span><strong class="multiline-value" style="font-size: 11px;">{{ active_profile.sect_description or '一介草根' }}</strong></div>
+                <div class="kv-row"><span>仙门贡献</span><strong class="contribution-action">{{ active_profile.sect_contribution_text or '0' }}<button type="button" class="inline-button small-btn" onclick="openSectExchangeModal()" {% if not command_chat_ready or not (sect_treasury_items or []) %}disabled{% endif %}>宝库兑换</button></strong></div>
+            </div>
+            <div class="stack-list compact-stack">
+                <div class="kv-row"><span>镇派绝学</span><strong style="color: var(--accent-purple);">{{ current_sect_feature.name if current_sect_feature else '未窥门径' }}</strong></div>
+                {% if sect_session and current_sect_feature and current_sect_feature.name == '凌霄宫' %}
+                <div class="kv-row"><span>云阶大阵</span><strong style="color: var(--accent-jade);">{{ '阵法运转中' if sect_session.auto_lingxiao_enabled else '阵眼闭合' }}</strong></div>
+                <div class="kv-row"><span>下次登阶</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(sect_session.lingxiao_next_check_time) }}</strong></div>
+                {% elif sect_session %}
+                <div class="kv-row"><span>阵法回音</span><strong style="font-size: 11px;">{{ sect_session.last_summary or '未闻仙音' }}</strong></div>
+                {% endif %}
+            </div>
+        </div>
+        <div class="action-row top-gap">
+            <a class="button" href="/modules/sect">步入宗门大殿</a>
+        </div>
+        {% else %}
+        <p class="muted">未入仙门，如无根浮萍。请至「角色真身」重塑神识链接。</p>
+        {% endif %}
+    </div>
+</section>
+
+<section class="section-header">
+    <p>诸界阵眼</p>
+    <h2>万象枢纽与三千世界</h2>
+</section>
+
+<section class="card-grid">
+    {% for module in modules %}
+    <div class="card" style="background: linear-gradient(135deg, rgba(16, 21, 31, 0.8), rgba(22, 28, 40, 0.5));">
+        <div class="card-head">
+            <span class="pill">{{ module.status }}</span>
+            <a href="/modules/{{ module.key }}"><strong style="color: var(--accent-cyan); letter-spacing: 2px;">{{ module.name }}</strong></a>
+        </div>
+        <p style="color: var(--text-secondary); font-size: 13px;">{{ module.summary }}</p>
+        <ul style="border-top: 1px dashed var(--border-color); padding-top: 12px; margin-top: 16px;">
+            {% for item in module.capabilities[:3] %}
+            <li style="font-size: 12px; list-style-type: square; color: var(--text-muted);">{{ item }}</li>
+            {% endfor %}
+        </ul>
+        <div class="action-row top-gap">
+            <a class="button" href="/modules/{{ module.key }}" style="width: 100%;">催动阵法</a>
+        </div>
+    </div>
+    {% endfor %}
+</section>
+{% endblock %}

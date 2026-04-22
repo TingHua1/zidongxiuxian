@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block content %}
+<section class="section-header">
+    <p>消息记录</p>
+    <h1>bound_messages</h1>
+    <p class="hero-text">查看绑定聊天中已持久化的命令与回复链，重点观察 message_id、reply_to_msg_id 和编辑后的最终文本。</p>
+</section>
+
+<section class="detail-card">
+    <form class="form-grid" method="get" action="/messages">
+        <label>
+            绑定聊天
+            <select name="chat_id">
+                <option value="">全部</option>
+                {% for chat in chats %}
+                <option value="{{ chat.chat_id }}" {% if selected_chat_id == chat.chat_id %}selected{% endif %}>{{ chat.chat_id }}{% if chat.thread_id %}_{{ chat.thread_id }}{% endif %}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>
+            条数
+            <input name="limit" type="number" min="20" max="500" value="{{ limit }}">
+        </label>
+        <label class="full-span">
+            模糊搜索
+            <input name="q" type="text" value="{{ search_query or '' }}" placeholder="按消息内容或发送者搜索">
+        </label>
+        <div class="full-span action-row">
+            <button class="inline-button" type="submit">刷新记录</button>
+        </div>
+    </form>
+</section>
+
+<section class="detail-card">
+    <div class="section-header compact">
+        <p>持久化消息</p>
+        <h2>{% if focused_message_id %}消息上下文 {{ messages|length }} 条{% else %}最近 {{ messages|length }} 条{% endif %}</h2>
+    </div>
+    {% if focused_message_id and selected_chat_id %}
+    <div class="action-row top-gap">
+        <span class="pill">当前定位消息 #{{ focused_message_id }}</span>
+        <a class="inline-link" href="/messages?chat_id={{ selected_chat_id }}&limit={{ limit }}{% if search_query_qs %}&q={{ search_query_qs }}{% endif %}">返回搜索结果</a>
+    </div>
+    <p class="muted top-gap">已按当前消息为中心加载同一聊天中的上下文，方便继续查看前后命令和回复链。</p>
+    {% endif %}
+    <div class="stack-list">
+        {% for message in messages %}
+        <div id="message-{{ message.message_id }}" class="list-item message-list-item{% if message.is_focused %} message-focus-card{% endif %}">
+            <div class="message-main">
+                <div class="action-row">
+                    <strong>#{{ message.message_id }}</strong>
+                    <span class="pill">{{ message.direction }}</span>
+                    <span class="pill">{{ 'bot' if message.is_bot else 'user' }}</span>
+                    {% if message.updated_at > message.created_at %}
+                    <span class="pill">edited</span>
+                    {% endif %}
+                </div>
+                <p class="message-meta">chat={{ message.chat_id }} / thread={{ message.thread_id or '-' }} / reply_to={{ message.reply_to_msg_id or '-' }} / sender={{ message.sender_username or message.sender_id or '-' }}</p>
+                {% if message.reply_preview %}
+                <p class="message-meta">回复命令: <code>{{ message.reply_preview }}</code></p>
+                {% endif %}
+                <pre class="message-text">{{ message.text or '' }}</pre>
+            </div>
+            <div class="action-row muted message-footer-actions">
+                <span>创建 {{ format_timestamp(message.created_at) }}</span>
+                <span>更新 {{ format_timestamp(message.updated_at) }}</span>
+                {% if search_query and not focused_message_id %}
+                <a class="inline-link" href="/messages?chat_id={{ message.chat_id }}&focus_msg_id={{ message.message_id }}&limit={{ limit }}{% if search_query_qs %}&q={{ search_query_qs }}{% endif %}#message-{{ message.message_id }}">查看上下文</a>
+                {% endif %}
+            </div>
+        </div>
+        {% else %}
+        <p class="muted">当前还没有已绑定消息。</p>
+        {% endfor %}
+    </div>
+</section>
+{% endblock %}
