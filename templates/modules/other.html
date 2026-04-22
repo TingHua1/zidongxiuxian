@@ -5,8 +5,8 @@
             <h2>卜卦与天机</h2>
         </div>
         <div class="stack-list">
-            <div class="kv-row"><span>今日已卜卦</span><strong>{{ divination_count_today }} 次</strong></div>
-            <div class="kv-row"><span>仙界声望</span><strong>{{ gambling_karma }}</strong></div>
+            <div class="kv-row"><span>今日已卜卦</span><strong>{{ other_play_state.divination_count_today }} 次</strong></div>
+            <div class="kv-row"><span>仙界声望</span><strong>{{ other_play_state.gambling_karma }}</strong></div>
         </div>
         
         <form class="top-gap" method="post" action="/runtime/commands/send-raw" id="wheel-bet-form">
