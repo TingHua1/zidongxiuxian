@@ -167,8 +167,9 @@ def _perform_json_get(path: str, cookie_text: str) -> Tuple[dict, int, str]:
 
 
 def get_cultivator(username: str, cookie_text: str) -> Tuple[dict, int, str]:
+    encoded_identifier = urllib.parse.quote((username or "").strip(), safe="")
     return _perform_json_get(
-        f"/api/cultivator/{(username or '').strip()}",
+        f"/api/cultivator/{encoded_identifier}",
         cookie_text,
     )
 

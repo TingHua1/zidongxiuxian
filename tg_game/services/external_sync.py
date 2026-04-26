@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from typing import Optional
 
@@ -139,18 +140,30 @@ def get_cultivator_username(profile) -> str:
     )
 
 
+def _normalize_name_like_candidate(value: object) -> str:
+    candidate = str(value or "").strip().lstrip("@")
+    if not candidate:
+        return ""
+    return re.sub(r"-\d{4,}$", "", candidate).strip()
+
+
 def get_cultivator_lookup_candidates(profile) -> list[str]:
     if not profile:
         return []
     candidates = []
     seen = set()
-    for raw_value in [
-        profile.telegram_username,
-        profile.account_name,
-        profile.game_name,
-        profile.display_name,
-    ]:
-        candidate = str(raw_value or "").strip().lstrip("@")
+    raw_candidates = [
+        (profile.telegram_username, False),
+        (profile.account_name, False),
+        (profile.game_name, True),
+        (profile.display_name, True),
+    ]
+    for raw_value, normalize_name in raw_candidates:
+        candidate = (
+            _normalize_name_like_candidate(raw_value)
+            if normalize_name
+            else str(raw_value or "").strip().lstrip("@")
+        )
         if not candidate or candidate in seen:
             continue
         seen.add(candidate)
