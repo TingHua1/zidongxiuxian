@@ -33,6 +33,32 @@
             <p>第一步</p>
             <h2>登录本地 Telegram 身份</h2>
         </div>
+        {% if session_profiles and session_profiles|length > 0 %}
+        <div class="stack-list compact-stack" style="margin-bottom: 16px;">
+            <div class="kv-row" style="border-bottom: none; padding-bottom: 0;">
+                <span style="font-weight: bold; color: var(--accent-gold);">已登录的 Telegram 身份</span>
+            </div>
+            {% for p in session_profiles %}
+            <div class="kv-row" style="align-items: center;">
+                <div style="display: flex; flex-direction: column; gap: 4px;">
+                    <strong style="{% if active_profile and active_profile.id == p.id %}color: var(--accent-gold);{% endif %}">
+                        {{ p.name }} {% if active_profile and active_profile.id == p.id %}(当前活跃){% endif %}
+                    </strong>
+                    <span style="font-size: 12px; color: var(--text-muted);">
+                        TG: {{ ('@' ~ p.telegram_username) if p.telegram_username else (p.telegram_user_id or '未绑定') }}
+                    </span>
+                </div>
+                {% if not active_profile or active_profile.id != p.id %}
+                <form method="post" action="/profiles/{{ p.id }}/switch" style="margin: 0;">
+                    <input type="hidden" name="redirect_to" value="/login">
+                    <button type="submit" class="inline-button small-btn">切换至此身份</button>
+                </form>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+        
         {% if has_telegram_session and telegram_account %}
         <div class="stack-list compact-stack">
             <div class="kv-row"><span>TG 账号</span><strong>{% if telegram_account.username %}@{{ telegram_account.username }}{% elif telegram_account.id %}{{ telegram_account.id }}{% else %}-{% endif %}</strong></div>
@@ -40,9 +66,25 @@
             <div class="kv-row"><span>TG 用户名</span><strong>{{ ('@' ~ telegram_account.username) if telegram_account.username else '-' }}</strong></div>
         </div>
         <p class="muted top-gap">TG 登录成功后会自动绑定到当前角色。</p>
-        <form class="top-gap" method="post" action="/auth/telegram/logout">
-            <button type="submit">退出 TG 登录</button>
-        </form>
+        <div class="action-row top-gap">
+            <form method="post" action="/auth/telegram/logout" style="margin: 0;">
+                <button type="submit">退出当前 TG 登录</button>
+            </form>
+            <button type="button" class="inline-button" onclick="document.getElementById('add-tg-account-form').style.display='block'; this.style.display='none';">添加另一个 Telegram 账号</button>
+        </div>
+        
+        <div id="add-tg-account-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--border-color);">
+            <p class="muted" style="margin-bottom: 12px;">添加新账号将暂时覆盖当前会话，请确保已为当前账号创建了角色档案。</p>
+            <form class="form-grid" method="post" action="/auth/telegram/start">
+                <label class="full-span">
+                    新 Telegram 手机号
+                    <input name="phone" placeholder="+8613812345678" required>
+                </label>
+                <div class="full-span action-row">
+                    <button type="submit">发送验证码</button>
+                </div>
+            </form>
+        </div>
         {% else %}
         <p class="muted">当前没有可复用的 Telegram 会话，请走标准手机号验证码登录。</p>
         {% if login_challenge %}

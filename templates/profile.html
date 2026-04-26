@@ -13,6 +13,37 @@
             <p>人物信息</p>
             <h2>本命元神档案</h2>
         </div>
+        
+        {% if profiles and profiles|length > 1 %}
+        <div class="stack-list compact-stack" style="margin-bottom: 24px;">
+            <div class="kv-row" style="border-bottom: none; padding-bottom: 0;">
+                <span style="font-weight: bold; color: var(--accent-gold);">所有元神档案 (多账号切换)</span>
+            </div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 0;">
+                {% for p in profiles %}
+                <div style="display: flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid {% if active_profile and active_profile.id == p.id %}var(--accent-gold){% else %}var(--border-color){% endif %}; border-radius: 4px; background: {% if active_profile and active_profile.id == p.id %}rgba(212, 175, 55, 0.1){% else %}transparent{% endif %};">
+                    <div style="display: flex; flex-direction: column;">
+                        <strong style="{% if active_profile and active_profile.id == p.id %}color: var(--accent-gold);{% endif %}">
+                            {{ p.name }}
+                        </strong>
+                        <span style="font-size: 11px; color: var(--text-muted);">
+                            TG: {{ ('@' ~ p.telegram_username) if p.telegram_username else (p.telegram_user_id or '未绑定') }}
+                        </span>
+                    </div>
+                    {% if not active_profile or active_profile.id != p.id %}
+                    <form method="post" action="/profiles/{{ p.id }}/switch" style="margin: 0; margin-left: 8px;">
+                        <input type="hidden" name="redirect_to" value="/profile">
+                        <button type="submit" class="inline-button small-btn">切换</button>
+                    </form>
+                    {% else %}
+                    <span style="margin-left: 8px; font-size: 12px; color: var(--accent-gold);">当前活跃</span>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
         {% if active_profile %}
         <div class="profile-card-shell" style="border-color: var(--accent-gold);">
             <div class="profile-card-body">
