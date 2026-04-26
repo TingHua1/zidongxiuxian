@@ -10,6 +10,10 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
+BOUND_CHAT_ID = -1001680975844
+BOUND_THREAD_ID = 7310786
+BOUND_BOT_ID = 8388633812
+
 
 class Settings(BaseModel):
     app_name: str = "自动修仙"
@@ -30,25 +34,13 @@ class Settings(BaseModel):
     telegram_login_session_name: str = os.getenv(
         "TG_GAME_LOGIN_SESSION_NAME", "tg_game_login"
     )
-    bound_chat_id: Optional[int] = (
-        int(os.getenv("TG_GAME_BOUND_CHAT_ID", ""))
-        if os.getenv("TG_GAME_BOUND_CHAT_ID", "").strip()
-        else None
-    )
-    bound_thread_id: Optional[int] = (
-        int(os.getenv("TG_GAME_BOUND_THREAD_ID", ""))
-        if os.getenv("TG_GAME_BOUND_THREAD_ID", "").strip()
-        else None
-    )
+    bound_chat_id: Optional[int] = BOUND_CHAT_ID
+    bound_thread_id: Optional[int] = BOUND_THREAD_ID
     bound_chat_type: str = os.getenv("TG_GAME_BOUND_CHAT_TYPE", "group")
     bound_bot_username: str = os.getenv(
         "TG_GAME_BOUND_BOT_USERNAME", "fanrenxiuxian_bot"
     )
-    bound_bot_id: Optional[int] = (
-        int(os.getenv("TG_GAME_BOUND_BOT_ID", ""))
-        if os.getenv("TG_GAME_BOUND_BOT_ID", "").strip()
-        else None
-    )
+    bound_bot_id: Optional[int] = BOUND_BOT_ID
     external_keepalive_seconds: int = int(
         os.getenv("TG_GAME_EXTERNAL_KEEPALIVE_SECONDS", "900")
     )
