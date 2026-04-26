@@ -686,10 +686,11 @@ def reset_failures(db, chat_id, profile_id=None):
     )
 
 
-def trip_circuit_breaker(db, chat_id, reason):
+def trip_circuit_breaker(db, chat_id, reason, profile_id=None):
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         enabled=0,
         stopped_reason=reason,
         next_check_time=0,
@@ -697,8 +698,8 @@ def trip_circuit_breaker(db, chat_id, reason):
     logger.warning("Fanren circuit breaker tripped in chat %s: %s", chat_id, reason)
 
 
-def record_failure(db, chat_id, reason):
-    session = get_session(db, chat_id)
+def record_failure(db, chat_id, reason, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
     failure_count = int(session.get("failure_count") or 0) + 1
     update_session(
         db,
@@ -708,7 +709,12 @@ def record_failure(db, chat_id, reason):
         last_summary=reason,
     )
     if failure_count >= FANREN_MAX_FAILURES:
-        trip_circuit_breaker(db, chat_id, f"连续失败达到 {failure_count} 次: {reason}")
+        trip_circuit_breaker(
+            db,
+            chat_id,
+            f"连续失败达到 {failure_count} 次: {reason}",
+            profile_id=session.get("profile_id"),
+        )
     return failure_count
 
 
@@ -741,7 +747,10 @@ def _pause_if_external_session_expired(
     if not is_external_account_expired(external_account):
         return False
     update_session(
-        db, chat_id, **_build_external_expired_pause_fields(now or time.time())
+        db,
+        chat_id,
+        profile_id=resolved_profile_id,
+        **_build_external_expired_pause_fields(now or time.time()),
     )
     return True
 
@@ -873,7 +882,7 @@ async def send_retreat_command(
     storage=None,
     profile_id=None,
 ):
-    session = get_session(db, chat_id)
+    session = get_session(db, chat_id, profile_id=profile_id)
     now = time.time()
     resolved_storage = storage or getattr(client, "_tg_game_storage", None)
     if _pause_if_external_session_expired(
@@ -1007,6 +1016,7 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
             mode=retreat_mode,
             bypass_cooldown=True,
             storage=getattr(client, "_tg_game_storage", None),
+            profile_id=session.get("profile_id"),
         )
     if retreat_mode == "normal":
         if parsed.event == "retreat_complete" and parsed.cooldown_seconds:
@@ -1062,6 +1072,7 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
             db,
             event.chat_id,
             f"收到机器人失败事件 {parsed.event}，连续 {failure_count} 次",
+            profile_id=session.get("profile_id"),
         )
     logger.info(
         "Fanren event in chat %s: %s (%s)", event.chat_id, parsed.event, parsed.summary
@@ -1069,12 +1080,12 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
     return parsed
 
 
-async def runner(client, storage):
+async def runner(client, storage, profile_id=None):
     while True:
         try:
             db = RuntimeDb(storage)
             now = time.time()
-            for session in list_sessions(db):
+            for session in list_sessions(db, profile_id=profile_id):
                 if not session["enabled"]:
                     continue
                 if session.get("stopped_reason"):
@@ -1097,10 +1108,16 @@ async def runner(client, storage):
                         profile_id=session.get("profile_id"),
                     )
                 except Exception as exc:
-                    record_failure(db, session["chat_id"], f"check failed: {exc}")
+                    record_failure(
+                        db,
+                        session["chat_id"],
+                        f"check failed: {exc}",
+                        profile_id=session.get("profile_id"),
+                    )
                     update_session(
                         db,
                         session["chat_id"],
+                        profile_id=session.get("profile_id"),
                         next_check_time=now + max(session["interval_seconds"], 60),
                         next_check_source="runner 异常后退避等待",
                     )
