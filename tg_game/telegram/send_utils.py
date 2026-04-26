@@ -21,10 +21,7 @@ def _resolve_profile_id(
 ) -> Optional[int]:
     if profile_id:
         return int(profile_id)
-    if not storage:
-        return None
-    active_profile = storage.get_active_profile()
-    return int(getattr(active_profile, "id", 0) or 0) or None
+    return None
 
 
 def _ensure_external_session_available(
@@ -51,9 +48,6 @@ def _resolve_binding_thread_id(
     if not storage or not chat_id:
         return None
     resolved_profile_id = int(profile_id) if profile_id else 0
-    if not resolved_profile_id:
-        active_profile = storage.get_active_profile()
-        resolved_profile_id = int(getattr(active_profile, "id", 0) or 0)
     if not resolved_profile_id:
         return None
     normalized_bot = _normalize_bot_username(bot_username)

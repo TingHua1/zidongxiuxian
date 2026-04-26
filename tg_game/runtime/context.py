@@ -11,6 +11,7 @@ class EventContext:
     profile: Optional[PlayerProfile]
     chat_binding: Optional[ChatBinding]
     module_settings: Dict[str, ModuleSetting] = field(default_factory=dict)
+    runtime_profile_id: Optional[int] = None
 
     @property
     def text(self) -> str:
