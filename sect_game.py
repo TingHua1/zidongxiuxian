@@ -30,6 +30,7 @@ SECT_AUTO_CHECK_IN_TIME = "02:00"
 SECT_AUTO_TEACH_TIME = "02:10"
 YINLUO_AUTO_SACRIFICE_TIME = "02:20"
 SECT_AUTO_TEACH_REPLY_RECHECK_SECONDS = 30
+HUANGFENG_AUTO_CHECK_SECONDS = 30 * 60
 LINGXIAO_STEP_DEFAULT_SECONDS = 7200
 LINGXIAO_STEP_SECONDS = 14400
 LINGXIAO_ELDER_STEP_SECONDS = 10800
@@ -40,6 +41,21 @@ LINGXIAO_QUESTION_RECHECK_SECONDS = 2 * 3600
 LINGXIAO_COMMAND_REFRESH_SECONDS = 180
 LINGXIAO_ACTION_SYNC_TIMEOUT_SECONDS = 15 * 60
 YINLUO_BLOOD_WASH_SECONDS = 4 * 3600
+
+HUANGFENG_PLOT_PATTERN = re.compile(
+    r"(?P<plot>\d+)\s*(?:号)?(?:药田|地块|灵田|田)", re.IGNORECASE
+)
+HUANGFENG_PLOT_STATUS_PATTERN = re.compile(
+    r"(?P<plot>\d+)\s*(?:号)?(?:药田|地块|灵田|田)[^\n]*", re.IGNORECASE
+)
+HUANGFENG_SEED_SHORTAGE_KEYWORDS = (
+    "种子不足",
+    "没有该种子",
+    "缺少种子",
+    "数量不足",
+    "不足以播种",
+)
+HUANGFENG_FAILURE_KEYWORDS = ("失败", "不可", "无法", "没有权限")
 
 SECT_NAME_PATTERNS = [
     re.compile(r"(?:所在宗门|宗门名称|宗门)[:：]\s*(?P<value>[^\n]+)"),
@@ -205,6 +221,360 @@ def _parse_json_dict(value):
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _parse_json_list(value):
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def _normalize_plot_value(value) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    match = re.search(r"(\d+)", text)
+    return match.group(1) if match else text
+
+
+def _normalize_huangfeng_status(status) -> str:
+    return str(status or "").strip().lower()
+
+
+def _huangfeng_status_meta(status: str) -> dict:
+    normalized = _normalize_huangfeng_status(status)
+    mapping = {
+        "growing": {"label": "生长中", "action": "无需处理"},
+        "dry": {"label": "干旱", "action": "需浇水"},
+        "pests": {"label": "虫害", "action": "需除虫"},
+        "weeds": {"label": "杂草", "action": "需除草"},
+        "mature": {"label": "成熟", "action": "需采药"},
+        "idle": {"label": "空闲", "action": "可播种"},
+    }
+    return mapping.get(normalized, {"label": normalized or "未知", "action": "待确认"})
+
+
+def _resolve_huangfeng_seed_names(payload) -> dict:
+    inventory = (payload or {}).get("inventory") or {}
+    items = inventory.get("items") or []
+    seed_name_map = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get("item_id") or "").strip()
+        item_name = str(item.get("name") or "").strip()
+        if item_id and item_name:
+            seed_name_map[item_id] = item_name
+    return seed_name_map
+
+
+def parse_huangfeng_garden_payload(payload):
+    herb_garden = (payload or {}).get("herb_garden") or {}
+    if isinstance(herb_garden, str) and herb_garden.strip():
+        try:
+            herb_garden = json.loads(herb_garden)
+        except json.JSONDecodeError:
+            herb_garden = {}
+    if not isinstance(herb_garden, dict):
+        return {"size": 0, "plots": [], "updated_at": time.time(), "source": "payload"}
+    raw_plots = herb_garden.get("plots") or {}
+    if not isinstance(raw_plots, dict):
+        raw_plots = {}
+    seed_name_map = _resolve_huangfeng_seed_names(payload or {})
+    plots = []
+    for raw_plot, raw_state in raw_plots.items():
+        plot_id = _normalize_plot_value(raw_plot)
+        state = raw_state if isinstance(raw_state, dict) else {}
+        status = _normalize_huangfeng_status(state.get("status"))
+        meta = _huangfeng_status_meta(status)
+        seed_id = str(state.get("seed_id") or "").strip()
+        plots.append(
+            {
+                "plot": plot_id,
+                "status": status,
+                "status_label": meta["label"],
+                "suggested_action": meta["action"],
+                "seed_id": seed_id,
+                "seed_name": seed_name_map.get(seed_id) or seed_id,
+                "plant_time": str(state.get("plant_time") or "").strip(),
+                "is_idle": status in {"", "idle"} and not seed_id,
+                "has_weeds": status == "weeds",
+                "has_insects": status == "pests",
+                "is_dry": status == "dry",
+                "is_mature": status == "mature",
+                "is_growing": status == "growing",
+            }
+        )
+    plots.sort(
+        key=lambda item: (_parse_int(item.get("plot"), 9999), item.get("plot") or "")
+    )
+    return {
+        "size": _parse_int(herb_garden.get("size"), len(plots)),
+        "plots": plots,
+        "updated_at": time.time(),
+        "source": "payload",
+    }
+
+
+def parse_huangfeng_garden_text(text):
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return {"plots": []}
+    plots = []
+    seen = set()
+    for line in raw_text.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        match = HUANGFENG_PLOT_STATUS_PATTERN.search(stripped)
+        if not match:
+            continue
+        plot = _normalize_plot_value(match.group("plot"))
+        if not plot or plot in seen:
+            continue
+        seen.add(plot)
+        plots.append(
+            {
+                "plot": plot,
+                "text": stripped,
+                "is_idle": any(
+                    keyword in stripped
+                    for keyword in ["空闲", "未播种", "暂无作物", "可播种"]
+                ),
+                "has_weeds": any(
+                    keyword in stripped for keyword in ["杂草", "长草", "荒草"]
+                ),
+                "has_insects": any(
+                    keyword in stripped for keyword in ["虫", "虫害", "害虫", "生虫"]
+                ),
+                "is_dry": any(
+                    keyword in stripped for keyword in ["干", "干涸", "缺水", "干旱"]
+                ),
+                "is_mature": any(
+                    keyword in stripped
+                    for keyword in ["成熟", "可采", "可收获", "已成熟"]
+                ),
+            }
+        )
+    plots.sort(
+        key=lambda item: (_parse_int(item.get("plot"), 9999), item.get("plot") or "")
+    )
+    return {
+        "plots": plots,
+        "updated_at": time.time(),
+        "raw_text": raw_text[:4000],
+    }
+
+
+def _load_huangfeng_state(session):
+    return _parse_json_dict((session or {}).get("huangfeng_last_garden_state"))
+
+
+def _load_huangfeng_pending_commands(session):
+    return [
+        str(item or "").strip()
+        for item in _parse_json_list((session or {}).get("huangfeng_pending_commands"))
+        if str(item or "").strip()
+    ]
+
+
+def _save_huangfeng_pending_commands(commands):
+    normalized = [
+        str(command or "").strip()
+        for command in (commands or [])
+        if str(command or "").strip()
+    ]
+    return json.dumps(normalized, ensure_ascii=False) if normalized else None
+
+
+def _get_huangfeng_known_plots(session) -> list[str]:
+    state = _load_huangfeng_state(session)
+    plots = []
+    for entry in state.get("plots") or []:
+        plot = _normalize_plot_value((entry or {}).get("plot"))
+        if plot and plot not in plots:
+            plots.append(plot)
+    return plots
+
+
+def has_active_huangfeng_batch(session):
+    return bool(_load_huangfeng_pending_commands(session))
+
+
+def _is_huangfeng_seed_shortage(text: str) -> bool:
+    normalized = str(text or "").strip()
+    return any(keyword in normalized for keyword in HUANGFENG_SEED_SHORTAGE_KEYWORDS)
+
+
+def _build_huangfeng_exchange_command(seed_name: str) -> str:
+    normalized_seed = str(seed_name or "").strip()
+    return f".宗门兑换 {normalized_seed}*3" if normalized_seed else ""
+
+
+def build_huangfeng_auto_commands(session):
+    seed_name = str((session or {}).get("huangfeng_seed_name") or "").strip()
+    state = _load_huangfeng_state(session)
+    commands = []
+    for plot in state.get("plots") or []:
+        plot_id = _normalize_plot_value((plot or {}).get("plot"))
+        if not plot_id:
+            continue
+        if plot.get("is_mature"):
+            commands.append(f".采药 {plot_id}")
+            continue
+        if plot.get("has_weeds"):
+            commands.append(f".除草 {plot_id}")
+        if plot.get("has_insects"):
+            commands.append(f".除虫 {plot_id}")
+        if plot.get("is_dry"):
+            commands.append(f".浇水 {plot_id}")
+        if plot.get("is_idle") and seed_name:
+            commands.append(f".播种 {plot_id} {seed_name}")
+    return commands
+
+
+def build_huangfeng_view(payload, session=None, now=None):
+    now = now or time.time()
+    state = parse_huangfeng_garden_payload(payload)
+    if not (state.get("plots") or []):
+        state = _load_huangfeng_state(session)
+    plots = list(state.get("plots") or [])
+    counts = {"growing": 0, "dry": 0, "pests": 0, "weeds": 0, "mature": 0, "idle": 0}
+    for plot in plots:
+        status = _normalize_huangfeng_status(plot.get("status"))
+        if status in counts:
+            counts[status] += 1
+        elif plot.get("is_idle"):
+            counts["idle"] += 1
+    return {
+        "size": _parse_int(state.get("size"), len(plots)),
+        "plots": plots,
+        "plot_count": len(plots),
+        "source": state.get("source") or "session",
+        "updated_at": float(state.get("updated_at") or now),
+        "counts": counts,
+        "auto_enabled": bool((session or {}).get("auto_huangfeng_enabled")),
+        "seed_name": str((session or {}).get("huangfeng_seed_name") or "").strip(),
+        "exchange_enabled": bool(
+            (session or {}).get("auto_huangfeng_exchange_enabled")
+        ),
+        "next_check_time": float((session or {}).get("huangfeng_next_check_time") or 0),
+        "next_check_source": str(
+            (session or {}).get("huangfeng_next_check_source") or ""
+        ).strip(),
+        "pending_count": len(_load_huangfeng_pending_commands(session)),
+    }
+
+
+def sync_huangfeng_state(storage, db, profile_id, chat_id, payload=None, now=None):
+    now = now or time.time()
+    session = get_session(db, chat_id, profile_id=profile_id)
+    if not session:
+        return None, None
+    if payload is None:
+        payload = _read_cached_profile_payload(storage, profile_id)
+    view = build_huangfeng_view(payload, session=session, now=now)
+    updates = {"last_panel_time": now}
+    if view.get("plots"):
+        state_payload = {
+            "size": view.get("size"),
+            "plots": view.get("plots"),
+            "updated_at": view.get("updated_at") or now,
+            "source": view.get("source") or "payload",
+        }
+        updates["huangfeng_last_garden_state"] = json.dumps(
+            state_payload, ensure_ascii=False
+        )
+        updates["huangfeng_last_garden_text"] = "\n".join(
+            [
+                f"{plot.get('plot')}号地：{plot.get('status_label')}"
+                + (f"（{plot.get('seed_name')}）" if plot.get("seed_name") else "")
+                for plot in view.get("plots") or []
+            ]
+        )[:4000]
+    if session.get("auto_huangfeng_enabled") and not has_active_huangfeng_batch(
+        session
+    ):
+        simulated_session = dict(session)
+        simulated_session.update(updates)
+        auto_commands = build_huangfeng_auto_commands(simulated_session)
+        if auto_commands:
+            updates["huangfeng_next_check_time"] = 0
+            updates["huangfeng_next_check_source"] = (
+                f"药园存在 {len(auto_commands)} 条待处理动作，可立即执行"
+            )
+        else:
+            updates["huangfeng_next_check_time"] = now + HUANGFENG_AUTO_CHECK_SECONDS
+            updates["huangfeng_next_check_source"] = "药园状态稳定，30 分钟后复查"
+    updates["next_check_time"] = _recompute_overall_next_check(session, updates, now)
+    if _has_any_auto_keys(session):
+        updates["next_check_source"] = "已同步黄枫谷药园状态"
+    update_session(db, chat_id, profile_id=profile_id, **updates)
+    return get_session(db, chat_id, profile_id=profile_id), view
+
+
+def configure_huangfeng_auto(
+    db,
+    chat_id,
+    enabled,
+    *,
+    seed_name=None,
+    exchange_enabled=None,
+    profile_id=None,
+):
+    session = get_session(db, chat_id, profile_id=profile_id)
+    updates = {
+        "auto_huangfeng_enabled": _normalize_bool(enabled),
+        "huangfeng_next_check_time": 0,
+        "huangfeng_next_check_source": (
+            "已开启黄枫谷自动化，等待首轮药园检查" if enabled else "已关闭黄枫谷自动化"
+        ),
+        "next_check_time": 0
+        if enabled
+        else _recompute_overall_next_check(
+            session, {"auto_huangfeng_enabled": 0}, time.time()
+        ),
+        "next_check_source": (
+            "已开启黄枫谷自动化，等待首轮药园检查" if enabled else "已关闭黄枫谷自动化"
+        ),
+    }
+    if seed_name is not None:
+        updates["huangfeng_seed_name"] = str(seed_name or "").strip()
+    if exchange_enabled is not None:
+        updates["auto_huangfeng_exchange_enabled"] = _normalize_bool(exchange_enabled)
+    if not enabled:
+        updates.update(
+            {
+                "huangfeng_pending_commands": None,
+                "huangfeng_pending_index": 0,
+                "huangfeng_pending_msg_id": 0,
+            }
+        )
+    update_session(db, chat_id, profile_id=profile_id, **updates)
+
+
+def set_huangfeng_seed(db, chat_id, seed_name, profile_id=None):
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        huangfeng_seed_name=str(seed_name or "").strip(),
+    )
+
+
+def set_huangfeng_exchange_auto(db, chat_id, enabled, profile_id=None):
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        auto_huangfeng_exchange_enabled=_normalize_bool(enabled),
+    )
 
 
 def parse_yinluo_banner_text(text):
@@ -551,10 +921,18 @@ def _active_yinluo_auto_keys(session):
     return keys
 
 
+def _active_huangfeng_auto_keys(session):
+    keys = []
+    if session.get("auto_huangfeng_enabled"):
+        keys.append("garden")
+    return keys
+
+
 def _has_any_auto_keys(session):
     return bool(
         _active_common_auto_keys(session)
         or _active_yinluo_auto_keys(session)
+        or _active_huangfeng_auto_keys(session)
         or _active_lingxiao_auto_keys(session)
     )
 
@@ -569,6 +947,7 @@ def _recompute_overall_next_check(session, updates, now=None):
         ("auto_sect_teach_enabled", "sect_teach_next_check_time"),
         ("auto_yinluo_sacrifice_enabled", "yinluo_sacrifice_next_check_time"),
         ("auto_yinluo_blood_wash_enabled", "yinluo_blood_wash_next_check_time"),
+        ("auto_huangfeng_enabled", "huangfeng_next_check_time"),
         ("auto_lingxiao_enabled", "lingxiao_next_check_time"),
         ("auto_lingxiao_gangfeng_enabled", "lingxiao_gangfeng_next_check_time"),
         ("auto_lingxiao_borrow_enabled", "lingxiao_borrow_next_check_time"),
@@ -954,6 +1333,16 @@ def ensure_tables(db):
             auto_yinluo_blood_wash_enabled INTEGER DEFAULT 0,
             yinluo_blood_wash_next_check_time REAL DEFAULT 0,
             yinluo_blood_wash_next_check_source TEXT,
+            auto_huangfeng_enabled INTEGER DEFAULT 0,
+            auto_huangfeng_exchange_enabled INTEGER DEFAULT 0,
+            huangfeng_seed_name TEXT,
+            huangfeng_next_check_time REAL DEFAULT 0,
+            huangfeng_next_check_source TEXT,
+            huangfeng_last_garden_text TEXT,
+            huangfeng_last_garden_state TEXT,
+            huangfeng_pending_commands TEXT,
+            huangfeng_pending_index INTEGER DEFAULT 0,
+            huangfeng_pending_msg_id INTEGER DEFAULT 0,
             yinluo_batch_mode TEXT,
             yinluo_batch_commands TEXT,
             yinluo_batch_index INTEGER DEFAULT 0,
@@ -1000,6 +1389,16 @@ def ensure_tables(db):
         "auto_yinluo_blood_wash_enabled": "INTEGER DEFAULT 0",
         "yinluo_blood_wash_next_check_time": "REAL DEFAULT 0",
         "yinluo_blood_wash_next_check_source": "TEXT",
+        "auto_huangfeng_enabled": "INTEGER DEFAULT 0",
+        "auto_huangfeng_exchange_enabled": "INTEGER DEFAULT 0",
+        "huangfeng_seed_name": "TEXT",
+        "huangfeng_next_check_time": "REAL DEFAULT 0",
+        "huangfeng_next_check_source": "TEXT",
+        "huangfeng_last_garden_text": "TEXT",
+        "huangfeng_last_garden_state": "TEXT",
+        "huangfeng_pending_commands": "TEXT",
+        "huangfeng_pending_index": "INTEGER DEFAULT 0",
+        "huangfeng_pending_msg_id": "INTEGER DEFAULT 0",
         "yinluo_batch_mode": "TEXT",
         "yinluo_batch_commands": "TEXT",
         "yinluo_batch_index": "INTEGER DEFAULT 0",
@@ -1428,6 +1827,12 @@ def build_status_text(session):
             f"自动血洗山林: {'开启' if session.get('auto_yinluo_blood_wash_enabled') else '关闭'}",
             f"下次血洗山林: {format_timestamp(session.get('yinluo_blood_wash_next_check_time') or 0)}",
             f"血洗山林来源: {session.get('yinluo_blood_wash_next_check_source') or '-'}",
+            f"自动黄枫谷: {'开启' if session.get('auto_huangfeng_enabled') else '关闭'}",
+            f"黄枫谷种子: {session.get('huangfeng_seed_name') or '-'}",
+            f"自动兑换种子: {'开启' if session.get('auto_huangfeng_exchange_enabled') else '关闭'}",
+            f"下次黄枫检查: {format_timestamp(session.get('huangfeng_next_check_time') or 0)}",
+            f"黄枫检查来源: {session.get('huangfeng_next_check_source') or '-'}",
+            f"黄枫待执行批次: {int(session.get('huangfeng_pending_index') or 0)} / {len(_load_huangfeng_pending_commands(session))}",
             f"阴罗批次: {session.get('yinluo_batch_mode') or '-'}",
             f"阴罗批次进度: {int(session.get('yinluo_batch_index') or 0)} / {len(_load_yinluo_batch_commands(session))}",
             f"查询指令: {session.get('command_text') or SECT_CHECK_COMMAND}",
@@ -1632,6 +2037,66 @@ def clear_yinluo_batch(db, chat_id, summary="", profile_id=None):
     )
 
 
+def clear_huangfeng_batch(
+    db, chat_id, summary="", profile_id=None, *, next_check_time=0
+):
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        huangfeng_pending_commands=None,
+        huangfeng_pending_index=0,
+        huangfeng_pending_msg_id=0,
+        huangfeng_next_check_time=next_check_time,
+        huangfeng_next_check_source=summary or None,
+        last_summary=summary or None,
+    )
+
+
+async def maybe_run_huangfeng_batch(
+    client, db, session, *, storage=None, profile_id=None
+):
+    commands = _load_huangfeng_pending_commands(session)
+    if not commands:
+        return False
+    current_index = int(session.get("huangfeng_pending_index") or 0)
+    pending_msg_id = int(session.get("huangfeng_pending_msg_id") or 0)
+    chat_id = int(session.get("chat_id") or 0)
+    if pending_msg_id:
+        return True
+    if current_index >= len(commands):
+        clear_huangfeng_batch(
+            db,
+            chat_id,
+            summary="黄枫谷批次已完成，等待 30 分钟后复查",
+            profile_id=session.get("profile_id"),
+            next_check_time=time.time() + HUANGFENG_AUTO_CHECK_SECONDS,
+        )
+        return True
+    command_text = commands[current_index]
+    _ok, status, sent_message_id = await maybe_send_check(
+        client,
+        db,
+        chat_id,
+        force=True,
+        command_text=command_text,
+        storage=storage,
+        profile_id=profile_id,
+    )
+    if status == "sent" and sent_message_id:
+        update_session(
+            db,
+            chat_id,
+            profile_id=session.get("profile_id"),
+            huangfeng_pending_msg_id=int(sent_message_id),
+            huangfeng_next_check_time=time.time() + LINGXIAO_COMMAND_REFRESH_SECONDS,
+            huangfeng_next_check_source=f"黄枫谷批次等待回复: {command_text}",
+            next_check_time=time.time() + LINGXIAO_COMMAND_REFRESH_SECONDS,
+            next_check_source=f"黄枫谷批次等待回复: {command_text}",
+        )
+    return True
+
+
 def configure_lingxiao_gangfeng_auto(db, chat_id, enabled, profile_id=None):
     session = get_session(db, chat_id, profile_id=profile_id)
     update_session(
@@ -1700,6 +2165,16 @@ def configure_lingxiao_question_auto(db, chat_id, enabled, profile_id=None):
 
 def build_auto_command(session, now=None):
     now = now or time.time()
+    if session.get("auto_huangfeng_enabled"):
+        next_time = float(session.get("huangfeng_next_check_time") or 0)
+        if not next_time or now >= next_time:
+            return {
+                "command": ".小药园",
+                "next_field": "huangfeng_next_check_time",
+                "source_field": "huangfeng_next_check_source",
+                "pending_source": "已发送 .小药园，等待药园状态刷新",
+                "pending_delay_seconds": LINGXIAO_COMMAND_REFRESH_SECONDS,
+            }
     if session.get("auto_sect_checkin_enabled"):
         next_time = float(session.get("sect_checkin_next_check_time") or 0)
         if not next_time or now >= next_time:
@@ -1945,6 +2420,13 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
     message = getattr(event, "message", None)
     reply_to = getattr(message, "reply_to", None) if message else None
     reply_to_msg_id = int(getattr(reply_to, "reply_to_msg_id", None) or 0)
+    reply_text = ""
+    if getattr(event, "is_reply", False):
+        try:
+            reply_message = await event.get_reply_message()
+        except Exception:
+            reply_message = None
+        reply_text = (getattr(reply_message, "raw_text", "") or "").strip()
     update_fields = {
         "last_event": parsed["event"],
         "last_summary": parsed["summary"],
@@ -1952,6 +2434,13 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
         "last_bot_msg_id": event.id,
         "next_check_source": parsed["summary"],
     }
+    if reply_text == ".小药园" or HUANGFENG_PLOT_PATTERN.search(raw_text):
+        garden_state = parse_huangfeng_garden_text(raw_text)
+        if garden_state.get("plots"):
+            update_fields["huangfeng_last_garden_text"] = raw_text[:4000]
+            update_fields["huangfeng_last_garden_state"] = json.dumps(
+                garden_state, ensure_ascii=False
+            )
     batch_commands = _load_yinluo_batch_commands(session)
     batch_pending_msg_id = int(session.get("yinluo_batch_pending_msg_id") or 0)
     batch_index = int(session.get("yinluo_batch_index") or 0)
@@ -1987,6 +2476,111 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
             update_fields["next_check_source"] = (
                 f"阴罗批次已完成 {next_index}/{len(batch_commands)}，准备下一条"
             )
+    huangfeng_commands = _load_huangfeng_pending_commands(session)
+    huangfeng_pending_msg_id = int(session.get("huangfeng_pending_msg_id") or 0)
+    huangfeng_index = int(session.get("huangfeng_pending_index") or 0)
+    if (
+        huangfeng_commands
+        and huangfeng_pending_msg_id
+        and reply_to_msg_id == huangfeng_pending_msg_id
+    ):
+        current_huangfeng_command = (
+            huangfeng_commands[huangfeng_index]
+            if 0 <= huangfeng_index < len(huangfeng_commands)
+            else ""
+        )
+        if current_huangfeng_command.startswith(
+            ".播种 "
+        ) and _is_huangfeng_seed_shortage(raw_text):
+            seed_name = str(session.get("huangfeng_seed_name") or "").strip()
+            if session.get("auto_huangfeng_exchange_enabled") and seed_name:
+                exchange_command = _build_huangfeng_exchange_command(seed_name)
+                remaining_commands = [
+                    command
+                    for command in [
+                        exchange_command,
+                        current_huangfeng_command,
+                        *huangfeng_commands[huangfeng_index + 1 :],
+                    ]
+                    if command
+                ]
+                update_fields["huangfeng_pending_commands"] = (
+                    _save_huangfeng_pending_commands(remaining_commands)
+                )
+                update_fields["huangfeng_pending_index"] = 0
+                update_fields["huangfeng_pending_msg_id"] = 0
+                update_fields["huangfeng_next_check_time"] = 0
+                update_fields["huangfeng_next_check_source"] = (
+                    f"{seed_name} 不足，准备先宗门兑换后重试播种"
+                )
+                update_fields["next_check_time"] = 0
+                update_fields["next_check_source"] = update_fields[
+                    "huangfeng_next_check_source"
+                ]
+            else:
+                update_fields["auto_huangfeng_enabled"] = 0
+                update_fields["huangfeng_pending_commands"] = None
+                update_fields["huangfeng_pending_index"] = 0
+                update_fields["huangfeng_pending_msg_id"] = 0
+                update_fields["huangfeng_next_check_time"] = 0
+                update_fields["huangfeng_next_check_source"] = (
+                    "播种缺少种子，已停止黄枫谷自动化"
+                )
+                update_fields["next_check_source"] = update_fields[
+                    "huangfeng_next_check_source"
+                ]
+        else:
+            next_index = huangfeng_index + 1
+            if next_index >= len(huangfeng_commands):
+                update_fields["huangfeng_pending_commands"] = None
+                update_fields["huangfeng_pending_index"] = 0
+                update_fields["huangfeng_pending_msg_id"] = 0
+                update_fields["huangfeng_next_check_time"] = (
+                    now + HUANGFENG_AUTO_CHECK_SECONDS
+                )
+                update_fields["huangfeng_next_check_source"] = (
+                    "黄枫谷批次已完成，30 分钟后复查药园"
+                )
+                update_fields["last_summary"] = update_fields[
+                    "huangfeng_next_check_source"
+                ]
+            else:
+                update_fields["huangfeng_pending_index"] = next_index
+                update_fields["huangfeng_pending_msg_id"] = 0
+                update_fields["huangfeng_next_check_time"] = 0
+                update_fields["huangfeng_next_check_source"] = (
+                    f"黄枫谷批次已完成 {next_index}/{len(huangfeng_commands)}，准备下一条"
+                )
+                update_fields["next_check_time"] = 0
+                update_fields["next_check_source"] = update_fields[
+                    "huangfeng_next_check_source"
+                ]
+    if session.get("auto_huangfeng_enabled") and reply_text == ".小药园":
+        refreshed_session = dict(session)
+        refreshed_session.update(update_fields)
+        auto_commands = build_huangfeng_auto_commands(refreshed_session)
+        if auto_commands:
+            update_fields["huangfeng_pending_commands"] = (
+                _save_huangfeng_pending_commands(auto_commands)
+            )
+            update_fields["huangfeng_pending_index"] = 0
+            update_fields["huangfeng_pending_msg_id"] = 0
+            update_fields["huangfeng_next_check_time"] = 0
+            update_fields["huangfeng_next_check_source"] = (
+                f"已根据药园状态生成 {len(auto_commands)} 条黄枫谷命令"
+            )
+            update_fields["next_check_time"] = 0
+            update_fields["next_check_source"] = update_fields[
+                "huangfeng_next_check_source"
+            ]
+        else:
+            update_fields["huangfeng_pending_commands"] = None
+            update_fields["huangfeng_pending_index"] = 0
+            update_fields["huangfeng_pending_msg_id"] = 0
+            update_fields["huangfeng_next_check_time"] = (
+                now + HUANGFENG_AUTO_CHECK_SECONDS
+            )
+            update_fields["huangfeng_next_check_source"] = "药园状态正常，30 分钟后复查"
     if parsed["event"] == "sect_panel":
         update_fields["last_panel_time"] = now
         if not session.get("auto_lingxiao_enabled"):
@@ -2045,12 +2639,12 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
     return parsed
 
 
-async def runner(client, storage):
+async def runner(client, storage, profile_id=None):
     while True:
         try:
             db = RuntimeDb(storage)
             now = time.time()
-            for session in list_sessions(db):
+            for session in list_sessions(db, profile_id=profile_id):
                 if not session["enabled"]:
                     continue
                 session_profile_id = int(session.get("profile_id") or 0) or None
@@ -2079,6 +2673,32 @@ async def runner(client, storage):
                             db,
                             session["chat_id"],
                             summary=f"阴罗批次失败: {exc}",
+                            profile_id=session_profile_id,
+                        )
+                        continue
+                if has_active_huangfeng_batch(session):
+                    try:
+                        handled = await maybe_run_huangfeng_batch(
+                            client,
+                            db,
+                            session,
+                            storage=storage,
+                            profile_id=session_profile_id,
+                        )
+                        if handled:
+                            continue
+                    except Exception as exc:
+                        logger.warning(
+                            "Huangfeng batch failed in chat %s: %s",
+                            session["chat_id"],
+                            exc,
+                        )
+                        clear_huangfeng_batch(
+                            db,
+                            session["chat_id"],
+                            summary=f"黄枫谷批次失败: {exc}",
+                            profile_id=session_profile_id,
+                            next_check_time=now + max(session["interval_seconds"], 60),
                         )
                         continue
                 if session["next_check_time"] and now < session["next_check_time"]:
@@ -2088,6 +2708,7 @@ async def runner(client, storage):
                     if session_profile_id and (
                         _active_common_auto_keys(session)
                         or _active_yinluo_auto_keys(session)
+                        or _active_huangfeng_auto_keys(session)
                         or _active_lingxiao_auto_keys(session)
                     ):
                         payload = _read_cached_profile_payload(
@@ -2105,6 +2726,16 @@ async def runner(client, storage):
                         now = time.time()
                     if session_profile_id and _active_yinluo_auto_keys(session):
                         session, _view = sync_yinluo_state(
+                            storage,
+                            db,
+                            session_profile_id,
+                            session["chat_id"],
+                            payload=payload,
+                            now=now,
+                        )
+                        now = time.time()
+                    if session_profile_id and _active_huangfeng_auto_keys(session):
+                        session, _view = sync_huangfeng_state(
                             storage,
                             db,
                             session_profile_id,

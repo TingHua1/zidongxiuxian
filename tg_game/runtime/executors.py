@@ -156,7 +156,13 @@ class FanrenExecutor(BaseExecutor):
         db = SQLiteCompatDb(storage)
         fanren_game.ensure_tables(db)
         db.close()
-        asyncio.create_task(fanren_game.runner(client, storage))
+        asyncio.create_task(
+            fanren_game.runner(
+                client,
+                storage,
+                profile_id=getattr(client, "_tg_game_profile_id", None),
+            )
+        )
         logger.info("Fanren executor runner started")
 
     async def handle(self, context: EventContext, storage: Storage) -> bool:
@@ -464,7 +470,13 @@ class SectExecutor(BaseExecutor):
         db = SQLiteCompatDb(storage)
         sect_game.ensure_tables(db)
         db.close()
-        asyncio.create_task(sect_game.runner(client, storage))
+        asyncio.create_task(
+            sect_game.runner(
+                client,
+                storage,
+                profile_id=getattr(client, "_tg_game_profile_id", None),
+            )
+        )
         logger.info("Sect executor runner started")
 
     async def handle(self, context: EventContext, storage: Storage) -> bool:
@@ -955,7 +967,7 @@ class GeneralGameExecutor(BaseExecutor):
             thread_id=int(batch.get("thread_id")) if batch.get("thread_id") else None,
             chat_type=str(batch.get("chat_type") or "group"),
             bot_username=str(batch.get("bot_username") or ""),
-            delay_seconds=5,
+            delay_seconds=15,
         )
 
     async def _maybe_resume_idle_divination_batch(
@@ -1026,28 +1038,148 @@ class GeneralGameExecutor(BaseExecutor):
         chat_id = context.chat_id
         if chat_id is None:
             return False
+        session = sect_game.get_session(
+            db,
+            chat_id,
+            profile_id=context.profile.id if context.profile else None,
+        )
         parts = (payload or "").split(maxsplit=2)
         action = parts[0].lower() if parts else ""
-        command_text = None
+        command_texts = []
         if action == "garden":
-            command_text = ".小药园"
-        elif action == "sow" and len(parts) >= 3:
-            command_text = f".播种 {parts[1]} {parts[2]}"
-        elif action == "harvest" and len(parts) >= 2:
-            command_text = f".采药 {parts[1]}"
-        elif action == "weed" and len(parts) >= 2:
-            command_text = f".除草 {parts[1]}"
-        elif action == "bug" and len(parts) >= 2:
-            command_text = f".除虫 {parts[1]}"
-        elif action == "water" and len(parts) >= 2:
-            command_text = f".浇水 {parts[1]}"
+            command_texts = [".小药园"]
+        elif action == "sow":
+            if len(parts) >= 3:
+                command_texts = [f".播种 {parts[1]} {parts[2]}"]
+            elif len(parts) >= 2:
+                plots = sect_game._get_huangfeng_known_plots(session)
+                command_texts = [f".播种 {plot} {parts[1]}" for plot in plots]
+        elif action == "harvest":
+            if len(parts) >= 2:
+                command_texts = [f".采药 {parts[1]}"]
+            else:
+                command_texts = [
+                    f".采药 {plot}"
+                    for plot in sect_game._get_huangfeng_known_plots(session)
+                ]
+        elif action == "weed":
+            if len(parts) >= 2:
+                command_texts = [f".除草 {parts[1]}"]
+            else:
+                command_texts = [
+                    f".除草 {plot}"
+                    for plot in sect_game._get_huangfeng_known_plots(session)
+                ]
+        elif action == "bug":
+            if len(parts) >= 2:
+                command_texts = [f".除虫 {parts[1]}"]
+            else:
+                command_texts = [
+                    f".除虫 {plot}"
+                    for plot in sect_game._get_huangfeng_known_plots(session)
+                ]
+        elif action == "water":
+            if len(parts) >= 2:
+                command_texts = [f".浇水 {parts[1]}"]
+            else:
+                command_texts = [
+                    f".浇水 {plot}"
+                    for plot in sect_game._get_huangfeng_known_plots(session)
+                ]
         elif action == "expand":
-            command_text = ".扩建药园"
-        if not command_text:
+            command_texts = [".扩建药园"]
+        elif action == "auto":
+            auto_body = parts[1] if len(parts) >= 2 else ""
+            if len(parts) >= 3:
+                auto_body = f"{parts[1]} {parts[2]}".strip()
+            auto_parts = auto_body.split(maxsplit=1)
+            auto_action = auto_parts[0].lower() if auto_parts else "status"
+            auto_payload = auto_parts[1].strip() if len(auto_parts) > 1 else ""
+            if auto_action == "on":
+                seed_name = (
+                    auto_payload
+                    or str((session or {}).get("huangfeng_seed_name") or "").strip()
+                )
+                if not seed_name:
+                    await context.reply("用法: .sect hf auto on 种子名")
+                    return True
+                sect_game.configure_huangfeng_auto(
+                    db,
+                    chat_id,
+                    True,
+                    seed_name=seed_name,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply(f"黄枫谷自动化已开启，播种种子为 {seed_name}。")
+                return True
+            if auto_action == "off":
+                sect_game.configure_huangfeng_auto(
+                    db,
+                    chat_id,
+                    False,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply("黄枫谷自动化已关闭。")
+                return True
+            if auto_action == "seed":
+                if not auto_payload:
+                    await context.reply("用法: .sect hf auto seed 种子名")
+                    return True
+                sect_game.set_huangfeng_seed(
+                    db,
+                    chat_id,
+                    auto_payload,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply(f"黄枫谷自动播种种子已设置为 {auto_payload}。")
+                return True
+            if auto_action == "exchange":
+                enabled = auto_payload.lower() == "on"
+                sect_game.set_huangfeng_exchange_auto(
+                    db,
+                    chat_id,
+                    enabled,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply(
+                    f"黄枫谷自动兑换种子已{'开启' if enabled else '关闭'}。"
+                )
+                return True
+            if auto_action == "status":
+                refreshed_session = sect_game.get_session(
+                    db,
+                    chat_id,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply(
+                    "\n".join(
+                        [
+                            "黄枫谷自动化状态",
+                            f"开关: {'开启' if refreshed_session.get('auto_huangfeng_enabled') else '关闭'}",
+                            f"播种种子: {refreshed_session.get('huangfeng_seed_name') or '-'}",
+                            f"自动兑换: {'开启' if refreshed_session.get('auto_huangfeng_exchange_enabled') else '关闭'}",
+                            f"下次检查: {sect_game.format_timestamp(refreshed_session.get('huangfeng_next_check_time') or 0)}",
+                            f"状态来源: {refreshed_session.get('huangfeng_next_check_source') or '-'}",
+                        ]
+                    )
+                )
+                return True
+        if not command_texts:
             await context.reply(
-                "用法: .sect hf garden|sow 地块 种子|harvest 地块|weed 地块|bug 地块|water 地块|expand"
+                "用法: .sect hf garden|sow [地块] 种子|harvest [地块]|weed [地块]|bug [地块]|water [地块]|expand|auto on 种子|off|seed 种子|exchange on|off|status"
             )
             return True
+        if len(command_texts) > 1 and not session:
+            await context.reply(
+                "黄枫谷会话未初始化，请先执行 .sect on 或 .sect hf garden。"
+            )
+            return True
+        if len(command_texts) > 1 and not sect_game._get_huangfeng_known_plots(session):
+            await context.reply(
+                "缺少最近药园状态，请先执行 .sect hf garden 后再省略地块。"
+            )
+            return True
+        command_text = command_texts[0]
         _ok, status, _msg_id = await sect_game.maybe_send_check(
             context.client,
             db,
@@ -1056,6 +1188,29 @@ class GeneralGameExecutor(BaseExecutor):
             command_text=command_text,
             profile_id=context.profile.id if context.profile else None,
         )
+        if status == "sent" and len(command_texts) > 1:
+            storage = getattr(context.client, "_tg_game_storage", None)
+            if storage and context.profile:
+                for index, extra_command in enumerate(command_texts[1:], start=1):
+                    storage.enqueue_outgoing_command(
+                        profile_id=context.profile.id,
+                        chat_id=chat_id,
+                        text=extra_command,
+                        thread_id=session.get("thread_id")
+                        if session
+                        else context.thread_id,
+                        chat_type="group",
+                        bot_username=(
+                            context.chat_binding.bot_username
+                            if context.chat_binding
+                            else ""
+                        ),
+                        delay_seconds=index * 3,
+                    )
+                await context.reply(
+                    f"执行结果: {status}，已按最近药园状态为全部地块排队 {len(command_texts)} 条命令。"
+                )
+                return True
         await context.reply(f"执行结果: {status}")
         return True
 
@@ -1155,7 +1310,12 @@ class GeneralGameExecutor(BaseExecutor):
             await context.reply("用法: .sect lx overview|status|mind|step|wind|gate")
             return True
         _ok, status, _msg_id = await sect_game.maybe_send_check(
-            context.client, db, chat_id, force=True, command_text=command_text
+            context.client,
+            db,
+            chat_id,
+            force=True,
+            command_text=command_text,
+            profile_id=context.profile.id if context.profile else None,
         )
         await context.reply(f"执行结果: {status}")
         return True
@@ -1198,7 +1358,12 @@ class GeneralGameExecutor(BaseExecutor):
             )
             return True
         _ok, status, _msg_id = await sect_game.maybe_send_check(
-            context.client, db, chat_id, force=True, command_text=command_text
+            context.client,
+            db,
+            chat_id,
+            force=True,
+            command_text=command_text,
+            profile_id=context.profile.id if context.profile else None,
         )
         await context.reply(f"执行结果: {status}")
         return True
