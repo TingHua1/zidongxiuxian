@@ -2,7 +2,11 @@ import json
 import time
 from typing import Optional
 
-from tg_game.clients.asc_client import AscAuthError, get_cultivator
+from tg_game.clients.asc_client import (
+    AscAuthError,
+    AscNotFoundError,
+    get_cultivator,
+)
 from tg_game.config import get_settings
 from tg_game.storage import Storage
 
@@ -135,6 +139,48 @@ def get_cultivator_username(profile) -> str:
     )
 
 
+def get_cultivator_lookup_candidates(profile) -> list[str]:
+    if not profile:
+        return []
+    candidates = []
+    seen = set()
+    for raw_value in [
+        profile.telegram_username,
+        profile.account_name,
+        profile.game_name,
+        profile.display_name,
+    ]:
+        candidate = str(raw_value or "").strip().lstrip("@")
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        candidates.append(candidate)
+    return candidates
+
+
+def fetch_cultivator_payload(cookie_text: str, profile) -> tuple[dict, str, str]:
+    candidates = get_cultivator_lookup_candidates(profile)
+    if not candidates:
+        raise RuntimeError(
+            "当前 Telegram 账号未绑定用户名或姓名，无法调用 /api/cultivator/<identifier>"
+        )
+
+    last_error: Optional[Exception] = None
+    for candidate in candidates:
+        try:
+            payload, _status, refreshed_cookie = get_cultivator(candidate, cookie_text)
+            return payload, candidate, refreshed_cookie
+        except AscAuthError:
+            raise
+        except AscNotFoundError as exc:
+            last_error = exc
+            continue
+
+    if last_error:
+        raise last_error
+    raise RuntimeError("调用 /api/cultivator 失败")
+
+
 def read_cached_external_payload(
     storage: Storage, profile_id: int, provider: str = ASC_PROVIDER
 ) -> dict:
@@ -164,20 +210,16 @@ def sync_external_account(
         raise RuntimeError("缺少天机阁登录 Cookie")
     if not normalized_cookie.startswith("session="):
         raise RuntimeError("只识别 session=... 形式的天机阁登录 Cookie")
-    username = get_cultivator_username(profile)
-    if not username:
-        raise RuntimeError(
-            "当前 Telegram 账号未绑定用户名，无法调用 /api/cultivator/<username>"
-        )
-
-    payload, _status, refreshed_cookie = get_cultivator(username, normalized_cookie)
+    payload, resolved_identifier, refreshed_cookie = fetch_cultivator_payload(
+        normalized_cookie, profile
+    )
     persisted_cookie = resolve_external_cookie(normalized_cookie, refreshed_cookie)
     stored_cookie = persisted_cookie if is_admin else ""
     storage.upsert_external_account(
         profile_id=profile_id,
         provider=provider,
         telegram_user_id=str(profile.telegram_user_id or ""),
-        telegram_username=(profile.telegram_username or ""),
+        telegram_username=(profile.telegram_username or resolved_identifier or ""),
         status="connected",
         cookie_text=stored_cookie,
         me_payload=payload,

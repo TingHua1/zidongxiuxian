@@ -14,6 +14,22 @@ class AscAuthError(RuntimeError):
     pass
 
 
+class AscNotFoundError(RuntimeError):
+    pass
+
+
+def _is_not_found_error(code: int, payload: dict) -> bool:
+    if int(code or 0) == 404:
+        return True
+    message = str((payload or {}).get("error") or "").strip().lower()
+    if not message:
+        return False
+    return any(
+        token in message
+        for token in ["not found", "不存在", "未找到", "角色不存在", "查无此人"]
+    )
+
+
 def _extract_session_cookie(headers) -> str:
     if not headers:
         return ""
@@ -104,6 +120,8 @@ def _bootstrap_dashboard_auth(cookie_text: str) -> Tuple[str, str]:
             payload = {"error": body or f"HTTP {exc.code}"}
         if exc.code in {401, 403}:
             raise AscAuthError(payload.get("error") or f"HTTP {exc.code}") from exc
+        if _is_not_found_error(exc.code, payload):
+            raise AscNotFoundError(payload.get("error") or f"HTTP {exc.code}") from exc
         raise RuntimeError(payload.get("error") or f"HTTP {exc.code}") from exc
 
 
@@ -143,6 +161,8 @@ def _perform_json_get(path: str, cookie_text: str) -> Tuple[dict, int, str]:
             payload = {"error": body or f"HTTP {exc.code}"}
         if exc.code in {401, 403}:
             raise AscAuthError(payload.get("error") or f"HTTP {exc.code}") from exc
+        if _is_not_found_error(exc.code, payload):
+            raise AscNotFoundError(payload.get("error") or f"HTTP {exc.code}") from exc
         raise RuntimeError(payload.get("error") or f"HTTP {exc.code}") from exc
 
 
