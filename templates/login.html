@@ -70,11 +70,19 @@
             <form method="post" action="/auth/telegram/logout" style="margin: 0;">
                 <button type="submit">退出当前 TG 登录</button>
             </form>
+            {% if not login_challenge %}
             <button type="button" class="inline-button" onclick="document.getElementById('add-tg-account-form').style.display='block'; this.style.display='none';">添加另一个 Telegram 账号</button>
+            {% endif %}
         </div>
         
-        <div id="add-tg-account-form" style="display: none; margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--border-color);">
+        <div id="add-tg-account-form" style="display: {% if login_challenge %}block{% else %}none{% endif %}; margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--border-color);">
             <p class="muted" style="margin-bottom: 12px;">新账号会创建独立的本地 Telegram 会话，并自动加入当前浏览器会话，便于后续在多个档案之间切换。</p>
+            {% if login_challenge %}
+            <div class="stack-list compact-stack top-gap" style="margin-bottom: 16px;">
+                <div class="kv-row"><span>登录手机号</span><strong>{{ login_challenge.phone }}</strong></div>
+                <div class="kv-row"><span>当前阶段</span><strong>{{ '等待密码' if login_challenge.status == 'password_required' else '等待验证码' }}</strong></div>
+            </div>
+            {% endif %}
             <form class="form-grid" method="post" action="/auth/telegram/start">
                 <label class="full-span">
                     新 Telegram 手机号
@@ -84,6 +92,28 @@
                     <button type="submit">发送验证码</button>
                 </div>
             </form>
+            {% if login_challenge and login_challenge.status != 'password_required' %}
+            <form class="form-grid top-gap" method="post" action="/auth/telegram/verify">
+                <label class="full-span">
+                    Telegram 验证码
+                    <input name="code" placeholder="12345" required>
+                </label>
+                <div class="full-span action-row">
+                    <button type="submit">验证验证码并登录</button>
+                </div>
+            </form>
+            {% endif %}
+            {% if login_challenge and login_challenge.status == 'password_required' %}
+            <form class="form-grid top-gap" method="post" action="/auth/telegram/password">
+                <label class="full-span">
+                    二步验证密码
+                    <input name="password" type="password" placeholder="Telegram Password" required>
+                </label>
+                <div class="full-span action-row">
+                    <button type="submit">提交密码完成登录</button>
+                </div>
+            </form>
+            {% endif %}
         </div>
         {% else %}
         <p class="muted">当前没有可复用的 Telegram 会话，请走标准手机号验证码登录。</p>
