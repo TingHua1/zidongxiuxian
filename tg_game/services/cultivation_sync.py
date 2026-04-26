@@ -5,7 +5,7 @@ import fanren_game
 from tg_game.clients.asc_client import AscAuthError
 from tg_game.services.external_sync import (
     ASC_PROVIDER,
-    get_cultivator_username,
+    get_cultivator_lookup_candidates,
     get_effective_external_cookie,
     mark_external_account_failure,
     sync_external_account,
@@ -32,8 +32,8 @@ def sync_cultivation_session(
     external_account = storage.get_external_account(profile_id, ASC_PROVIDER) or {}
     default_cookie = get_effective_external_cookie(storage)
     cookie_text = (external_account.get("cookie_text") or default_cookie).strip()
-    username = get_cultivator_username(profile)
-    if not cookie_text or not username:
+    identifiers = get_cultivator_lookup_candidates(profile)
+    if not cookie_text or not identifiers:
         return None
     try:
         cultivator = sync_external_account(storage, profile_id, cookie_text=cookie_text)

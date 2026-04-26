@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 
 from tg_game.services.external_sync import (
     ASC_PROVIDER,
-    get_cultivator_username,
+    get_cultivator_lookup_candidates,
     get_effective_external_cookie,
     mark_external_account_failure,
     read_cached_external_payload,
@@ -747,11 +747,11 @@ def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
         )
         return get_session(db, chat_id, profile_id=profile_id), None
     if payload is None:
-        username = get_cultivator_username(profile)
+        identifiers = get_cultivator_lookup_candidates(profile)
         default_cookie = get_effective_external_cookie(storage)
         cookie_text = (external_account.get("cookie_text") or default_cookie).strip()
-        if not username or not cookie_text:
-            message = "缺少天机阁 cookie 或 Telegram 用户名，无法同步凌霄宫状态"
+        if not identifiers or not cookie_text:
+            message = "缺少天机阁 cookie 或可用的用户名/姓名，无法同步凌霄宫状态"
             update_session(
                 db,
                 chat_id,

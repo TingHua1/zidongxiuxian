@@ -22,6 +22,7 @@ from tg_game.services import module_registry
 from tg_game.services.cultivation_sync import sync_cultivation_session
 from tg_game.services.external_sync import (
     ASC_PROVIDER,
+    get_cultivator_lookup_candidates,
     get_effective_external_cookie,
     get_external_keepalive_poll_seconds,
     is_authorized_profile,
@@ -2081,10 +2082,8 @@ def create_app() -> FastAPI:
             external_account.get("cookie_text")
             or get_effective_external_cookie(storage)
         ).strip()
-        username = (
-            profile.telegram_username or profile.account_name.lstrip("@") or ""
-        ).strip()
-        if not cookie_text or not username:
+        identifiers = get_cultivator_lookup_candidates(profile)
+        if not cookie_text or not identifiers:
             return read_cached_external_payload(storage, profile_id, ASC_PROVIDER)
         try:
             payload = sync_external_account(
