@@ -1,3 +1,13 @@
 .env
 .env.*
 !.env.example
+__pycache__/
+*.pyc
+*.session
+*.session-journal
+tg_game.db
+group_user.db
+*.db-wal
+*.db-shm
+site_cookies.txt
+telegram_oauth_cookies.txt

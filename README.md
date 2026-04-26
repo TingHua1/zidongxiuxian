@@ -30,6 +30,8 @@ python run_telegram.py
 ```
 
 项目运行时会从仓库根目录的本地 `.env` 读取配置；真实 `.env` 不应提交到仓库，仓库只保留 `.env.example` 示例文件。
+群绑定里的 `TG_GAME_BOUND_CHAT_ID`、`TG_GAME_BOUND_THREAD_ID`、`TG_GAME_BOUND_BOT_ID` 已改为代码内固定值，不再从 `.env` 读取。
+凡人修仙自动闭关 / 宗门自动任务的默认指令、间隔和时间点也已固定在代码逻辑里，不再通过 `.env` 配置。
 
 需要 `.env` 中至少存在：
 
@@ -40,7 +42,7 @@ python run_telegram.py
 ## 当前已实现
 
 - 角色档案管理
-- 环境变量聊天绑定
+- 固定聊天绑定
 - 模块配置管理
 - 模块详情页
 - 干净的 Telegram runtime 骨架
@@ -48,4 +50,4 @@ python run_telegram.py
 ## 保留与清理
 
 - 已删除旧的 `main.py` 和 `suotou.py` 单文件杂项机器人入口
-- 保留 `fanren_game.py` 作为已有文字游戏自动化逻辑参考
+- `fanren_game.py` 与 `sect_game.py` 仍是当前自动任务链路的活代码依赖，不应按“历史参考文件”处理
