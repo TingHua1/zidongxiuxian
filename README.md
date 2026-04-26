@@ -22,6 +22,19 @@ python run_web.py
 
 启动后访问 `http://127.0.0.1:8000`。
 
+如果你要通过域名直接访问前端，可以额外配置：
+
+- `TG_GAME_HOST`：Web 实际监听地址。服务器部署通常设为 `0.0.0.0`
+- `TG_GAME_DOMAIN`：外部访问域名，例如 `game.example.com`
+- `TG_GAME_SSL_CERTFILE`：证书文件路径
+- `TG_GAME_SSL_KEYFILE`：私钥文件路径
+
+说明：
+
+- 只配 `TG_GAME_DOMAIN` 不会自动替你做 DNS 解析；域名仍需先解析到服务器 IP。
+- 如果配置了 `TG_GAME_DOMAIN`，但 `TG_GAME_HOST` 还留在 `127.0.0.1` / `localhost`，启动时会自动放宽为 `0.0.0.0`，避免只能本机访问。
+- `TG_GAME_SSL_CERTFILE` 和 `TG_GAME_SSL_KEYFILE` 必须同时配置；两者都存在时，`python run_web.py` 会直接以 HTTPS 启动。
+
 ## 启动 Telegram Runtime
 
 ```bash
