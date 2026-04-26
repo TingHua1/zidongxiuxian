@@ -1978,18 +1978,22 @@ class Storage:
             )
             return int(cursor.lastrowid)
 
-    def claim_next_outgoing_command(self) -> Optional[dict]:
+    def claim_next_outgoing_command(self, profile_id: Optional[int]) -> Optional[dict]:
         now = time.time()
+        resolved_profile_id = int(profile_id) if profile_id is not None else None
         with self.connect() as conn:
-            row = conn.execute(
-                """
+            query = """
                 SELECT * FROM outgoing_commands
                 WHERE status='pending' AND (scheduled_at IS NULL OR scheduled_at<=?)
-                ORDER BY scheduled_at ASC, created_at ASC, id ASC
-                LIMIT 1
-                """,
-                (now,),
-            ).fetchone()
+            """
+            params = [now]
+            if resolved_profile_id is None:
+                query += " AND profile_id IS NULL"
+            else:
+                query += " AND profile_id=?"
+                params.append(resolved_profile_id)
+            query += " ORDER BY scheduled_at ASC, created_at ASC, id ASC LIMIT 1"
+            row = conn.execute(query, params).fetchone()
             if not row:
                 return None
             updated = conn.execute(
