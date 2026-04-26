@@ -2025,6 +2025,7 @@ def create_app() -> FastAPI:
             "sect_session": None,
             "lingxiao_state": None,
             "yinluo_state": None,
+            "huangfeng_state": None,
         }
         if active_profile:
             _sync_env_binding(active_profile.id, active_profile.telegram_user_id)
@@ -2181,6 +2182,7 @@ def create_app() -> FastAPI:
         )
         lingxiao_state = None
         yinluo_state = None
+        huangfeng_state = None
         if current_sect_feature and current_sect_feature["name"] == "凌霄宫":
             if sect_chat:
                 db = CompatDb(storage)
@@ -2230,6 +2232,25 @@ def create_app() -> FastAPI:
                     banner_text=(banner_reply or {}).get("text") or "",
                     summon_shadow_reply=summon_shadow_reply,
                 )
+        if current_sect_feature and current_sect_feature["name"] == "黄枫谷":
+            if sect_chat:
+                db = CompatDb(storage)
+                try:
+                    sect_game.ensure_tables(db)
+                    sect_session, huangfeng_state = sect_game.sync_huangfeng_state(
+                        storage,
+                        db,
+                        profile.id,
+                        sect_chat.chat_id,
+                        payload=payload,
+                    )
+                finally:
+                    db.close()
+            if huangfeng_state is None:
+                huangfeng_state = sect_game.build_huangfeng_view(
+                    payload,
+                    session=sect_session,
+                )
 
         return {
             "active_profile": profile,
@@ -2240,6 +2261,7 @@ def create_app() -> FastAPI:
             "sect_session": sect_session,
             "lingxiao_state": lingxiao_state,
             "yinluo_state": yinluo_state,
+            "huangfeng_state": huangfeng_state,
         }
 
     def _get_or_create_profile_for_telegram(

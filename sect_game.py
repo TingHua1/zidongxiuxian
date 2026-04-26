@@ -254,7 +254,8 @@ def _huangfeng_status_meta(status: str) -> dict:
         "dry": {"label": "干旱", "action": "需浇水"},
         "pests": {"label": "虫害", "action": "需除虫"},
         "weeds": {"label": "杂草", "action": "需除草"},
-        "mature": {"label": "成熟", "action": "需采药"},
+        "mature": {"label": "已成熟", "action": "可采药"},
+        "ready": {"label": "已成熟", "action": "可采药"},
         "idle": {"label": "空闲", "action": "可播种"},
     }
     return mapping.get(normalized, {"label": normalized or "未知", "action": "待确认"})
@@ -267,11 +268,39 @@ def _resolve_huangfeng_seed_names(payload) -> dict:
     for item in items:
         if not isinstance(item, dict):
             continue
+        if str(item.get("type") or "").strip() != "seed":
+            continue
         item_id = str(item.get("item_id") or "").strip()
         item_name = str(item.get("name") or "").strip()
         if item_id and item_name:
             seed_name_map[item_id] = item_name
     return seed_name_map
+
+
+def _resolve_huangfeng_seed_options(payload) -> list[dict]:
+    inventory = (payload or {}).get("inventory") or {}
+    items = inventory.get("items") or []
+    options = []
+    seen = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type") or "").strip() != "seed":
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        quantity = _parse_int(item.get("quantity"), 0)
+        options.append(
+            {
+                "value": name,
+                "label": f"{name}（{quantity}）" if quantity >= 0 else name,
+                "quantity": quantity,
+            }
+        )
+    options.sort(key=lambda item: item.get("label") or item.get("value") or "")
+    return options
 
 
 def parse_huangfeng_garden_payload(payload):
@@ -287,6 +316,7 @@ def parse_huangfeng_garden_payload(payload):
     if not isinstance(raw_plots, dict):
         raw_plots = {}
     seed_name_map = _resolve_huangfeng_seed_names(payload or {})
+    seed_options = _resolve_huangfeng_seed_options(payload or {})
     plots = []
     for raw_plot, raw_state in raw_plots.items():
         plot_id = _normalize_plot_value(raw_plot)
@@ -307,7 +337,7 @@ def parse_huangfeng_garden_payload(payload):
                 "has_weeds": status == "weeds",
                 "has_insects": status == "pests",
                 "is_dry": status == "dry",
-                "is_mature": status == "mature",
+                "is_mature": status in {"mature", "ready"},
                 "is_growing": status == "growing",
             }
         )
@@ -319,6 +349,7 @@ def parse_huangfeng_garden_payload(payload):
         "plots": plots,
         "updated_at": time.time(),
         "source": "payload",
+        "seed_options": seed_options,
     }
 
 
@@ -339,27 +370,44 @@ def parse_huangfeng_garden_text(text):
         if not plot or plot in seen:
             continue
         seen.add(plot)
+        is_idle = any(
+            keyword in stripped for keyword in ["空闲", "未播种", "暂无作物", "可播种"]
+        )
+        has_weeds = any(keyword in stripped for keyword in ["杂草", "长草", "荒草"])
+        has_insects = any(
+            keyword in stripped for keyword in ["虫", "虫害", "害虫", "生虫"]
+        )
+        is_dry = any(keyword in stripped for keyword in ["干", "干涸", "缺水", "干旱"])
+        is_mature = any(
+            keyword in stripped
+            for keyword in ["成熟", "可采", "可收获", "已成熟", "ready"]
+        )
+        status = ""
+        if is_mature:
+            status = "ready"
+        elif has_weeds:
+            status = "weeds"
+        elif has_insects:
+            status = "pests"
+        elif is_dry:
+            status = "dry"
+        elif is_idle:
+            status = "idle"
+        else:
+            status = "growing"
+        meta = _huangfeng_status_meta(status)
         plots.append(
             {
                 "plot": plot,
                 "text": stripped,
-                "is_idle": any(
-                    keyword in stripped
-                    for keyword in ["空闲", "未播种", "暂无作物", "可播种"]
-                ),
-                "has_weeds": any(
-                    keyword in stripped for keyword in ["杂草", "长草", "荒草"]
-                ),
-                "has_insects": any(
-                    keyword in stripped for keyword in ["虫", "虫害", "害虫", "生虫"]
-                ),
-                "is_dry": any(
-                    keyword in stripped for keyword in ["干", "干涸", "缺水", "干旱"]
-                ),
-                "is_mature": any(
-                    keyword in stripped
-                    for keyword in ["成熟", "可采", "可收获", "已成熟"]
-                ),
+                "status": status,
+                "status_label": meta["label"],
+                "suggested_action": meta["action"],
+                "is_idle": is_idle,
+                "has_weeds": has_weeds,
+                "has_insects": has_insects,
+                "is_dry": is_dry,
+                "is_mature": is_mature,
             }
         )
     plots.sort(
@@ -445,11 +493,18 @@ def build_huangfeng_view(payload, session=None, now=None):
     if not (state.get("plots") or []):
         state = _load_huangfeng_state(session)
     plots = list(state.get("plots") or [])
+    seed_options = state.get("seed_options") or _resolve_huangfeng_seed_options(
+        payload or {}
+    )
     counts = {"growing": 0, "dry": 0, "pests": 0, "weeds": 0, "mature": 0, "idle": 0}
     for plot in plots:
         status = _normalize_huangfeng_status(plot.get("status"))
-        if status in counts:
+        if status in {"mature", "ready"}:
+            counts["mature"] += 1
+        elif status in counts:
             counts[status] += 1
+        elif plot.get("is_mature"):
+            counts["mature"] += 1
         elif plot.get("is_idle"):
             counts["idle"] += 1
     return {
@@ -461,6 +516,7 @@ def build_huangfeng_view(payload, session=None, now=None):
         "counts": counts,
         "auto_enabled": bool((session or {}).get("auto_huangfeng_enabled")),
         "seed_name": str((session or {}).get("huangfeng_seed_name") or "").strip(),
+        "seed_options": seed_options,
         "exchange_enabled": bool(
             (session or {}).get("auto_huangfeng_exchange_enabled")
         ),

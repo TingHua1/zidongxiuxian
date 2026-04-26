@@ -125,7 +125,15 @@
                     <input type="hidden" name="enabled" value="1">
                     <label>
                         播种种子
+                        {% if huangfeng_state and huangfeng_state.seed_options %}
+                        <select name="seed_name" {% if not sect_command_chat_ready %}disabled{% endif %} required>
+                            {% for option in huangfeng_state.seed_options %}
+                            <option value="{{ option.value }}" {% if sect_session and sect_session.huangfeng_seed_name == option.value %}selected{% endif %}>{{ option.label }}</option>
+                            {% endfor %}
+                        </select>
+                        {% else %}
                         <input name="seed_name" value="{{ sect_session.huangfeng_seed_name if sect_session else '' }}" placeholder="例如：凝血草种子" required {% if not sect_command_chat_ready %}disabled{% endif %}>
+                        {% endif %}
                     </label>
                     <label>
                         种子不足时
