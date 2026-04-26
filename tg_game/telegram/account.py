@@ -9,10 +9,15 @@ def _session_name(session_name: str = "") -> str:
     return (session_name or settings.telegram_session_name).strip()
 
 
-def _session_candidates(session_name: str = "") -> list[str]:
+def _session_candidates(
+    session_name: str = "", allow_fallback: bool = True
+) -> list[str]:
     settings = get_settings()
+    primary = (session_name or "").strip()
+    if primary and not allow_fallback:
+        return [primary]
     candidates = [
-        (session_name or "").strip(),
+        primary,
         (settings.telegram_login_session_name or "").strip(),
         (settings.telegram_session_name or "").strip(),
     ]
@@ -38,8 +43,10 @@ def build_client(session_name: str = "", save_entities: bool = True) -> Telegram
     return client
 
 
-async def get_authorized_account_info(session_name: str = "") -> dict:
-    for candidate in _session_candidates(session_name):
+async def get_authorized_account_info(
+    session_name: str = "", allow_fallback: bool = True
+) -> dict:
+    for candidate in _session_candidates(session_name, allow_fallback=allow_fallback):
         client = build_client(candidate, save_entities=False)
         await client.connect()
         try:
@@ -59,8 +66,10 @@ async def get_authorized_account_info(session_name: str = "") -> dict:
     raise RuntimeError("Telegram session is not authorized")
 
 
-async def has_authorized_session(session_name: str = "") -> bool:
-    for candidate in _session_candidates(session_name):
+async def has_authorized_session(
+    session_name: str = "", allow_fallback: bool = True
+) -> bool:
+    for candidate in _session_candidates(session_name, allow_fallback=allow_fallback):
         client = build_client(candidate, save_entities=False)
         await client.connect()
         try:
@@ -71,8 +80,10 @@ async def has_authorized_session(session_name: str = "") -> bool:
     return False
 
 
-async def resolve_authorized_session_name(session_name: str = "") -> str:
-    for candidate in _session_candidates(session_name):
+async def resolve_authorized_session_name(
+    session_name: str = "", allow_fallback: bool = True
+) -> str:
+    for candidate in _session_candidates(session_name, allow_fallback=allow_fallback):
         client = build_client(candidate, save_entities=False)
         await client.connect()
         try:

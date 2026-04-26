@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from typing import Optional
 
 from telethon import TelegramClient, events
 
@@ -64,6 +65,70 @@ async def _refresh_external_sessions(storage: Storage) -> None:
         except Exception:
             logger.exception("Telegram external keepalive failed")
         await asyncio.sleep(get_external_keepalive_poll_seconds())
+
+
+async def _watch_active_profile_switch(
+    client: TelegramClient,
+    storage: Storage,
+    profile_id: Optional[int],
+    session_name: str,
+) -> None:
+    tracked_profile_id = int(profile_id or 0)
+    tracked_session_name = str(session_name or "").strip()
+    while True:
+        try:
+            await asyncio.sleep(2)
+            active_profile = storage.get_active_profile()
+            if not active_profile:
+                if tracked_profile_id or tracked_session_name:
+                    logger.info(
+                        "Active profile cleared while Telegram runtime is connected; reconnecting runtime"
+                    )
+                    await client.disconnect()
+                    return
+                continue
+            if not active_profile.telegram_verified_at:
+                logger.info(
+                    "Active profile=%s is no longer Telegram-verified; reconnecting runtime",
+                    active_profile.id,
+                )
+                await client.disconnect()
+                return
+            desired_profile_id = int(active_profile.id)
+            desired_session_name = str(
+                active_profile.telegram_session_name or ""
+            ).strip()
+            if not desired_session_name:
+                logger.info(
+                    "Active profile=%s has no Telegram session name; reconnecting runtime",
+                    desired_profile_id,
+                )
+                await client.disconnect()
+                return
+            if desired_profile_id == tracked_profile_id:
+                if (
+                    desired_session_name
+                    and desired_session_name != tracked_session_name
+                ):
+                    logger.info(
+                        "Detected Telegram session change for active profile=%s; reconnecting runtime",
+                        desired_profile_id,
+                    )
+                    await client.disconnect()
+                    return
+                continue
+            if desired_session_name and desired_session_name != tracked_session_name:
+                logger.info(
+                    "Detected active profile switch %s -> %s with different Telegram session; reconnecting runtime",
+                    tracked_profile_id,
+                    desired_profile_id,
+                )
+                await client.disconnect()
+                return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Failed while watching active profile switch")
 
 
 async def _dispatch_outgoing_commands(client: TelegramClient, storage: Storage) -> None:
@@ -157,7 +222,12 @@ def _build_client(session_name: str) -> TelegramClient:
     )
 
 
-async def _register_handlers(client: TelegramClient) -> None:
+async def _register_handlers(
+    client: TelegramClient,
+    *,
+    profile_id: Optional[int] = None,
+    session_name: str = "",
+) -> None:
     settings = get_settings()
     storage = Storage(settings.database_path)
     client._tg_game_storage = storage
@@ -217,9 +287,12 @@ async def _register_handlers(client: TelegramClient) -> None:
     client._tg_game_external_keepalive_task = asyncio.create_task(
         _refresh_external_sessions(storage)
     )
+    client._tg_game_profile_watch_task = asyncio.create_task(
+        _watch_active_profile_switch(client, storage, profile_id, session_name)
+    )
 
 
-async def _bootstrap() -> TelegramClient:
+async def _bootstrap() -> Optional[TelegramClient]:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s"
     )
@@ -228,18 +301,27 @@ async def _bootstrap() -> TelegramClient:
     storage.init_schema()
     storage.maybe_cleanup_bound_messages(min_interval_seconds=0)
     active_profile = storage.get_active_profile()
-    preferred_session_name = (
-        active_profile.telegram_session_name if active_profile else ""
-    ) or ""
-    if (
-        active_profile
-        and active_profile.telegram_verified_at
-        and not preferred_session_name
-        and getattr(settings, "telegram_login_session_name", "")
-    ):
-        preferred_session_name = settings.telegram_login_session_name
+    if not active_profile:
+        logger.info(
+            "No active profile selected; Telegram runtime waiting for web switch"
+        )
+        return None
+    if not active_profile.telegram_verified_at:
+        logger.info(
+            "Active profile=%s is not Telegram-verified yet; runtime waiting for web login",
+            active_profile.id,
+        )
+        return None
+    preferred_session_name = (active_profile.telegram_session_name or "").strip()
+    if not preferred_session_name:
+        logger.info(
+            "Active profile=%s has no Telegram session name yet; runtime waiting for binding",
+            active_profile.id,
+        )
+        return None
     resolved_session_name = await resolve_authorized_session_name(
-        preferred_session_name
+        preferred_session_name,
+        allow_fallback=False,
     )
     client = _build_client(resolved_session_name)
     await client.connect()
@@ -269,7 +351,11 @@ async def _bootstrap() -> TelegramClient:
             telegram_phone=(getattr(me, "phone", "") or active_profile.telegram_phone),
             telegram_session_name=resolved_session_name,
         )
-    await _register_handlers(client)
+    await _register_handlers(
+        client,
+        profile_id=active_profile.id if active_profile else None,
+        session_name=resolved_session_name,
+    )
     return client
 
 
@@ -277,6 +363,9 @@ async def _main() -> None:
     logger.info("Telegram runtime started")
     while True:
         client = await _bootstrap()
+        if client is None:
+            await asyncio.sleep(5)
+            continue
         if not await client.is_user_authorized():
             await client.disconnect()
             await asyncio.sleep(5)
@@ -296,6 +385,13 @@ async def _main() -> None:
                 keepalive_task.cancel()
                 try:
                     await keepalive_task
+                except asyncio.CancelledError:
+                    pass
+            profile_watch_task = getattr(client, "_tg_game_profile_watch_task", None)
+            if profile_watch_task:
+                profile_watch_task.cancel()
+                try:
+                    await profile_watch_task
                 except asyncio.CancelledError:
                     pass
             if client.is_connected():

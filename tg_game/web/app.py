@@ -1881,6 +1881,13 @@ def create_app() -> FastAPI:
     def _login_session_name() -> str:
         return settings.telegram_login_session_name or settings.telegram_session_name
 
+    def _login_session_name_for_phone(phone: str = "") -> str:
+        base_name = (_login_session_name() or "tg_game_login").strip()
+        digits = re.sub(r"\D+", "", str(phone or "").strip())
+        if not digits:
+            return base_name
+        return f"{base_name}_{digits}"
+
     def _build_tianji_login_redirect(message: str = "") -> RedirectResponse:
         normalized_message = (
             message or ""
@@ -2252,6 +2259,41 @@ def create_app() -> FastAPI:
         session_token = request.cookies.get(APP_SESSION_COOKIE, "")
         return storage.get_profile_by_session_token(session_token)
 
+    def _list_session_profiles(request: Request) -> list:
+        return storage.list_profiles_by_session_token(
+            request.cookies.get(APP_SESSION_COOKIE, "")
+        )
+
+    def _profile_belongs_to_session(request: Request, profile_id: int) -> bool:
+        return any(
+            profile.id == int(profile_id) for profile in _list_session_profiles(request)
+        )
+
+    async def _discover_authorized_account(request: Request) -> Optional[dict]:
+        session_names = []
+        seen = set()
+
+        def _push_session_name(value: str) -> None:
+            normalized = str(value or "").strip()
+            if not normalized or normalized in seen:
+                return
+            seen.add(normalized)
+            session_names.append(normalized)
+
+        for profile in _list_session_profiles(request):
+            _push_session_name(profile.telegram_session_name)
+        for profile in storage.list_profiles():
+            _push_session_name(profile.telegram_session_name)
+        _push_session_name(_login_session_name())
+        _push_session_name(settings.telegram_session_name)
+
+        for session_name in session_names:
+            if await has_authorized_session(session_name, allow_fallback=False):
+                return await get_authorized_account_info(
+                    session_name, allow_fallback=False
+                )
+        return None
+
     def _finalize_telegram_login(request: Request, account: dict):
         telegram_user_id = str(account.get("id") or "").strip()
         telegram_username = (account.get("username") or "").strip()
@@ -2292,6 +2334,22 @@ def create_app() -> FastAPI:
             redirect_url="/login?success="
             + quote_plus("TG 登录成功，已自动绑定当前账号"),
         )
+
+    def _switch_session_profile(
+        request: Request, profile_id: int, redirect_url: str = "/profile"
+    ) -> RedirectResponse:
+        session_token = request.cookies.get(APP_SESSION_COOKIE, "")
+        profile = storage.set_current_profile_by_session_token(
+            session_token, profile_id
+        )
+        if not profile:
+            raise HTTPException(
+                status_code=404, detail="Profile not available in session"
+            )
+        storage.activate_profile(profile.id)
+        _sync_env_binding(profile.id, profile.telegram_user_id)
+        storage.request_sect_refresh(profile.id, cooldown_seconds=0)
+        return RedirectResponse(url=redirect_url or "/profile", status_code=303)
 
     @application.middleware("http")
     async def require_app_session(request: Request, call_next):
@@ -2341,15 +2399,13 @@ def create_app() -> FastAPI:
         auth_profile = getattr(request.state, "auth_profile", None)
         if not auth_profile and not error and not success:
             try:
-                if await has_authorized_session():
-                    account = await get_authorized_account_info()
+                account = await _discover_authorized_account(request)
+                if account:
                     return _finalize_telegram_login(request, account)
             except Exception:
                 logger.exception("Auto Telegram login bind failed")
         active_profile = auth_profile
-        session_profiles = storage.list_profiles_by_session_token(
-            request.cookies.get(APP_SESSION_COOKIE, "")
-        )
+        session_profiles = _list_session_profiles(request)
         external_account = None
         if active_profile:
             external_account = storage.get_external_account(
@@ -2416,11 +2472,11 @@ def create_app() -> FastAPI:
                 },
             )
         try:
-            if not await has_authorized_session():
+            account = await _discover_authorized_account(request)
+            if not account:
                 raise RuntimeError(
                     "当前没有可直接复用的 Telegram 会话，请先走手机号验证码登录"
                 )
-            account = await get_authorized_account_info()
         except Exception as exc:
             return RedirectResponse(
                 url=f"/login?error={quote_plus(str(exc))}", status_code=303
@@ -2430,11 +2486,12 @@ def create_app() -> FastAPI:
     @application.post("/auth/telegram/start")
     async def start_telegram_login(phone: str = Form(...)) -> RedirectResponse:
         try:
-            result = await send_login_code(phone, _login_session_name())
+            session_name = _login_session_name_for_phone(phone)
+            result = await send_login_code(phone, session_name)
             challenge_id = storage.create_telegram_login_challenge(
                 phone=result.get("phone") or "",
                 phone_code_hash=result.get("phone_code_hash") or "",
-                session_name=result.get("session_name") or _login_session_name(),
+                session_name=result.get("session_name") or session_name,
             )
             response = RedirectResponse(
                 url="/login?success="
@@ -2529,6 +2586,7 @@ def create_app() -> FastAPI:
     @application.post("/auth/telegram/logout")
     async def telegram_logout(request: Request) -> RedirectResponse:
         profile = getattr(request.state, "auth_profile", None)
+        session_token = request.cookies.get(APP_SESSION_COOKIE, "")
         session_name = (
             profile.telegram_session_name if profile else ""
         ) or _login_session_name()
@@ -2538,12 +2596,29 @@ def create_app() -> FastAPI:
             pass
         if profile:
             storage.clear_profile_telegram_account(profile.id)
-        storage.revoke_app_session(request.cookies.get(APP_SESSION_COOKIE, ""))
-        response = RedirectResponse(
-            url="/login?success=" + quote_plus("TG 账号已退出，请重新走标准登录流程"),
-            status_code=303,
+        has_remaining_profiles = (
+            storage.remove_profile_from_session_token(session_token, profile.id)
+            if profile and session_token
+            else False
         )
-        response.delete_cookie(APP_SESSION_COOKIE)
+        if has_remaining_profiles:
+            next_profile = storage.get_profile_by_session_token(session_token)
+            if next_profile:
+                storage.activate_profile(next_profile.id)
+                _sync_env_binding(next_profile.id, next_profile.telegram_user_id)
+            response = RedirectResponse(
+                url="/login?success="
+                + quote_plus("当前 TG 账号已退出，已切换到浏览器会话中的其他档案"),
+                status_code=303,
+            )
+        else:
+            storage.revoke_app_session(session_token)
+            response = RedirectResponse(
+                url="/login?success="
+                + quote_plus("TG 账号已退出，请重新走标准登录流程"),
+                status_code=303,
+            )
+            response.delete_cookie(APP_SESSION_COOKIE)
         response.delete_cookie(TG_LOGIN_CHALLENGE_COOKIE)
         return response
 
@@ -2717,6 +2792,14 @@ def create_app() -> FastAPI:
                 **shared_template_context,
             },
         )
+
+    @application.post("/profiles/{profile_id}/switch")
+    async def switch_profile(
+        request: Request,
+        profile_id: int,
+        redirect_to: str = Form("/profile"),
+    ) -> RedirectResponse:
+        return _switch_session_profile(request, profile_id, redirect_to)
 
     @application.get("/messages", response_class=HTMLResponse)
     async def messages_page(
@@ -3386,11 +3469,28 @@ def create_app() -> FastAPI:
         return RedirectResponse(url="/", status_code=303)
 
     @application.post("/profiles/{profile_id}/bind-current-telegram")
-    async def bind_current_telegram_account(profile_id: int) -> RedirectResponse:
+    async def bind_current_telegram_account(
+        request: Request, profile_id: int
+    ) -> RedirectResponse:
         profile = storage.get_profile(profile_id)
         if not profile:
             raise HTTPException(status_code=404, detail="Profile not found")
-        account = await get_authorized_account_info()
+        if not _profile_belongs_to_session(request, profile_id):
+            raise HTTPException(
+                status_code=403, detail="Profile not available in current session"
+            )
+        profile_session_name = (profile.telegram_session_name or "").strip()
+        if profile_session_name:
+            account = await get_authorized_account_info(
+                profile_session_name, allow_fallback=False
+            )
+        else:
+            account = await _discover_authorized_account(request)
+            if not account:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No authorized Telegram session available for binding",
+                )
         telegram_user_id = str(account.get("id") or "").strip()
         if not telegram_user_id:
             raise HTTPException(status_code=400, detail="Telegram account unavailable")
