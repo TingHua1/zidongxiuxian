@@ -27,6 +27,17 @@ class Settings(BaseModel):
     }
     host: str = os.getenv("TG_GAME_HOST", "127.0.0.1")
     port: int = int(os.getenv("TG_GAME_PORT", "8000"))
+    domain: str = os.getenv("TG_GAME_DOMAIN", "").strip()
+    ssl_certfile: Optional[Path] = (
+        Path(os.getenv("TG_GAME_SSL_CERTFILE", "").strip())
+        if os.getenv("TG_GAME_SSL_CERTFILE", "").strip()
+        else None
+    )
+    ssl_keyfile: Optional[Path] = (
+        Path(os.getenv("TG_GAME_SSL_KEYFILE", "").strip())
+        if os.getenv("TG_GAME_SSL_KEYFILE", "").strip()
+        else None
+    )
     database_path: Path = BASE_DIR / "tg_game.db"
     telegram_api_id: str = os.getenv("TELEGRAM_API_ID", "")
     telegram_api_hash: str = os.getenv("TELEGRAM_API_HASH", "")
