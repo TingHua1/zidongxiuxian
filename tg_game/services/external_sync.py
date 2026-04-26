@@ -35,8 +35,33 @@ def resolve_external_cookie(cookie_text: str, refreshed_cookie: str = "") -> str
 
 
 def get_effective_external_cookie(storage: Storage) -> str:
+    settings = get_settings()
+    authorized_user_id = str(settings.authorized_user_id or "").strip()
+    if authorized_user_id:
+        profile = storage.get_profile_by_telegram_user_id(authorized_user_id)
+        if profile:
+            external_account = (
+                storage.get_external_account(profile.id, ASC_PROVIDER) or {}
+            )
+            cookie_text = normalize_external_cookie(
+                external_account.get("cookie_text") or ""
+            )
+            if cookie_text.startswith("session="):
+                return cookie_text
     override_cookie = storage.get_external_cookie_override()
     return normalize_external_cookie(override_cookie or "")
+
+
+def is_authorized_profile(storage: Storage, profile) -> bool:
+    if not profile:
+        return False
+    authorized_user_id = str(get_settings().authorized_user_id or "").strip()
+    if not authorized_user_id:
+        return False
+    return (
+        str(getattr(profile, "telegram_user_id", "") or "").strip()
+        == authorized_user_id
+    )
 
 
 def get_external_keepalive_seconds() -> int:
@@ -131,10 +156,9 @@ def sync_external_account(
     profile = storage.get_profile(profile_id)
     if not profile:
         raise RuntimeError("Profile not found")
+    is_admin = is_authorized_profile(storage, profile)
     normalized_cookie = normalize_external_cookie(
-        cookie_text
-        or (storage.get_external_account(profile_id, provider) or {}).get("cookie_text")
-        or get_effective_external_cookie(storage)
+        cookie_text or get_effective_external_cookie(storage)
     )
     if not normalized_cookie:
         raise RuntimeError("缺少天机阁登录 Cookie")
@@ -148,16 +172,18 @@ def sync_external_account(
 
     payload, _status, refreshed_cookie = get_cultivator(username, normalized_cookie)
     persisted_cookie = resolve_external_cookie(normalized_cookie, refreshed_cookie)
+    stored_cookie = persisted_cookie if is_admin else ""
     storage.upsert_external_account(
         profile_id=profile_id,
         provider=provider,
         telegram_user_id=str(profile.telegram_user_id or ""),
         telegram_username=(profile.telegram_username or ""),
         status="connected",
-        cookie_text=persisted_cookie,
+        cookie_text=stored_cookie,
         me_payload=payload,
     )
-    storage.set_external_cookie_override(persisted_cookie)
+    if is_admin:
+        storage.set_external_cookie_override(persisted_cookie)
     return payload if isinstance(payload, dict) else {}
 
 
@@ -169,11 +195,16 @@ def mark_external_account_failure(
     provider: str = ASC_PROVIDER,
     cookie_text: str = "",
 ) -> None:
+    profile = storage.get_profile(profile_id)
     storage.mark_external_account_error(
         profile_id,
         provider,
         str(exc),
         status="expired" if isinstance(exc, AscAuthError) else "error",
     )
-    if isinstance(exc, AscAuthError) and cookie_text:
+    if (
+        isinstance(exc, AscAuthError)
+        and cookie_text
+        and is_authorized_profile(storage, profile)
+    ):
         clear_external_cookie_override_if_matches(storage, cookie_text)

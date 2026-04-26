@@ -10,6 +10,7 @@ from tg_game.runtime.executors import (
     SectExecutor,
 )
 from tg_game.services import module_registry
+from tg_game.services.external_sync import is_authorized_profile
 from tg_game.services.stock_sync import sync_stock_market_message
 from tg_game.storage import Storage
 
@@ -41,7 +42,8 @@ class Router:
 
     async def dispatch(self, client: object, event: object) -> bool:
         context = self._build_context(client, event)
-        if context.chat_binding and context.message_id:
+        should_persist_message = is_authorized_profile(self.storage, context.profile)
+        if context.chat_binding and context.message_id and should_persist_message:
             existing_message = self.storage.get_bound_message(
                 context.chat_id or 0, context.message_id
             )

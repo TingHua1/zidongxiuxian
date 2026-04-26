@@ -29,7 +29,9 @@
         <nav class="nav">
             <a class="{% if current_path == '/' %}active{% endif %}" href="/">天机总览</a>
             <a class="{% if current_path == '/profile' %}active{% endif %}" href="/profile">角色真身</a>
+            {% if is_admin_profile %}
             <a class="{% if current_path == '/messages' %}active{% endif %}" href="/messages">传音卷宗</a>
+            {% endif %}
             <a class="{% if current_path == '/modules/cultivation' %}active{% endif %}" href="/modules/cultivation">闭关洞府</a>
             <a class="{% if current_path == '/modules/sect' %}active{% endif %}" href="/modules/sect">宗门大殿</a>
             <a class="{% if current_path == '/modules/inventory' %}active{% endif %}" href="/modules/inventory">随身储物</a>
@@ -42,7 +44,12 @@
         {% if active_profile %}
         <div class="sidebar-footer">
             <p class="muted">当前神识链接</p>
-            <a class="inline-link" href="/login">{{ active_profile.name }}</a>
+            <div class="sidebar-profile-actions">
+                <a class="inline-link" href="/login">{{ active_profile.name }}</a>
+                <form method="post" action="/profiles/{{ active_profile.id }}/refresh-info">
+                    <button class="inline-button sidebar-refresh-btn" type="submit" title="探寻天机更新" aria-label="探寻天机更新" {% if not active_profile.telegram_verified_at or not external_account or external_account.status != 'connected' %}disabled{% endif %}>刷新</button>
+                </form>
+            </div>
             <p class="muted" style="margin-top: 8px;">天机阁阵法运作正常</p>
         </div>
         {% endif %}

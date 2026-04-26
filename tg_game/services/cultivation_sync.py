@@ -56,7 +56,7 @@ def sync_cultivation_session(
     runtime_db = db or fanren_game.RuntimeDb(storage)
     try:
         fanren_game.ensure_tables(runtime_db)
-        session = fanren_game.get_session(runtime_db, chat_id)
+        session = fanren_game.get_session(runtime_db, chat_id, profile_id=profile_id)
         if (
             deep_start
             and deep_end
@@ -86,12 +86,13 @@ def sync_cultivation_session(
         fanren_game.update_session(
             runtime_db,
             chat_id,
+            profile_id=profile_id,
             last_event=status_event,
             last_summary=status_summary,
             next_check_time=next_check_time,
             next_check_source=next_check_source,
         )
-        session = fanren_game.get_session(runtime_db, chat_id)
+        session = fanren_game.get_session(runtime_db, chat_id, profile_id=profile_id)
     finally:
         if db is None:
             runtime_db.close()

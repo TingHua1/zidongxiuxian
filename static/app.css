@@ -186,6 +186,19 @@ ul li { margin-bottom: 6px; }
     text-align: center;
 }
 .sidebar-footer .muted { font-size: 11px; }
+.sidebar-profile-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.sidebar-profile-actions form { margin: 0; }
+.sidebar-refresh-btn {
+    min-height: 32px;
+    padding: 6px 10px;
+    font-size: 12px;
+}
 
 /* Main Content Area */
 .content {

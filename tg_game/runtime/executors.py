@@ -123,34 +123,12 @@ class BaseExecutor(ABC):
     ) -> bool:
         if await context.bot_message_targets_profile():
             return True
-        if context.chat_id is None or context.message_id is None:
-            return False
-        expected_user_id = self._expected_profile_user_id(context)
-        if not expected_user_id:
-            return False
-        bound_message = storage.get_bound_message(context.chat_id, context.message_id)
-        if not bound_message:
-            return False
-        reply_to_msg_id = bound_message.get("reply_to_msg_id")
-        if not reply_to_msg_id:
-            return False
-        reply_message = storage.get_bound_message(context.chat_id, int(reply_to_msg_id))
-        if not reply_message:
-            return False
-        return str(reply_message.get("sender_id") or "") == str(expected_user_id)
+        return False
 
     def _get_stored_reply_message(
         self, context: EventContext, storage: Storage
     ) -> Optional[dict]:
-        if context.chat_id is None or context.message_id is None:
-            return None
-        bound_message = storage.get_bound_message(context.chat_id, context.message_id)
-        if not bound_message:
-            return None
-        reply_to_msg_id = bound_message.get("reply_to_msg_id")
-        if not reply_to_msg_id:
-            return None
-        return storage.get_bound_message(context.chat_id, int(reply_to_msg_id))
+        return None
 
     async def _get_reply_message_text(
         self, context: EventContext, storage: Storage
@@ -158,8 +136,7 @@ class BaseExecutor(ABC):
         reply_text = await context.get_reply_message_text()
         if reply_text:
             return reply_text.strip()
-        reply_message = self._get_stored_reply_message(context, storage)
-        return ((reply_message or {}).get("text") or "").strip()
+        return ""
 
     @abstractmethod
     async def handle(self, context: EventContext, storage: Storage) -> bool:
@@ -194,7 +171,10 @@ class FanrenExecutor(BaseExecutor):
                         context.profile.id, context.chat_id, context.thread_id
                     )
                     fanren_game.update_session(
-                        db, context.chat_id, thread_id=context.thread_id
+                        db,
+                        context.chat_id,
+                        profile_id=context.profile.id if context.profile else None,
+                        thread_id=context.thread_id,
                     )
                 return await self._handle_command(context, db)
 
@@ -218,10 +198,17 @@ class FanrenExecutor(BaseExecutor):
                     (stored_reply_message or {}).get("message_id") or 0
                 )
                 parsed = await fanren_game.handle_bot_message(
-                    context.event, db, client=context.client
+                    context.event,
+                    db,
+                    client=context.client,
+                    profile_id=context.profile.id if context.profile else None,
                 )
                 if parsed is not None:
-                    session = fanren_game.get_session(db, context.chat_id)
+                    session = fanren_game.get_session(
+                        db,
+                        context.chat_id,
+                        profile_id=context.profile.id if context.profile else None,
+                    )
                     await fanren_game.maybe_delete_normal_command_message(
                         context.event,
                         session,
@@ -242,6 +229,20 @@ class FanrenExecutor(BaseExecutor):
                             )
                     self._record_result(context, storage, parsed.event)
                 return parsed is not None
+            if (
+                context.is_bot_sender
+                and binding_bot
+                and context.bot_username == binding_bot
+                and await context.bot_message_targets_profile()
+            ):
+                parsed = await fanren_game.handle_bot_message(
+                    context.event,
+                    db,
+                    client=context.client,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                if parsed is not None:
+                    return True
             return False
         finally:
             db.close()
@@ -264,7 +265,11 @@ class FanrenExecutor(BaseExecutor):
         if context.chat_id is not None:
             db = SQLiteCompatDb(storage)
             try:
-                session = fanren_game.get_session(db, context.chat_id)
+                session = fanren_game.get_session(
+                    db,
+                    context.chat_id,
+                    profile_id=context.profile.id if context.profile else None,
+                )
                 mode = (
                     (session.get("retreat_mode") or "normal") if session else "normal"
                 )
@@ -297,32 +302,71 @@ class FanrenExecutor(BaseExecutor):
 
         setting = context.get_setting("cultivation") or context.get_setting("basic")
         if setting:
-            fanren_game.set_interval(db, chat_id, setting.check_interval_seconds)
+            fanren_game.set_interval(
+                db,
+                chat_id,
+                setting.check_interval_seconds,
+                profile_id=context.profile.id if context.profile else None,
+            )
             if setting.command_template:
-                fanren_game.set_check_command(db, chat_id, setting.command_template)
+                fanren_game.set_check_command(
+                    db,
+                    chat_id,
+                    setting.command_template,
+                    profile_id=context.profile.id if context.profile else None,
+                )
 
         if action == "on":
             if payload in {"normal", "deep"}:
-                fanren_game.set_mode(db, chat_id, payload)
+                fanren_game.set_mode(
+                    db,
+                    chat_id,
+                    payload,
+                    profile_id=context.profile.id if context.profile else None,
+                )
             if context.profile:
                 sync_cultivation_session(storage, context.profile.id, chat_id, db)
-            fanren_game.set_enabled(db, chat_id, True, reset_failure=True)
-            session = fanren_game.get_session(db, chat_id)
+            fanren_game.set_enabled(
+                db,
+                chat_id,
+                True,
+                reset_failure=True,
+                profile_id=context.profile.id if context.profile else None,
+            )
+            session = fanren_game.get_session(
+                db,
+                chat_id,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply(
                 f"凡人修仙自动化已开启，当前模式为 {'深度闭关' if session.get('retreat_mode') == 'deep' else '普通闭关'}，将按接口冷却时间自动调度。"
             )
             return True
         if action == "off":
-            fanren_game.set_enabled(db, chat_id, False)
+            fanren_game.set_enabled(
+                db,
+                chat_id,
+                False,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply("凡人修仙自动化已关闭。")
             return True
         if action == "status":
-            session = fanren_game.get_session(db, chat_id)
+            session = fanren_game.get_session(
+                db,
+                chat_id,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply(fanren_game.build_status_text(session))
             return True
         if action == "dry-run":
             enabled = payload.lower() == "on"
-            fanren_game.set_dry_run(db, chat_id, enabled)
+            fanren_game.set_dry_run(
+                db,
+                chat_id,
+                enabled,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply(f"凡人修仙 dry-run 已{'开启' if enabled else '关闭'}。")
             return True
         if action == "interval":
@@ -331,14 +375,24 @@ class FanrenExecutor(BaseExecutor):
             except ValueError as exc:
                 await context.reply(f"设置失败: {exc}")
                 return True
-            fanren_game.set_interval(db, chat_id, interval_seconds)
+            fanren_game.set_interval(
+                db,
+                chat_id,
+                interval_seconds,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply(
                 f"凡人修仙检查间隔已设置为 {fanren_game.format_duration(interval_seconds)}。"
             )
             return True
         if action == "check":
             try:
-                check_command = fanren_game.set_check_command(db, chat_id, payload)
+                check_command = fanren_game.set_check_command(
+                    db,
+                    chat_id,
+                    payload,
+                    profile_id=context.profile.id if context.profile else None,
+                )
             except ValueError as exc:
                 await context.reply(f"设置失败: {exc}")
                 return True
@@ -346,7 +400,12 @@ class FanrenExecutor(BaseExecutor):
             return True
         if action == "mode":
             try:
-                retreat_mode = fanren_game.set_mode(db, chat_id, payload)
+                retreat_mode = fanren_game.set_mode(
+                    db,
+                    chat_id,
+                    payload,
+                    profile_id=context.profile.id if context.profile else None,
+                )
             except ValueError as exc:
                 await context.reply(f"设置失败: {exc}")
                 return True
@@ -360,12 +419,20 @@ class FanrenExecutor(BaseExecutor):
             if context.profile:
                 sync_cultivation_session(storage, context.profile.id, chat_id, db)
             _ok, status = await fanren_game.maybe_send_check(
-                context.client, db, chat_id, force=False
+                context.client,
+                db,
+                chat_id,
+                force=False,
+                profile_id=context.profile.id if context.profile else None,
             )
             await context.reply(f"执行结果: {status}")
             return True
         if action == "reset":
-            fanren_game.reset_failures(db, chat_id)
+            fanren_game.reset_failures(
+                db,
+                chat_id,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply("凡人修仙失败计数已重置。")
             return True
 
@@ -412,7 +479,10 @@ class SectExecutor(BaseExecutor):
                         context.profile.id, context.chat_id, context.thread_id
                     )
                     sect_game.update_session(
-                        db, context.chat_id, thread_id=context.thread_id
+                        db,
+                        context.chat_id,
+                        profile_id=context.profile.id if context.profile else None,
+                        thread_id=context.thread_id,
                     )
                 return await self._handle_command(context, db)
 
@@ -442,7 +512,10 @@ class SectExecutor(BaseExecutor):
                     ):
                         return False
                 parsed = await sect_game.handle_bot_message(
-                    context.event, db, client=context.client
+                    context.event,
+                    db,
+                    client=context.client,
+                    profile_id=context.profile.id if context.profile else None,
                 )
                 if parsed is not None:
                     return True
@@ -461,25 +534,54 @@ class SectExecutor(BaseExecutor):
 
         setting = context.get_setting("sect") or context.get_setting("basic")
         if setting:
-            sect_game.set_interval(db, chat_id, setting.check_interval_seconds)
+            sect_game.set_interval(
+                db,
+                chat_id,
+                setting.check_interval_seconds,
+                profile_id=context.profile.id if context.profile else None,
+            )
             if setting.command_template:
-                sect_game.set_check_command(db, chat_id, setting.command_template)
+                sect_game.set_check_command(
+                    db,
+                    chat_id,
+                    setting.command_template,
+                    profile_id=context.profile.id if context.profile else None,
+                )
 
         if action == "on":
-            sect_game.set_enabled(db, chat_id, True)
+            sect_game.set_enabled(
+                db,
+                chat_id,
+                True,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply("宗门模块已开启。")
             return True
         if action == "off":
-            sect_game.set_enabled(db, chat_id, False)
+            sect_game.set_enabled(
+                db,
+                chat_id,
+                False,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply("宗门模块已关闭。")
             return True
         if action == "status":
-            session = sect_game.get_session(db, chat_id)
+            session = sect_game.get_session(
+                db,
+                chat_id,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply(sect_game.build_status_text(session))
             return True
         if action == "dry-run":
             enabled = payload.lower() == "on"
-            sect_game.set_dry_run(db, chat_id, enabled)
+            sect_game.set_dry_run(
+                db,
+                chat_id,
+                enabled,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply(f"宗门 dry-run 已{'开启' if enabled else '关闭'}。")
             return True
         if action == "interval":
@@ -488,14 +590,24 @@ class SectExecutor(BaseExecutor):
             except ValueError as exc:
                 await context.reply(f"设置失败: {exc}")
                 return True
-            sect_game.set_interval(db, chat_id, interval_seconds)
+            sect_game.set_interval(
+                db,
+                chat_id,
+                interval_seconds,
+                profile_id=context.profile.id if context.profile else None,
+            )
             await context.reply(
                 f"宗门检查间隔已设置为 {fanren_game.format_duration(interval_seconds)}。"
             )
             return True
         if action == "check":
             try:
-                check_command = sect_game.set_check_command(db, chat_id, payload)
+                check_command = sect_game.set_check_command(
+                    db,
+                    chat_id,
+                    payload,
+                    profile_id=context.profile.id if context.profile else None,
+                )
             except ValueError as exc:
                 await context.reply(f"设置失败: {exc}")
                 return True
@@ -503,25 +615,45 @@ class SectExecutor(BaseExecutor):
             return True
         if action == "panel":
             _ok, status, _msg_id = await sect_game.maybe_send_check(
-                context.client, db, chat_id, force=True, command_text=".我的宗门"
+                context.client,
+                db,
+                chat_id,
+                force=True,
+                command_text=".我的宗门",
+                profile_id=context.profile.id if context.profile else None,
             )
             await context.reply(f"执行结果: {status}")
             return True
         if action == "sign":
             _ok, status, _msg_id = await sect_game.maybe_send_check(
-                context.client, db, chat_id, force=True, command_text=".宗门点卯"
+                context.client,
+                db,
+                chat_id,
+                force=True,
+                command_text=".宗门点卯",
+                profile_id=context.profile.id if context.profile else None,
             )
             await context.reply(f"执行结果: {status}")
             return True
         if action == "teach":
             _ok, status, _msg_id = await sect_game.maybe_send_check(
-                context.client, db, chat_id, force=True, command_text=".宗门传功"
+                context.client,
+                db,
+                chat_id,
+                force=True,
+                command_text=".宗门传功",
+                profile_id=context.profile.id if context.profile else None,
             )
             await context.reply(f"执行结果: {status}")
             return True
         if action == "bounty":
             _ok, status, _msg_id = await sect_game.maybe_send_check(
-                context.client, db, chat_id, force=True, command_text=".宗门悬赏"
+                context.client,
+                db,
+                chat_id,
+                force=True,
+                command_text=".宗门悬赏",
+                profile_id=context.profile.id if context.profile else None,
             )
             await context.reply(f"执行结果: {status}")
             return True
@@ -535,6 +667,7 @@ class SectExecutor(BaseExecutor):
                 chat_id,
                 force=True,
                 command_text=f".提交任务 {payload}",
+                profile_id=context.profile.id if context.profile else None,
             )
             await context.reply(f"执行结果: {status}")
             return True
@@ -614,7 +747,11 @@ class SectExecutor(BaseExecutor):
             )
         if action == "run":
             _ok, status, _msg_id = await sect_game.maybe_send_check(
-                context.client, db, chat_id, force=True
+                context.client,
+                db,
+                chat_id,
+                force=True,
+                profile_id=context.profile.id if context.profile else None,
             )
             await context.reply(f"执行结果: {status}")
             return True
@@ -641,7 +778,12 @@ class SectExecutor(BaseExecutor):
             await context.reply(usage)
             return True
         _ok, status, _msg_id = await sect_game.maybe_send_check(
-            context.client, db, chat_id, force=True, command_text=command_text
+            context.client,
+            db,
+            chat_id,
+            force=True,
+            command_text=command_text,
+            profile_id=context.profile.id if context.profile else None,
         )
         await context.reply(f"执行结果: {status}")
         return True
@@ -702,6 +844,25 @@ class GeneralGameExecutor(BaseExecutor):
         if context.is_bot_sender and await self._bot_message_targets_profile(
             context, storage
         ):
+            reply_text = await self._get_reply_message_text(context, storage)
+            if (
+                context.profile
+                and context.chat_id is not None
+                and reply_text
+                in {
+                    ".我的持仓",
+                    ".股市任务",
+                }
+            ):
+                storage.upsert_stock_player_reply(
+                    context.profile.id,
+                    context.chat_id,
+                    reply_text,
+                    context.text,
+                    thread_id=context.thread_id,
+                    source_message_id=int(context.message_id or 0),
+                    reply_to_msg_id=int(context.reply_to_msg_id or 0),
+                )
             for module_key, parser in self._parsers:
                 parsed = parser(context.text)
                 if parsed is not None:
@@ -733,11 +894,6 @@ class GeneralGameExecutor(BaseExecutor):
             return
 
         pending_command_msg_id = int(batch.get("pending_command_msg_id") or 0)
-        current_message = (
-            storage.get_bound_message(context.chat_id, context.message_id)
-            if context.message_id
-            else None
-        )
         planned_rounds = max(
             int(batch.get("target_count") or 0) - int(batch.get("initial_count") or 0),
             0,
@@ -761,35 +917,17 @@ class GeneralGameExecutor(BaseExecutor):
             )
             return
 
-        message_is_bot = context.is_bot_sender or bool(
-            (current_message or {}).get("is_bot")
-        )
-        if not message_is_bot:
+        if not context.is_bot_sender:
             return
         binding_bot = (context.chat_binding.bot_username or "").lower().lstrip("@")
-        effective_bot_username = context.bot_username or str(
-            (current_message or {}).get("sender_username") or ""
-        ).strip().lower().lstrip("@")
+        effective_bot_username = context.bot_username
         if (
             binding_bot
             and effective_bot_username
             and effective_bot_username != binding_bot
         ):
             return
-        reply_message = current_message
-        if pending_command_msg_id:
-            stored_reply_message = storage.get_latest_bot_reply_message(
-                context.chat_id, pending_command_msg_id
-            )
-            if (
-                stored_reply_message
-                and int((reply_message or {}).get("reply_to_msg_id") or 0)
-                != pending_command_msg_id
-            ):
-                reply_message = stored_reply_message
-        reply_to_msg_id = int(
-            (reply_message or {}).get("reply_to_msg_id") or context.reply_to_msg_id or 0
-        )
+        reply_to_msg_id = int(context.reply_to_msg_id or 0)
         if not pending_command_msg_id or reply_to_msg_id != pending_command_msg_id:
             return
 
@@ -817,6 +955,7 @@ class GeneralGameExecutor(BaseExecutor):
             thread_id=int(batch.get("thread_id")) if batch.get("thread_id") else None,
             chat_type=str(batch.get("chat_type") or "group"),
             bot_username=str(batch.get("bot_username") or ""),
+            delay_seconds=5,
         )
 
     async def _maybe_resume_idle_divination_batch(
@@ -910,7 +1049,12 @@ class GeneralGameExecutor(BaseExecutor):
             )
             return True
         _ok, status, _msg_id = await sect_game.maybe_send_check(
-            context.client, db, chat_id, force=True, command_text=command_text
+            context.client,
+            db,
+            chat_id,
+            force=True,
+            command_text=command_text,
+            profile_id=context.profile.id if context.profile else None,
         )
         await context.reply(f"执行结果: {status}")
         return True
@@ -936,7 +1080,12 @@ class GeneralGameExecutor(BaseExecutor):
             await context.reply("用法: .sect ty guide 金|木|水|火|土|shock")
             return True
         _ok, status, _msg_id = await sect_game.maybe_send_check(
-            context.client, db, chat_id, force=True, command_text=command_text
+            context.client,
+            db,
+            chat_id,
+            force=True,
+            command_text=command_text,
+            profile_id=context.profile.id if context.profile else None,
         )
         await context.reply(f"执行结果: {status}")
         return True
@@ -972,7 +1121,12 @@ class GeneralGameExecutor(BaseExecutor):
             )
             return True
         _ok, status, _msg_id = await sect_game.maybe_send_check(
-            context.client, db, chat_id, force=True, command_text=command_text
+            context.client,
+            db,
+            chat_id,
+            force=True,
+            command_text=command_text,
+            profile_id=context.profile.id if context.profile else None,
         )
         await context.reply(f"执行结果: {status}")
         return True

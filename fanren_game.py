@@ -30,6 +30,25 @@ FANREN_COMMAND_COOLDOWN = int(os.getenv("FANREN_COMMAND_COOLDOWN", "30"))
 FANREN_MAX_FAILURES = int(os.getenv("FANREN_MAX_FAILURES", "3"))
 FANREN_MIN_INTERVAL = int(os.getenv("FANREN_MIN_INTERVAL", "30"))
 FANREN_RUNNER_POLL_SECONDS = int(os.getenv("FANREN_RUNNER_POLL_SECONDS", "5"))
+FANREN_REPLY_SYNC_GRACE_SECONDS = int(
+    os.getenv("FANREN_REPLY_SYNC_GRACE_SECONDS", "300")
+)
+FANREN_AUTO_JIYIN_KEYWORD = "神念直入脑海，一个苍老的声音"
+FANREN_AUTO_NANLONG_KEYWORD = "你感到一股无法抗拒的意志锁定了你的神魂"
+FANREN_AUTO_JIYIN_CHOICES = {
+    "献上魂魄": ".献上魂魄",
+    "收敛气息": ".收敛气息",
+}
+FANREN_AUTO_NANLONG_CHOICES = {
+    "交换 法宝": ".交换 法宝",
+    "交换 功法": ".交换 功法",
+    "拒绝交易": ".拒绝交易",
+}
+
+
+def _normalize_special_choice(choice: str) -> str:
+    return str(choice or "").strip().lstrip(".").strip()
+
 
 FANREN_FAILURE_EVENTS = {"blocked", "resource_blocked", "unknown"}
 FANREN_DEEP_PENDING_EVENTS = {"deep_cultivating", "deep_started", "deep_settlement_due"}
@@ -99,6 +118,7 @@ def ensure_tables(db):
     db.cur.execute(
         """
         CREATE TABLE IF NOT EXISTS fanren_sessions (
+            profile_id INTEGER NOT NULL DEFAULT 0,
             chat_id INTEGER NOT NULL,
             bot_username TEXT NOT NULL,
             enabled INTEGER DEFAULT 0,
@@ -119,7 +139,11 @@ def ensure_tables(db):
             retreat_mode TEXT DEFAULT 'normal',
             thread_id INTEGER,
             delete_normal_command_message INTEGER DEFAULT 0,
-            PRIMARY KEY (chat_id, bot_username)
+            auto_jiyin_enabled INTEGER DEFAULT 0,
+            auto_jiyin_choice TEXT DEFAULT '',
+            auto_nanlong_enabled INTEGER DEFAULT 0,
+            auto_nanlong_choice TEXT DEFAULT '',
+            PRIMARY KEY (profile_id, chat_id, bot_username)
         )
         """
     )
@@ -141,18 +165,40 @@ def ensure_tables(db):
         db.cur.execute(
             "ALTER TABLE fanren_sessions ADD COLUMN delete_normal_command_message INTEGER DEFAULT 0"
         )
+    if "auto_jiyin_enabled" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN auto_jiyin_enabled INTEGER DEFAULT 0"
+        )
+    if "auto_jiyin_choice" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN auto_jiyin_choice TEXT DEFAULT ''"
+        )
+    if "auto_nanlong_enabled" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN auto_nanlong_enabled INTEGER DEFAULT 0"
+        )
+    if "auto_nanlong_choice" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN auto_nanlong_choice TEXT DEFAULT ''"
+        )
+    if "profile_id" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 0"
+        )
     db.conn.commit()
 
 
-def ensure_session(db, chat_id, bot_username=FANREN_BOT_USERNAME):
+def ensure_session(db, chat_id, bot_username=FANREN_BOT_USERNAME, profile_id=None):
     ensure_tables(db)
+    resolved_profile_id = int(profile_id or 0)
     db.cur.execute(
         """
         INSERT OR IGNORE INTO fanren_sessions
-            (chat_id, bot_username, interval_seconds, command_text, retreat_mode)
-        VALUES (?, ?, ?, ?, ?)
+            (profile_id, chat_id, bot_username, interval_seconds, command_text, retreat_mode)
+        VALUES (?, ?, ?, ?, ?, ?)
         """,
         (
+            resolved_profile_id,
             chat_id,
             bot_username,
             FANREN_DEFAULT_INTERVAL,
@@ -160,29 +206,51 @@ def ensure_session(db, chat_id, bot_username=FANREN_BOT_USERNAME):
             FANREN_DEFAULT_MODE,
         ),
     )
+    if resolved_profile_id:
+        db.cur.execute(
+            "UPDATE fanren_sessions SET profile_id=? WHERE chat_id=? AND bot_username=? AND (profile_id IS NULL OR profile_id=0)",
+            (resolved_profile_id, chat_id, bot_username),
+        )
     db.conn.commit()
 
 
-def get_session(db, chat_id, bot_username=FANREN_BOT_USERNAME):
-    ensure_session(db, chat_id, bot_username)
-    db.cur.execute(
-        "SELECT * FROM fanren_sessions WHERE chat_id=? AND bot_username=?",
-        (chat_id, bot_username),
-    )
+def get_session(db, chat_id, bot_username=FANREN_BOT_USERNAME, profile_id=None):
+    ensure_session(db, chat_id, bot_username, profile_id=profile_id)
+    resolved_profile_id = int(profile_id or 0)
+    if resolved_profile_id:
+        db.cur.execute(
+            "SELECT * FROM fanren_sessions WHERE profile_id=? AND chat_id=? AND bot_username=?",
+            (resolved_profile_id, chat_id, bot_username),
+        )
+    else:
+        db.cur.execute(
+            "SELECT * FROM fanren_sessions WHERE chat_id=? AND bot_username=? ORDER BY profile_id DESC LIMIT 1",
+            (chat_id, bot_username),
+        )
     row = db.cur.fetchone()
     return dict(zip([col[0] for col in db.cur.description], row)) if row else None
 
 
-def update_session(db, chat_id, bot_username=FANREN_BOT_USERNAME, **fields):
+def update_session(
+    db, chat_id, bot_username=FANREN_BOT_USERNAME, profile_id=None, **fields
+):
     if not fields:
         return
-    ensure_session(db, chat_id, bot_username)
+    ensure_session(db, chat_id, bot_username, profile_id=profile_id)
+    resolved_profile_id = int(profile_id or 0)
     assignments = ", ".join(f"{key}=?" for key in fields)
-    values = list(fields.values()) + [chat_id, bot_username]
-    db.cur.execute(
-        f"UPDATE fanren_sessions SET {assignments} WHERE chat_id=? AND bot_username=?",
-        values,
-    )
+    if resolved_profile_id:
+        values = list(fields.values()) + [resolved_profile_id, chat_id, bot_username]
+        db.cur.execute(
+            f"UPDATE fanren_sessions SET {assignments} WHERE profile_id=? AND chat_id=? AND bot_username=?",
+            values,
+        )
+    else:
+        values = list(fields.values()) + [chat_id, bot_username]
+        db.cur.execute(
+            f"UPDATE fanren_sessions SET {assignments} WHERE chat_id=? AND bot_username=?",
+            values,
+        )
     db.conn.commit()
 
 
@@ -221,9 +289,15 @@ async def send_message_in_session(
     )
 
 
-def list_sessions(db):
+def list_sessions(db, profile_id=None):
     ensure_tables(db)
-    db.cur.execute("SELECT * FROM fanren_sessions ORDER BY chat_id")
+    if profile_id:
+        db.cur.execute(
+            "SELECT * FROM fanren_sessions WHERE profile_id=? ORDER BY chat_id",
+            (int(profile_id),),
+        )
+    else:
+        db.cur.execute("SELECT * FROM fanren_sessions ORDER BY profile_id, chat_id")
     return [
         dict(zip([col[0] for col in db.cur.description], row))
         for row in db.cur.fetchall()
@@ -403,6 +477,8 @@ def build_status_text(session):
             f"Dry-run: {'开启' if dry_run else '关闭'}",
             f"模式: {'深度闭关' if session.get('retreat_mode') == 'deep' else '普通闭关'}",
             f"普通闭关删原消息: {'开启' if session.get('delete_normal_command_message') else '关闭'}",
+            f"自动极阴祖师: {'开启' if session.get('auto_jiyin_enabled') else '关闭'} / {session.get('auto_jiyin_choice') or '-'}",
+            f"自动南陇侯: {'开启' if session.get('auto_nanlong_enabled') else '关闭'} / {session.get('auto_nanlong_choice') or '-'}",
             f"检查指令: {session.get('command_text') or FANREN_CHECK_COMMAND}",
             f"普通闭关指令: {FANREN_NORMAL_COMMAND}",
             f"深度闭关指令: {FANREN_DEEP_COMMAND}",
@@ -420,7 +496,7 @@ def build_status_text(session):
     )
 
 
-def set_enabled(db, chat_id, enabled, *, reset_failure=False):
+def set_enabled(db, chat_id, enabled, *, reset_failure=False, profile_id=None):
     fields = {"enabled": _normalize_bool(enabled)}
     if enabled:
         # Keep the schedule that was just synced from Tianjige instead of
@@ -428,13 +504,14 @@ def set_enabled(db, chat_id, enabled, *, reset_failure=False):
         fields["stopped_reason"] = None
     if reset_failure:
         fields["failure_count"] = 0
-    update_session(db, chat_id, **fields)
+    update_session(db, chat_id, profile_id=profile_id, **fields)
 
 
-def reset_runtime_state(db, chat_id):
+def reset_runtime_state(db, chat_id, profile_id=None):
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         next_check_time=0,
         next_check_source=None,
         last_event=None,
@@ -449,31 +526,34 @@ def reset_runtime_state(db, chat_id):
     )
 
 
-def set_dry_run(db, chat_id, enabled):
-    update_session(db, chat_id, dry_run=_normalize_bool(enabled))
+def set_dry_run(db, chat_id, enabled, profile_id=None):
+    update_session(db, chat_id, profile_id=profile_id, dry_run=_normalize_bool(enabled))
 
 
-def set_interval(db, chat_id, interval_seconds):
+def set_interval(db, chat_id, interval_seconds, profile_id=None):
     interval_seconds = clamp_interval(interval_seconds)
-    update_session(db, chat_id, interval_seconds=interval_seconds)
+    update_session(
+        db, chat_id, profile_id=profile_id, interval_seconds=interval_seconds
+    )
     return interval_seconds
 
 
-def set_check_command(db, chat_id, command_text):
+def set_check_command(db, chat_id, command_text, profile_id=None):
     command_text = (command_text or "").strip()
     if not command_text:
         raise ValueError("检查指令不能为空")
-    update_session(db, chat_id, command_text=command_text)
+    update_session(db, chat_id, profile_id=profile_id, command_text=command_text)
     return command_text
 
 
-def set_mode(db, chat_id, retreat_mode, preserve_next_check_time=0):
+def set_mode(db, chat_id, retreat_mode, preserve_next_check_time=0, profile_id=None):
     retreat_mode = (retreat_mode or "").strip().lower()
     if retreat_mode not in {"normal", "deep"}:
         raise ValueError("模式只支持 normal 或 deep")
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         retreat_mode=retreat_mode,
         next_check_time=preserve_next_check_time or 0,
         next_check_source=(
@@ -484,9 +564,85 @@ def set_mode(db, chat_id, retreat_mode, preserve_next_check_time=0):
     return retreat_mode
 
 
-def set_delete_normal_command_message(db, chat_id, enabled):
-    update_session(db, chat_id, delete_normal_command_message=_normalize_bool(enabled))
+def set_delete_normal_command_message(db, chat_id, enabled, profile_id=None):
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        delete_normal_command_message=_normalize_bool(enabled),
+    )
     return bool(_normalize_bool(enabled))
+
+
+def set_auto_jiyin(db, chat_id, enabled, choice, profile_id=None):
+    normalized_choice = _normalize_special_choice(choice)
+    if enabled and normalized_choice not in FANREN_AUTO_JIYIN_CHOICES:
+        raise ValueError("极阴祖师自动选项无效")
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        auto_jiyin_enabled=_normalize_bool(enabled),
+        auto_jiyin_choice=normalized_choice,
+    )
+    return normalized_choice
+
+
+def set_auto_nanlong(db, chat_id, enabled, choice, profile_id=None):
+    normalized_choice = _normalize_special_choice(choice)
+    if enabled and normalized_choice not in FANREN_AUTO_NANLONG_CHOICES:
+        raise ValueError("南陇侯自动选项无效")
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        auto_nanlong_enabled=_normalize_bool(enabled),
+        auto_nanlong_choice=normalized_choice,
+    )
+    return normalized_choice
+
+
+async def maybe_handle_special_auto_event(
+    event, db, session, client, *, storage=None, profile_id=None
+):
+    raw_text = (getattr(event, "raw_text", "") or "").strip()
+    if not raw_text or client is None:
+        return False
+    auto_command = ""
+    auto_label = ""
+    if FANREN_AUTO_JIYIN_KEYWORD in raw_text and session.get("auto_jiyin_enabled"):
+        choice = _normalize_special_choice(session.get("auto_jiyin_choice") or "")
+        auto_command = FANREN_AUTO_JIYIN_CHOICES.get(choice, "")
+        auto_label = f"极阴祖师 → {choice}" if auto_command else ""
+    elif FANREN_AUTO_NANLONG_KEYWORD in raw_text and session.get(
+        "auto_nanlong_enabled"
+    ):
+        choice = _normalize_special_choice(session.get("auto_nanlong_choice") or "")
+        auto_command = FANREN_AUTO_NANLONG_CHOICES.get(choice, "")
+        auto_label = f"南陇侯 → {choice}" if auto_command else ""
+    if not auto_command:
+        return False
+    try:
+        await event.reply(f"自动应对：{auto_label}")
+    except Exception:
+        logger.warning("Special auto event reply notice failed", exc_info=True)
+    await send_message_in_session(
+        client,
+        session,
+        event.chat_id,
+        auto_command,
+        storage=storage or getattr(client, "_tg_game_storage", None),
+        profile_id=profile_id,
+    )
+    update_session(
+        db,
+        event.chat_id,
+        profile_id=session.get("profile_id"),
+        last_action=auto_command,
+        last_action_time=time.time(),
+        last_summary=f"已自动应对 {auto_label}",
+    )
+    return True
 
 
 async def maybe_delete_normal_command_message(
@@ -498,7 +654,13 @@ async def maybe_delete_normal_command_message(
         return False
     if not bool(session.get("delete_normal_command_message")):
         return False
-    if (reply_text or "").strip() != FANREN_NORMAL_COMMAND:
+    normalized_reply_text = (reply_text or "").strip()
+    if normalized_reply_text and normalized_reply_text != FANREN_NORMAL_COMMAND:
+        return False
+    if (
+        not normalized_reply_text
+        and (session.get("last_action") or "").strip() != FANREN_NORMAL_COMMAND
+    ):
         return False
     message = getattr(event, "message", None)
     reply_to = getattr(message, "reply_to", None) if message else None
@@ -523,8 +685,10 @@ async def maybe_delete_normal_command_message(
         return False
 
 
-def reset_failures(db, chat_id):
-    update_session(db, chat_id, failure_count=0, stopped_reason=None)
+def reset_failures(db, chat_id, profile_id=None):
+    update_session(
+        db, chat_id, profile_id=profile_id, failure_count=0, stopped_reason=None
+    )
 
 
 def trip_circuit_breaker(db, chat_id, reason):
@@ -544,6 +708,7 @@ def record_failure(db, chat_id, reason):
     update_session(
         db,
         chat_id,
+        profile_id=session.get("profile_id"),
         failure_count=failure_count,
         last_summary=reason,
     )
@@ -555,10 +720,7 @@ def record_failure(db, chat_id, reason):
 def _resolve_runtime_profile_id(storage=None, profile_id=None):
     if profile_id:
         return int(profile_id)
-    if not storage:
-        return None
-    active_profile = storage.get_active_profile()
-    return int(getattr(active_profile, "id", 0) or 0) or None
+    return None
 
 
 def _build_external_expired_pause_fields(now):
@@ -592,7 +754,7 @@ def _pause_if_external_session_expired(
 async def maybe_send_check(
     client, db, chat_id, *, force=False, storage=None, profile_id=None
 ):
-    session = get_session(db, chat_id)
+    session = get_session(db, chat_id, profile_id=profile_id)
     if not session or not session["enabled"]:
         return False, "disabled"
     if session.get("stopped_reason"):
@@ -625,6 +787,7 @@ async def maybe_send_check(
         update_session(
             db,
             chat_id,
+            profile_id=session.get("profile_id"),
             last_action=f"dry-run:{command_text}",
             last_action_time=now,
             next_check_time=next_check_time,
@@ -644,6 +807,7 @@ async def maybe_send_check(
     update_session(
         db,
         chat_id,
+        profile_id=session.get("profile_id"),
         last_command_time=now,
         last_action=command_text,
         last_action_time=now,
@@ -691,7 +855,12 @@ def compute_cycle_next_check(now, session, *, is_status_check=False):
     mode = (session.get("retreat_mode") or FANREN_DEFAULT_MODE).lower()
     if mode == "deep":
         return now + (session.get("interval_seconds") or FANREN_DEFAULT_INTERVAL)
-    return now + max(FANREN_COMMAND_COOLDOWN, FANREN_MIN_INTERVAL)
+    return now + max(
+        int(session.get("interval_seconds") or FANREN_DEFAULT_INTERVAL),
+        FANREN_COMMAND_COOLDOWN,
+        FANREN_MIN_INTERVAL,
+        FANREN_REPLY_SYNC_GRACE_SECONDS,
+    )
 
 
 def normal_retry_seconds(cooldown_seconds, fallback_seconds):
@@ -732,6 +901,7 @@ async def send_retreat_command(
         update_session(
             db,
             chat_id,
+            profile_id=session.get("profile_id"),
             last_action=f"dry-run:{command_text}",
             last_action_time=now,
             last_summary=f"dry-run 模式，模拟发送 {command_text}",
@@ -751,6 +921,7 @@ async def send_retreat_command(
     update_session(
         db,
         chat_id,
+        profile_id=session.get("profile_id"),
         last_command_time=now,
         last_action=command_text,
         last_action_time=now,
@@ -762,13 +933,13 @@ async def send_retreat_command(
     return True, "sent"
 
 
-async def handle_bot_message(event, db, client=None):
+async def handle_bot_message(event, db, client=None, profile_id=None):
     sender = await event.get_sender()
     username = (getattr(sender, "username", "") or "").lower()
     if username != FANREN_BOT_USERNAME:
         return None
 
-    session = get_session(db, event.chat_id)
+    session = get_session(db, event.chat_id, profile_id=profile_id)
     if not session or not session["enabled"]:
         return None
     raw_text = (event.raw_text or "").strip()
@@ -799,6 +970,7 @@ async def handle_bot_message(event, db, client=None):
     update_session(
         db,
         event.chat_id,
+        profile_id=session.get("profile_id"),
         last_event=parsed.event,
         last_summary=parsed.summary,
         last_bot_text=raw_text[:1000],
@@ -809,6 +981,19 @@ async def handle_bot_message(event, db, client=None):
         stopped_reason=None
         if parsed.event not in FANREN_FAILURE_EVENTS
         else session.get("stopped_reason"),
+    )
+    current_session = get_session(
+        db, event.chat_id, profile_id=session.get("profile_id")
+    )
+    await maybe_handle_special_auto_event(
+        event,
+        db,
+        current_session or session,
+        client,
+        storage=getattr(client, "_tg_game_storage", None)
+        if client is not None
+        else None,
+        profile_id=profile_id,
     )
     should_resume_after_deep_settlement = (
         parsed.event in FANREN_DEEP_RESOLVED_EVENTS
@@ -836,6 +1021,7 @@ async def handle_bot_message(event, db, client=None):
             update_session(
                 db,
                 event.chat_id,
+                profile_id=session.get("profile_id"),
                 next_check_time=now + wait_seconds,
                 next_check_source=f"普通闭关完成冷却 {format_duration(wait_seconds)}",
                 last_summary=f"普通闭关完成，下次将在 {format_duration(wait_seconds)} 后尝试",
@@ -847,6 +1033,7 @@ async def handle_bot_message(event, db, client=None):
             update_session(
                 db,
                 event.chat_id,
+                profile_id=session.get("profile_id"),
                 next_check_time=now + wait_seconds,
                 next_check_source=f"普通闭关受挫后等待 {format_duration(wait_seconds)}",
                 last_summary=f"普通闭关受挫，下次将在 {format_duration(wait_seconds)} 后尝试",
@@ -858,6 +1045,7 @@ async def handle_bot_message(event, db, client=None):
             update_session(
                 db,
                 event.chat_id,
+                profile_id=session.get("profile_id"),
                 next_check_time=now + wait_seconds,
                 next_check_source=f"普通闭关冷却 {format_duration(wait_seconds)}",
                 last_summary=f"普通闭关冷却中，还需 {format_duration(wait_seconds)}",
@@ -869,6 +1057,7 @@ async def handle_bot_message(event, db, client=None):
             update_session(
                 db,
                 event.chat_id,
+                profile_id=session.get("profile_id"),
                 next_check_time=now + wait_seconds,
                 next_check_source=f"深度闭关占用中，等待 {format_duration(wait_seconds)}",
                 last_summary=f"当前处于深度闭关中，普通闭关将在 {format_duration(wait_seconds)} 后重试",
@@ -890,7 +1079,6 @@ async def runner(client, storage):
         try:
             db = RuntimeDb(storage)
             now = time.time()
-            active_profile = storage.get_active_profile()
             for session in list_sessions(db):
                 if not session["enabled"]:
                     continue
@@ -911,7 +1099,7 @@ async def runner(client, storage):
                         db,
                         session["chat_id"],
                         storage=storage,
-                        profile_id=active_profile.id if active_profile else None,
+                        profile_id=session.get("profile_id"),
                     )
                 except Exception as exc:
                     record_failure(db, session["chat_id"], f"check failed: {exc}")

@@ -24,6 +24,7 @@ from tg_game.services.external_sync import (
     ASC_PROVIDER,
     get_effective_external_cookie,
     get_external_keepalive_poll_seconds,
+    is_authorized_profile,
     is_external_account_expired,
     mark_external_account_failure,
     read_cached_external_payload,
@@ -170,10 +171,21 @@ DUNGEON_DEFINITIONS = [
         "title": "虚天殿",
         "help_lines": [
             "`.开启虚天殿`：消耗 1 张虚天残图创建房间",
-            "`.加入副本 <房间ID>`：加入队伍，当前 5 人满队",
+            "`.加入副本 <房间ID>`：加入队伍，5 人满队",
             "`.进入虚天殿`：队长满员后出发",
-            "`.选择道路 冰/火`：第二关分支抉择，由队长操作",
+            "`.选择道路 冰/火`：第二关分支抉择，由队长操作；冰路偏神魂/养魂收益，火路偏妖丹/攻伐收益",
+            "`.争鼎 求稳/夺鼎`：第三关胜出后的最终争宝抉择，由队长操作",
+            "`.虚天殿奖励`：查看奖励池与结算",
             "`.解散副本`：未出发时解散队伍并返还残图",
+        ],
+        "command_prefixes": [
+            ".开启虚天殿",
+            ".加入副本",
+            ".进入虚天殿",
+            ".选择道路",
+            ".争鼎",
+            ".虚天殿奖励",
+            ".解散副本",
         ],
         "keywords": [
             "虚天殿",
@@ -181,6 +193,7 @@ DUNGEON_DEFINITIONS = [
             "加入副本",
             "进入虚天殿",
             "选择道路",
+            "争鼎",
             "解散副本",
             "虚天殿奖励",
         ],
@@ -194,7 +207,18 @@ DUNGEON_DEFINITIONS = [
             "`.进入昆吾山`：队长带队出发",
             "`.选择 岔路X`：楼层岔路抉择",
             "`.选择 强行摘取/静待时机`：特殊奇遇抉择",
+            "`.昆吾山奖励`：查看登顶奖励与收益说明",
             "`.解散昆吾山`：队长解散当前房间",
+        ],
+        "command_prefixes": [
+            ".开启昆吾山",
+            ".加入昆吾山",
+            ".进入昆吾山",
+            ".选择 岔路",
+            ".选择 强行摘取",
+            ".选择 静待时机",
+            ".昆吾山奖励",
+            ".解散昆吾山",
         ],
         "keywords": [
             "昆吾山",
@@ -205,6 +229,8 @@ DUNGEON_DEFINITIONS = [
             "昆吾山奖励",
             "催动挪移令",
             "岔路",
+            "强行摘取",
+            "静待时机",
         ],
     },
     {
@@ -219,6 +245,15 @@ DUNGEON_DEFINITIONS = [
             "`.坠魔谷状态`：查看当前进度、魔染、封印与士气",
             "`.解散坠魔谷`：队长解散房间",
         ],
+        "command_prefixes": [
+            ".开启坠魔谷",
+            ".加入坠魔谷",
+            ".进入坠魔谷",
+            ".坠魔抉择",
+            ".坠魔谷状态",
+            ".坠魔谷奖励",
+            ".解散坠魔谷",
+        ],
         "keywords": [
             "坠魔谷",
             "开启坠魔谷",
@@ -228,6 +263,40 @@ DUNGEON_DEFINITIONS = [
             "坠魔谷状态",
             "解散坠魔谷",
             "坠魔谷奖励",
+        ],
+    },
+    {
+        "key": "blood_trial",
+        "title": "血色试炼",
+        "help_lines": [
+            "`.开启血色试炼`：创建组队房间，限炼气五层到筑基后期",
+            "`.加入血色试炼 <房间ID>`：加入队伍",
+            "`.进入血色试炼`：队长带队出发，1-3 人",
+            "`.血色抉择 1/2/3/4`：选择本回合路线或撤离",
+            "`.血色试炼状态`：查看回合、血雾、药篓与当前收益",
+            "`.血色试炼奖励`：查看奖励与用途",
+            "`.解散血色试炼`：队长解散房间",
+        ],
+        "command_prefixes": [
+            ".开启血色试炼",
+            ".加入血色试炼",
+            ".进入血色试炼",
+            ".血色抉择",
+            ".血色试炼状态",
+            ".血色试炼奖励",
+            ".解散血色试炼",
+        ],
+        "keywords": [
+            "血色试炼",
+            "开启血色试炼",
+            "加入血色试炼",
+            "进入血色试炼",
+            "血色抉择",
+            "血色试炼状态",
+            "血色试炼奖励",
+            "解散血色试炼",
+            "血雾",
+            "药篓",
         ],
     },
 ]
@@ -305,6 +374,7 @@ def _build_dongfu_view(payload: dict, game_items_dict: Optional[dict] = None) ->
         "shouyuan_level": int(dongfu.get("shouyuan_level") or 0),
         "dazhen_level": int(dongfu.get("dazhen_level") or 0),
         "dazhen_active": bool(int(dongfu.get("dazhen_active") or 0)),
+        "dazhen_mode": str(dongfu.get("dazhen_mode") or "").strip(),
         "lingqi_pool": round(float(dongfu.get("lingqi_pool") or 0), 2),
         "pavilion_slots": _build_dongfu_pavilion_slots_view(
             dongfu.get("pavilion_slots"), game_items_dict
@@ -351,6 +421,32 @@ def _build_dongfu_pavilion_slots_view(
             item_name = f"{item_name}*{quantity}"
         slots[slot_label] = item_name or item_id or "空"
     return slots
+
+
+def _build_estate_reply_messages(
+    storage: Storage,
+    profile_id: int,
+    chat_id: Optional[int],
+    thread_id: Optional[int] = None,
+    sender_id: Optional[int] = None,
+    sender_username: str = "",
+    fallback_messages: Optional[list] = None,
+) -> list[dict]:
+    fallback = []
+    for message in fallback_messages or []:
+        text = str(
+            message if not isinstance(message, dict) else message.get("text") or ""
+        ).strip()
+        if text:
+            fallback.append(
+                {
+                    "command_text": "洞府缓存",
+                    "text": text,
+                    "created_at": 0,
+                    "created_at_display": "-",
+                }
+            )
+    return fallback[:3]
 
 
 def _stringify_payload_stat_value(value) -> str:
@@ -574,58 +670,26 @@ def _build_divination_batch_view(raw_batch: Optional[dict]) -> dict:
 
 
 def _list_dungeon_feed_source_messages(
-    storage: Storage, chat_id: int, dungeon_key: str
+    storage: Storage, chat_id: int, dungeon_key: str, profile_id: Optional[int] = None
 ) -> list[dict]:
-    if not chat_id:
-        return []
-    dungeon_def = _get_dungeon_definition(dungeon_key)
-    recent_messages = storage.list_bound_messages(chat_id=int(chat_id), limit=5000)
-    matched_command_ids = set()
-    normalized_keywords = [
-        keyword for keyword in dungeon_def.get("keywords") or [] if keyword
-    ]
-    for message in recent_messages:
-        text = str(message.get("text") or "").strip()
-        message_id = int(message.get("message_id") or 0)
-        if not text.startswith("."):
-            continue
-        if any(keyword in text for keyword in normalized_keywords):
-            if message_id:
-                matched_command_ids.add(message_id)
-
-    filtered = []
-    for message in recent_messages:
-        text = str(message.get("text") or "").strip()
-        is_bot = bool(message.get("is_bot"))
-        reply_to_msg_id = int(message.get("reply_to_msg_id") or 0)
-        if is_bot:
-            if any(keyword in text for keyword in normalized_keywords) or (
-                reply_to_msg_id and reply_to_msg_id in matched_command_ids
-            ):
-                filtered.append(message)
-        elif text.startswith(".") and any(
-            keyword in text for keyword in normalized_keywords
-        ):
-            filtered.append(message)
-    return filtered
+    return []
 
 
 def _build_dungeon_messages(
-    storage: Storage, chat_id: int, dungeon_key: str
+    storage: Storage,
+    chat_id: int,
+    dungeon_key: str,
+    profile_id: Optional[int] = None,
 ) -> list[dict]:
-    filtered = _list_dungeon_feed_source_messages(storage, chat_id, dungeon_key)
+    filtered = _list_dungeon_feed_source_messages(
+        storage, chat_id, dungeon_key, profile_id=profile_id
+    )
 
     rows = []
     for message in filtered[:80]:
         text = str(message.get("text") or "").strip()
         is_bot = bool(message.get("is_bot"))
         reply_preview = ""
-        if message.get("reply_to_msg_id"):
-            reply_message = storage.get_bound_message(
-                int(message.get("chat_id") or 0),
-                int(message.get("reply_to_msg_id") or 0),
-            )
-            reply_preview = ((reply_message or {}).get("text") or "").strip()[:160]
         sender_username = str(message.get("sender_username") or "").strip()
         sender_display = (
             "机器人"
@@ -646,6 +710,50 @@ def _build_dungeon_messages(
             }
         )
     return rows
+
+
+def _extract_dungeon_command_buttons(dungeon_def: dict) -> list[str]:
+    buttons = []
+    seen = set()
+    for line in dungeon_def.get("help_lines") or []:
+        text = str(line or "").strip()
+        match = re.search(r"`([^`]+)`", text)
+        command_text = (match.group(1) if match else "").strip()
+        if not command_text or command_text in seen:
+            continue
+        seen.add(command_text)
+        buttons.append(command_text)
+    return buttons
+
+
+def _extract_dungeon_cleanup_targets(dungeon_messages: list[dict]) -> list[dict]:
+    team_keywords = ("队伍", "队长", "成员", "房间")
+    usernames = []
+    seen = set()
+    for message in dungeon_messages:
+        text = str(message.get("text") or "")
+        reply_preview = str(message.get("reply_preview") or "")
+        haystack = f"{text}\n{reply_preview}"
+        if not any(keyword in haystack for keyword in team_keywords):
+            continue
+        for username in re.findall(r"@([A-Za-z0-9_]{3,})", haystack):
+            normalized = username.lower()
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            usernames.append(username)
+    for message in dungeon_messages:
+        if bool(message.get("is_bot")):
+            continue
+        sender_username = str(message.get("sender_username") or "").strip().lstrip("@")
+        normalized = sender_username.lower()
+        if sender_username and normalized not in seen:
+            seen.add(normalized)
+            usernames.append(sender_username)
+    return [
+        {"value": username, "label": f"@{username}", "command": f".请离 @{username}"}
+        for username in usernames[:12]
+    ]
 
 
 def _build_stock_trend_points(
@@ -700,20 +808,20 @@ def _decorate_stock_history(
     }
 
 
-def _latest_stock_bot_reply_for_command(
-    storage: Storage,
-    profile_id: int,
-    chat_id: int,
-    command_text: str,
-    thread_id: Optional[int] = None,
-) -> str:
-    reply = storage.get_latest_bot_reply_for_command(
-        chat_id,
-        command_text,
-        profile_id=profile_id,
-        thread_id=thread_id,
+def _latest_stock_player_reply_view(
+    storage: Storage, profile_id: int, command_text: str
+) -> dict:
+    reply = storage.get_stock_player_reply(profile_id, command_text) or {}
+    created_at = float(
+        (reply or {}).get("updated_at") or (reply or {}).get("created_at") or 0
     )
-    return str((reply or {}).get("text") or "").strip()
+    return {
+        "text": str((reply or {}).get("reply_text") or "").strip(),
+        "created_at": created_at,
+        "created_at_display": fanren_game.format_timestamp(created_at)
+        if created_at
+        else "-",
+    }
 
 
 def _build_stock_view(
@@ -721,8 +829,17 @@ def _build_stock_view(
     profile_id: int,
     chat_id: Optional[int],
     thread_id: Optional[int] = None,
+    command_sender_id: Optional[int] = None,
+    command_sender_username: str = "",
 ) -> dict:
-    rows = storage.list_stock_market_info(profile_id)
+    settings = get_settings()
+    authorized_user_id = str(settings.authorized_user_id or "").strip()
+    source_profile_id = profile_id
+    if authorized_user_id:
+        admin_profile = storage.get_profile_by_telegram_user_id(authorized_user_id)
+        if admin_profile:
+            source_profile_id = admin_profile.id
+    rows = storage.list_stock_market_info(source_profile_id)
     for row in rows:
         latest_updated_at = float(row.get("updated_at") or 0)
         row["data_time"] = latest_updated_at
@@ -734,6 +851,8 @@ def _build_stock_view(
     latest_updated_at = max(
         (float(row.get("data_time") or 0) for row in rows), default=0
     )
+    latest_account = _latest_stock_player_reply_view(storage, profile_id, ".我的持仓")
+    latest_task = _latest_stock_player_reply_view(storage, profile_id, ".股市任务")
     return {
         "rows": rows,
         "count": len(rows),
@@ -741,20 +860,10 @@ def _build_stock_view(
         "top_loser": losers[0] if losers else None,
         "latest_updated_at": latest_updated_at,
         "latest_updated_display": fanren_game.format_timestamp(latest_updated_at),
-        "latest_account_text": (
-            _latest_stock_bot_reply_for_command(
-                storage, profile_id, chat_id, ".我的持仓", thread_id=thread_id
-            )
-            if chat_id
-            else ""
-        ),
-        "latest_task_text": (
-            _latest_stock_bot_reply_for_command(
-                storage, profile_id, chat_id, ".股市任务", thread_id=thread_id
-            )
-            if chat_id
-            else ""
-        ),
+        "latest_account_text": latest_account["text"],
+        "latest_account_time_display": latest_account["created_at_display"],
+        "latest_task_text": latest_task["text"],
+        "latest_task_time_display": latest_task["created_at_display"],
         "tracked_stocks": [
             {
                 "stock_code": str(row.get("stock_code") or ""),
@@ -852,6 +961,48 @@ def _first_equipped_artifact_name(character: dict) -> str:
         if name:
             return name
     return ""
+
+
+def _equipped_artifact_names_text(character: dict) -> str:
+    equipped_ids = _coerce_json_list(character.get("equipped_treasure_id"))
+    inventory = character.get("inventory") or {}
+    items = inventory.get("items") or []
+    treasure_by_id = {
+        str(item.get("item_id") or ""): item for item in items if isinstance(item, dict)
+    }
+    names = []
+    for treasure_id in equipped_ids:
+        item = treasure_by_id.get(str(treasure_id)) or {}
+        name = str(item.get("name") or treasure_id or "").strip()
+        if name:
+            names.append(name)
+    return "、".join(names)
+
+
+def _build_equipped_artifact_details(character: dict) -> str:
+    details = _format_external_artifacts(character).strip()
+    return details or "未装备法宝"
+
+
+def _build_recent_player_options(
+    storage: Storage,
+    chat_id: Optional[int],
+    profile_id: Optional[int] = None,
+    exclude_usernames: Optional[list[str]] = None,
+    limit: int = 12,
+) -> list[dict]:
+    return []
+
+
+def _build_sect_recent_reply_text(
+    storage: Storage,
+    profile_id: int,
+    sect_chat,
+    current_sect_feature: Optional[dict],
+    active_profile,
+    fallback_text: str = "",
+) -> str:
+    return str(fallback_text or "").strip()
 
 
 def _format_sect_position(character: dict) -> str:
@@ -1132,13 +1283,33 @@ def _market_price_parts(raw_value, game_items_dict: dict) -> list[dict]:
     return [{"name": text, "quantity": 0}] if text else []
 
 
-def _market_price_sort_key(raw_value, game_items_dict: dict) -> str:
+def _market_price_sort_key(raw_value, game_items_dict: dict) -> tuple:
     parts = _market_price_parts(raw_value, game_items_dict)
     if not parts:
-        return ""
-    return "|".join(
-        f"{part['name']}:{int(part['quantity'] or 0):010d}" for part in parts
+        return ((1, "", 0),)
+    normalized_parts = sorted(
+        parts,
+        key=lambda part: (
+            0 if str(part.get("name") or "").strip() == "灵石" else 1,
+            str(part.get("name") or "").strip(),
+            int(part.get("quantity") or 0),
+        ),
     )
+    return tuple(
+        (
+            0 if str(part.get("name") or "").strip() == "灵石" else 1,
+            str(part.get("name") or "").strip(),
+            int(part.get("quantity") or 0),
+        )
+        for part in normalized_parts
+    )
+
+
+def _reverse_market_price_sort_key(sort_key: tuple) -> tuple:
+    reversed_parts = []
+    for priority, name, quantity in sort_key or ():
+        reversed_parts.append((priority, name, -int(quantity or 0)))
+    return tuple(reversed_parts)
 
 
 def _market_price_preview(raw_value, game_items_dict: dict, max_parts: int = 3) -> dict:
@@ -1536,6 +1707,32 @@ def create_app() -> FastAPI:
             telegram_user_id=telegram_user_id,
         )
 
+    def _get_authorized_user_id_text() -> str:
+        return str(settings.authorized_user_id or "").strip()
+
+    def _get_admin_profile():
+        authorized_user_id = _get_authorized_user_id_text()
+        if not authorized_user_id:
+            return None
+        return storage.get_profile_by_telegram_user_id(authorized_user_id)
+
+    def _is_admin_profile(profile) -> bool:
+        return is_authorized_profile(storage, profile)
+
+    def _get_global_market_cookie() -> str:
+        admin_profile = _get_admin_profile()
+        if not admin_profile:
+            return ""
+        return get_effective_external_cookie(storage)
+
+    def _sync_global_reference_data_if_needed() -> None:
+        cookie_text = _get_global_market_cookie()
+        if not cookie_text:
+            return
+        _sync_all_items_if_needed(storage, cookie_text)
+        _sync_shop_items_if_needed(storage, cookie_text)
+        _sync_marketplace_listings_if_needed(storage, cookie_text)
+
     def _build_command_target_context(active_profile) -> dict:
         command_chat = None
         if active_profile:
@@ -1632,10 +1829,18 @@ def create_app() -> FastAPI:
         )
 
     def _build_shared_template_context(active_profile) -> dict:
+        external_account = (
+            storage.get_external_account(active_profile.id, ASC_PROVIDER)
+            if active_profile
+            else None
+        )
         return {
             **_build_command_target_context(active_profile),
             "current_sect_name": active_profile.sect_name if active_profile else "",
             "sect_treasury_items": _build_sect_treasury_items(active_profile),
+            "external_account": external_account,
+            "is_admin_profile": _is_admin_profile(active_profile),
+            "authorized_user_id": _get_authorized_user_id_text(),
         }
 
     def _is_public_path(path: str) -> bool:
@@ -1655,8 +1860,13 @@ def create_app() -> FastAPI:
             "/auth/telegram/logout",
         }
 
-    def _sign_in_profile(profile_id: int, redirect_url: str = "/") -> RedirectResponse:
-        session_token = storage.create_app_session(profile_id)
+    def _sign_in_profile(
+        request: Request, profile_id: int, redirect_url: str = "/"
+    ) -> RedirectResponse:
+        current_token = request.cookies.get(APP_SESSION_COOKIE, "")
+        session_token = storage.create_app_session(
+            profile_id, session_token=current_token
+        )
         response = RedirectResponse(url=redirect_url or "/", status_code=303)
         response.set_cookie(
             APP_SESSION_COOKIE,
@@ -1700,10 +1910,24 @@ def create_app() -> FastAPI:
         profile = storage.get_profile(profile_id)
         if not profile:
             raise RuntimeError("Profile not found")
+        is_admin = _is_admin_profile(profile)
+        normalized_cookie_text = (cookie_text or "").strip()
+        global_cookie_text = _get_global_market_cookie()
+        if (
+            normalized_cookie_text
+            and not is_admin
+            and normalized_cookie_text != global_cookie_text
+        ):
+            raise RuntimeError("只有管理员可以替换天机阁 Cookie")
         cultivator_payload = sync_external_account(
-            storage, profile_id, cookie_text=cookie_text
+            storage,
+            profile_id,
+            cookie_text=(
+                normalized_cookie_text
+                if is_admin
+                else (global_cookie_text or normalized_cookie_text)
+            ),
         )
-        persisted_cookie = get_effective_external_cookie(storage)
         telegram_user_id = str(profile.telegram_user_id or "").strip()
         telegram_username = (profile.telegram_username or "").strip().lstrip("@")
         telegram_session_name = (
@@ -1719,9 +1943,8 @@ def create_app() -> FastAPI:
             telegram_session_name=telegram_session_name,
         )
         storage.activate_profile(profile_id)
-        _sync_all_items_if_needed(storage, persisted_cookie)
-        _sync_shop_items_if_needed(storage, persisted_cookie)
-        _sync_marketplace_listings_if_needed(storage, persisted_cookie)
+        if is_admin:
+            _sync_global_reference_data_if_needed()
         _sync_profile_from_cultivator(storage, profile_id, cultivator_payload)
         _sync_env_binding(profile_id, telegram_user_id)
         for binding in storage.list_chat_bindings(profile_id):
@@ -1769,9 +1992,7 @@ def create_app() -> FastAPI:
         return should_keep_external_session_fresh(profile, external_account)
 
     def _get_request_profile(request: Request):
-        return (
-            getattr(request.state, "auth_profile", None) or storage.get_active_profile()
-        )
+        return getattr(request.state, "auth_profile", None)
 
     def _get_primary_command_chat(profile_id: int, bot_username: str = ""):
         return storage.get_primary_chat_binding(
@@ -1823,6 +2044,7 @@ def create_app() -> FastAPI:
     async def _background_refresh_external_profiles() -> None:
         while True:
             try:
+                await asyncio.to_thread(_sync_global_reference_data_if_needed)
                 profiles = storage.list_profiles()
                 for profile in profiles:
                     if not profile.telegram_verified_at:
@@ -1832,17 +2054,6 @@ def create_app() -> FastAPI:
                     )
                     if is_external_account_expired(external_account):
                         continue
-                    cookie_text = (
-                        (external_account or {}).get("cookie_text")
-                        or get_effective_external_cookie(storage)
-                    ).strip()
-                    if cookie_text:
-                        await asyncio.to_thread(
-                            _sync_shop_items_if_needed, storage, cookie_text
-                        )
-                        await asyncio.to_thread(
-                            _sync_marketplace_listings_if_needed, storage, cookie_text
-                        )
                     if not _should_refresh_cultivator_payload(
                         profile, external_account
                     ):
@@ -1872,10 +2083,8 @@ def create_app() -> FastAPI:
             payload = sync_external_account(
                 storage, profile_id, cookie_text=cookie_text
             )
-            persisted_cookie = get_effective_external_cookie(storage)
-            _sync_all_items_if_needed(storage, persisted_cookie)
-            _sync_shop_items_if_needed(storage, persisted_cookie)
-            _sync_marketplace_listings_if_needed(storage, persisted_cookie)
+            if _is_admin_profile(profile):
+                _sync_global_reference_data_if_needed()
             _sync_profile_from_cultivator(storage, profile_id, payload)
             return payload if isinstance(payload, dict) else {}
         except Exception as exc:
@@ -1960,7 +2169,9 @@ def create_app() -> FastAPI:
             profile.id, bot_username=sect_game.SECT_BOT_USERNAME
         ) or storage.get_primary_chat_binding(profile.id)
         sect_session = (
-            storage.get_sect_session(sect_chat.chat_id) if sect_chat else None
+            storage.get_sect_session(sect_chat.chat_id, profile_id=profile.id)
+            if sect_chat
+            else None
         )
         lingxiao_state = None
         yinluo_state = None
@@ -1986,19 +2197,6 @@ def create_app() -> FastAPI:
         if current_sect_feature and current_sect_feature["name"] == "阴罗宗":
             banner_reply = None
             summon_shadow_reply = None
-            if sect_chat:
-                banner_reply = storage.get_latest_bot_reply_for_command(
-                    sect_chat.chat_id,
-                    ".我的阴罗幡",
-                    profile_id=profile.id,
-                    thread_id=sect_chat.thread_id,
-                )
-                summon_shadow_reply = storage.get_latest_bot_reply_for_command(
-                    sect_chat.chat_id,
-                    ".召唤魔影",
-                    profile_id=profile.id,
-                    thread_id=sect_chat.thread_id,
-                )
             if sect_chat:
                 db = CompatDb(storage)
                 try:
@@ -2044,29 +2242,17 @@ def create_app() -> FastAPI:
         profile = storage.get_profile_by_telegram_user_id(telegram_user_id)
         if profile:
             return profile
-        active_profile = storage.get_active_profile()
-        if active_profile and (
-            not active_profile.telegram_user_id
-            or active_profile.telegram_user_id == telegram_user_id
-        ):
-            return active_profile
         base_name = telegram_username or telegram_first_name or "tg"
         profile_name = f"{base_name}-{telegram_user_id[-6:]}"
-        profile = storage.create_profile(name=profile_name, activate=True)
+        profile = storage.create_profile(name=profile_name, activate=False)
         storage.ensure_module_settings(profile.id, module_registry.list_modules())
         return profile
 
     def _get_authenticated_profile(request: Request):
         session_token = request.cookies.get(APP_SESSION_COOKIE, "")
-        profile = storage.get_profile_by_session_token(session_token)
-        if profile:
-            active_profile = storage.get_active_profile()
-            if not active_profile or active_profile.id != profile.id:
-                storage.activate_profile(profile.id)
-                profile = storage.get_profile(profile.id) or profile
-        return profile
+        return storage.get_profile_by_session_token(session_token)
 
-    def _finalize_telegram_login(account: dict):
+    def _finalize_telegram_login(request: Request, account: dict):
         telegram_user_id = str(account.get("id") or "").strip()
         telegram_username = (account.get("username") or "").strip()
         telegram_first_name = (account.get("first_name") or "").strip()
@@ -2095,11 +2281,13 @@ def create_app() -> FastAPI:
                     storage, profile.id, exc, cookie_text=default_cookie
                 )
                 return _sign_in_profile(
+                    request,
                     profile.id,
                     redirect_url="/login?error="
                     + quote_plus("默认天机阁会话已失效，请重新获取 session 粘贴导入"),
                 )
         return _sign_in_profile(
+            request,
             profile.id,
             redirect_url="/login?success="
             + quote_plus("TG 登录成功，已自动绑定当前账号"),
@@ -2122,6 +2310,7 @@ def create_app() -> FastAPI:
     @application.on_event("startup")
     async def on_startup() -> None:
         storage.init_schema()
+        storage.maybe_cleanup_bound_messages(min_interval_seconds=0)
         active_profile = storage.get_active_profile()
         if active_profile:
             _sync_env_binding(active_profile.id, active_profile.telegram_user_id)
@@ -2154,10 +2343,13 @@ def create_app() -> FastAPI:
             try:
                 if await has_authorized_session():
                     account = await get_authorized_account_info()
-                    return _finalize_telegram_login(account)
+                    return _finalize_telegram_login(request, account)
             except Exception:
                 logger.exception("Auto Telegram login bind failed")
-        active_profile = auth_profile or storage.get_active_profile()
+        active_profile = auth_profile
+        session_profiles = storage.list_profiles_by_session_token(
+            request.cookies.get(APP_SESSION_COOKIE, "")
+        )
         external_account = None
         if active_profile:
             external_account = storage.get_external_account(
@@ -2200,16 +2392,20 @@ def create_app() -> FastAPI:
                 "has_telegram_session": has_telegram_session,
                 "login_challenge": login_challenge,
                 "telegram_account": telegram_account,
+                "session_profiles": session_profiles,
+                "is_admin_profile": _is_admin_profile(active_profile),
+                "has_global_external_cookie": bool(_get_global_market_cookie()),
                 "external_session_notice": external_session_notice,
                 "format_timestamp": fanren_game.format_timestamp,
             },
         )
 
     @application.post("/auth/telegram/local-login")
-    async def local_telegram_login() -> RedirectResponse:
-        active_profile = storage.get_active_profile()
+    async def local_telegram_login(request: Request) -> RedirectResponse:
+        active_profile = getattr(request.state, "auth_profile", None)
         if active_profile and active_profile.telegram_verified_at:
             return _finalize_telegram_login(
+                request,
                 {
                     "id": active_profile.telegram_user_id,
                     "username": active_profile.telegram_username,
@@ -2217,7 +2413,7 @@ def create_app() -> FastAPI:
                     "phone": active_profile.telegram_phone,
                     "session_name": active_profile.telegram_session_name
                     or _login_session_name(),
-                }
+                },
             )
         try:
             if not await has_authorized_session():
@@ -2229,7 +2425,7 @@ def create_app() -> FastAPI:
             return RedirectResponse(
                 url=f"/login?error={quote_plus(str(exc))}", status_code=303
             )
-        return _finalize_telegram_login(account)
+        return _finalize_telegram_login(request, account)
 
     @application.post("/auth/telegram/start")
     async def start_telegram_login(phone: str = Form(...)) -> RedirectResponse:
@@ -2292,7 +2488,7 @@ def create_app() -> FastAPI:
                     status_code=303,
                 )
             storage.delete_telegram_login_challenge(challenge["id"])
-            response = _finalize_telegram_login(result.get("account") or {})
+            response = _finalize_telegram_login(request, result.get("account") or {})
             response.delete_cookie(TG_LOGIN_CHALLENGE_COOKIE)
             return response
         except Exception as exc:
@@ -2322,7 +2518,7 @@ def create_app() -> FastAPI:
                 challenge.get("session_name") or _login_session_name(),
             )
             storage.delete_telegram_login_challenge(challenge["id"])
-            response = _finalize_telegram_login(account)
+            response = _finalize_telegram_login(request, account)
             response.delete_cookie(TG_LOGIN_CHALLENGE_COOKIE)
             return response
         except Exception as exc:
@@ -2332,9 +2528,7 @@ def create_app() -> FastAPI:
 
     @application.post("/auth/telegram/logout")
     async def telegram_logout(request: Request) -> RedirectResponse:
-        profile = (
-            getattr(request.state, "auth_profile", None) or storage.get_active_profile()
-        )
+        profile = getattr(request.state, "auth_profile", None)
         session_name = (
             profile.telegram_session_name if profile else ""
         ) or _login_session_name()
@@ -2354,14 +2548,24 @@ def create_app() -> FastAPI:
         return response
 
     @application.post("/auth/external/connect")
-    async def connect_external(cookie_text: str = Form(...)) -> RedirectResponse:
+    async def connect_external(
+        request: Request, cookie_text: str = Form("")
+    ) -> RedirectResponse:
         try:
-            profile = storage.get_active_profile()
+            profile = _get_request_profile(request)
             if not profile:
                 raise RuntimeError("请先完成 Telegram Web 登录")
-            _connect_external_cookie(profile.id, cookie_text)
+            normalized_cookie_text = (cookie_text or "").strip()
+            if _is_admin_profile(profile):
+                if not normalized_cookie_text:
+                    raise RuntimeError("管理员提交的 Cookie 不能为空")
+                _connect_external_cookie(profile.id, normalized_cookie_text)
+            else:
+                if not _get_global_market_cookie():
+                    raise RuntimeError("管理员尚未配置可用的天机阁 Cookie")
+                _connect_external_cookie(profile.id, "")
         except AscAuthError as exc:
-            profile = storage.get_active_profile()
+            profile = _get_request_profile(request)
             if profile:
                 mark_external_account_failure(
                     storage, profile.id, exc, cookie_text=cookie_text
@@ -2374,6 +2578,7 @@ def create_app() -> FastAPI:
                 url=f"/login?error={quote_plus(str(exc))}", status_code=303
             )
         return _sign_in_profile(
+            request,
             profile.id,
             redirect_url="/login?success="
             + quote_plus("天机阁登录成功，已同步人物卡并恢复自动调度"),
@@ -2385,7 +2590,8 @@ def create_app() -> FastAPI:
         if not profile:
             return RedirectResponse(url="/login", status_code=303)
         storage.clear_external_account(profile.id, ASC_PROVIDER)
-        storage.clear_external_cookie_override()
+        if _is_admin_profile(profile):
+            storage.clear_external_cookie_override()
         return RedirectResponse(
             url="/login?success=" + quote_plus("天机阁登录已退出"),
             status_code=303,
@@ -2404,9 +2610,7 @@ def create_app() -> FastAPI:
         if not profile:
             return RedirectResponse(url="/login", status_code=303)
         external_account = storage.get_external_account(profile.id, ASC_PROVIDER)
-        cookie_text = (external_account or {}).get(
-            "cookie_text"
-        ) or get_effective_external_cookie(storage)
+        cookie_text = get_effective_external_cookie(storage)
         if not cookie_text:
             return RedirectResponse(url="/login", status_code=303)
         try:
@@ -2457,7 +2661,7 @@ def create_app() -> FastAPI:
             )
             if primary_chat:
                 cultivation_session = storage.get_cultivation_session(
-                    primary_chat.chat_id
+                    primary_chat.chat_id, profile_id=active_profile.id
                 )
         external_session_notice = _build_external_session_notice(external_account)
         shared_template_context = _build_shared_template_context(active_profile)
@@ -2486,7 +2690,9 @@ def create_app() -> FastAPI:
 
     @application.get("/profile", response_class=HTMLResponse)
     async def profile_page(request: Request) -> HTMLResponse:
-        profiles = storage.list_profiles()
+        profiles = storage.list_profiles_by_session_token(
+            request.cookies.get(APP_SESSION_COOKIE, "")
+        )
         page_state = _load_cached_page_state(request, include_chats=True)
         active_profile = page_state["active_profile"]
         chats = page_state["chats"]
@@ -2522,6 +2728,10 @@ def create_app() -> FastAPI:
     ) -> HTMLResponse:
         page_state = _load_cached_page_state(request, include_chats=True)
         active_profile = page_state["active_profile"]
+        if not _is_admin_profile(active_profile):
+            raise HTTPException(
+                status_code=403, detail="Only admin can access messages"
+            )
         chats = page_state["chats"]
         external_account = page_state["external_account"]
         safe_limit = max(20, min(int(limit or 200), 500))
@@ -2587,7 +2797,14 @@ def create_app() -> FastAPI:
 
     @application.get("/modules/{module_key}", response_class=HTMLResponse)
     async def module_detail(
-        request: Request, module_key: str, page: int = 1, dungeon_key: str = ""
+        request: Request,
+        module_key: str,
+        page: int = 1,
+        dungeon_key: str = "",
+        q: str = "",
+        q_exchange: str = "",
+        sort: str = "",
+        inv_page: int = 1,
     ) -> HTMLResponse:
         if module_key not in visible_module_keys:
             raise HTTPException(status_code=404, detail="Module not available")
@@ -2627,13 +2844,35 @@ def create_app() -> FastAPI:
             "latest_updated_at": 0,
             "latest_updated_display": "-",
             "latest_account_text": "",
+            "latest_account_time_display": "-",
             "latest_task_text": "",
+            "latest_task_time_display": "-",
+            "tracked_stocks": [],
             "tracked_codes": [],
         }
         selected_dungeon = _get_dungeon_definition(dungeon_key)
+        dungeon_command_buttons = _extract_dungeon_command_buttons(selected_dungeon)
+        dungeon_cleanup_targets = []
         dungeon_messages = []
         market_listings = []
+        market_query = str(q or "").strip()
+        market_exchange_query = str(q_exchange or "").strip()
+        market_sort = str(sort or "").strip().lower()
+        market_page = max(int(page or 1), 1)
+        market_page_size = 20
+        market_total = 0
+        market_total_pages = 1
+        market_page_numbers = [1]
         inventory_trade_options = []
+        inventory_page = max(int(inv_page or 1), 1)
+        inventory_page_size = 24
+        inventory_total = 0
+        inventory_total_pages = 1
+        inventory_page_numbers = [1]
+        inventory_all_items = []
+        sect_recent_reply_text = ""
+        equipped_artifact_details = "未装备法宝"
+        other_opponent_options = []
         sect_daily_state = {
             "last_check_in_time": 0,
             "checked_in_today": False,
@@ -2667,7 +2906,7 @@ def create_app() -> FastAPI:
                 active_badge_text = _payload_name_summary(
                     payload.get("active_badge"), game_items_dict
                 )
-                equipped_artifact_name = _first_equipped_artifact_name(payload)
+                equipped_artifact_name = _equipped_artifact_names_text(payload)
                 recipes_known_entries = [
                     {
                         **entry,
@@ -2687,6 +2926,16 @@ def create_app() -> FastAPI:
                 )
                 learned_techniques_text = _payload_name_summary(
                     payload.get("learned_techniques"), game_items_dict
+                )
+                equipped_artifact_details = _build_equipped_artifact_details(payload)
+            if module_key == "sect":
+                sect_recent_reply_text = _build_sect_recent_reply_text(
+                    storage,
+                    active_profile.id,
+                    sect_chat,
+                    current_sect_feature,
+                    active_profile,
+                    fallback_text=(sect_session or {}).get("last_summary") or "",
                 )
             if module_key == "cultivation":
                 cultivation_total = storage.count_cultivation_results(
@@ -2715,7 +2964,7 @@ def create_app() -> FastAPI:
                 )
                 if command_chat:
                     cultivation_session = storage.get_cultivation_session(
-                        command_chat.chat_id
+                        command_chat.chat_id, profile_id=active_profile.id
                     )
             elif module_key in {"other", "estate", "dungeon", "stock"}:
                 command_chat = _get_primary_command_chat(
@@ -2732,16 +2981,64 @@ def create_app() -> FastAPI:
                             chat_id=command_chat.chat_id if command_chat else None,
                         )
                     )
+                    other_opponent_options = _build_recent_player_options(
+                        storage,
+                        command_chat.chat_id if command_chat else None,
+                        profile_id=active_profile.id,
+                        exclude_usernames=[
+                            getattr(active_profile, "telegram_username", "")
+                        ],
+                    )
+                if module_key == "estate":
+                    command_sender_text = str(
+                        getattr(command_chat, "telegram_user_id", "")
+                        or getattr(active_profile, "telegram_user_id", "")
+                        or ""
+                    ).strip()
+                    dongfu_state["messages"] = _build_estate_reply_messages(
+                        storage,
+                        active_profile.id,
+                        command_chat.chat_id if command_chat else None,
+                        thread_id=command_chat.thread_id if command_chat else None,
+                        sender_id=(
+                            int(command_sender_text)
+                            if command_sender_text.isdigit()
+                            else None
+                        ),
+                        sender_username=(
+                            getattr(active_profile, "telegram_username", "") or ""
+                        ),
+                        fallback_messages=dongfu_state.get("messages") or [],
+                    )
                 if module_key == "dungeon" and command_chat:
                     dungeon_messages = _build_dungeon_messages(
-                        storage, command_chat.chat_id, selected_dungeon["key"]
+                        storage,
+                        command_chat.chat_id,
+                        selected_dungeon["key"],
+                        profile_id=active_profile.id,
+                    )
+                    dungeon_cleanup_targets = _extract_dungeon_cleanup_targets(
+                        dungeon_messages
                     )
                 if module_key == "stock":
+                    command_sender_text = str(
+                        getattr(command_chat, "telegram_user_id", "")
+                        or getattr(active_profile, "telegram_user_id", "")
+                        or ""
+                    ).strip()
                     stock_state = _build_stock_view(
                         storage,
                         active_profile.id,
                         command_chat.chat_id if command_chat else None,
                         command_chat.thread_id if command_chat else None,
+                        command_sender_id=(
+                            int(command_sender_text)
+                            if command_sender_text.isdigit()
+                            else None
+                        ),
+                        command_sender_username=(
+                            getattr(active_profile, "telegram_username", "") or ""
+                        ),
                     )
         inventory_materials = {}
         inventory_items = []
@@ -2752,6 +3049,15 @@ def create_app() -> FastAPI:
             raw_materials = inventory_data.get("materials") or {}
             raw_items = inventory_data.get("items") or []
             equipped_id_list = payload.get("equipped_treasure_id")
+            equipped_ids = (
+                {
+                    str(item_id or "").strip()
+                    for item_id in (equipped_id_list or [])
+                    if str(item_id or "").strip()
+                }
+                if isinstance(equipped_id_list, list)
+                else set()
+            )
             equipped_id = (
                 equipped_id_list[0]
                 if equipped_id_list and isinstance(equipped_id_list, list)
@@ -2802,8 +3108,29 @@ def create_app() -> FastAPI:
 
             # Equip mapping
             for it in inventory_items:
-                if it.get("item_id") == equipped_id:
+                if str(it.get("item_id") or "").strip() in equipped_ids:
                     it["is_equipped"] = True
+            inventory_items.sort(
+                key=lambda item: (
+                    0 if item.get("is_equipped") else 1,
+                    str(item.get("type") or ""),
+                    str(item.get("name") or item.get("item_id") or ""),
+                )
+            )
+            inventory_all_items = list(inventory_items)
+            inventory_total = len(inventory_all_items)
+            inventory_total_pages = max(
+                (inventory_total + inventory_page_size - 1) // inventory_page_size,
+                1,
+            )
+            inventory_page = min(inventory_page, inventory_total_pages)
+            inventory_page_numbers = _build_pagination_numbers(
+                inventory_page, inventory_total_pages
+            )
+            inventory_start = (inventory_page - 1) * inventory_page_size
+            inventory_items = inventory_all_items[
+                inventory_start : inventory_start + inventory_page_size
+            ]
         if module_key == "market":
             for item in storage.get_marketplace_listings():
                 item_id = str(item.get("item_id") or "")
@@ -2847,6 +3174,51 @@ def create_app() -> FastAPI:
                         and int(item.get("quantity") or 0) > 1,
                     }
                 )
+            normalized_market_query = market_query.lower()
+            if normalized_market_query:
+                market_listings = [
+                    item
+                    for item in market_listings
+                    if normalized_market_query
+                    in " ".join(
+                        [
+                            str(item.get("id") or ""),
+                            str(item.get("display_name") or ""),
+                            str(item.get("display_type") or ""),
+                            str(item.get("seller_display") or ""),
+                        ]
+                    ).lower()
+                ]
+            normalized_exchange_query = market_exchange_query.lower()
+            if normalized_exchange_query:
+                market_listings = [
+                    item
+                    for item in market_listings
+                    if normalized_exchange_query
+                    in str(
+                        item.get("price_full_text") or item.get("price_text") or ""
+                    ).lower()
+                ]
+            if market_sort == "price_desc":
+                market_listings.sort(
+                    key=lambda item: _reverse_market_price_sort_key(
+                        item.get("price_sort_key") or ()
+                    )
+                )
+            elif market_sort == "price_asc":
+                market_listings.sort(key=lambda item: item.get("price_sort_key") or ())
+            market_total = len(market_listings)
+            market_total_pages = max(
+                (market_total + market_page_size - 1) // market_page_size,
+                1,
+            )
+            market_page = min(market_page, market_total_pages)
+            market_page_numbers = _build_pagination_numbers(
+                market_page, market_total_pages
+            )
+            start_index = (market_page - 1) * market_page_size
+            end_index = start_index + market_page_size
+            market_listings = market_listings[start_index:end_index]
 
         shared_template_context = _build_shared_template_context(active_profile)
 
@@ -2878,20 +3250,42 @@ def create_app() -> FastAPI:
                 "taiyi_state": taiyi_state,
                 "other_play_definitions": OTHER_PLAY_DEFINITIONS,
                 "other_play_state": other_play_state,
+                "other_opponent_options": other_opponent_options,
                 "divination_batch_state": divination_batch_state,
                 "dongfu_state": dongfu_state,
                 "stock_state": stock_state,
                 "dungeon_definitions": DUNGEON_DEFINITIONS,
                 "selected_dungeon": selected_dungeon,
+                "dungeon_command_buttons": dungeon_command_buttons,
+                "dungeon_cleanup_targets": dungeon_cleanup_targets,
                 "dungeon_messages": dungeon_messages,
                 "inventory_materials": inventory_materials,
                 "inventory_items": inventory_items,
+                "inventory_page": inventory_page,
+                "inventory_page_size": inventory_page_size,
+                "inventory_total": inventory_total,
+                "inventory_total_pages": inventory_total_pages,
+                "inventory_page_numbers": inventory_page_numbers,
                 "inventory_trade_options": inventory_trade_options,
                 "recipes_known_entries": recipes_known_entries,
                 "market_listings": market_listings,
+                "market_query": market_query,
+                "market_exchange_query": market_exchange_query,
+                "market_query_qs": quote_plus(market_query) if market_query else "",
+                "market_exchange_query_qs": quote_plus(market_exchange_query)
+                if market_exchange_query
+                else "",
+                "market_sort": market_sort,
+                "market_page": market_page,
+                "market_page_size": market_page_size,
+                "market_total": market_total,
+                "market_total_pages": market_total_pages,
+                "market_page_numbers": market_page_numbers,
                 "spirit_stones": spirit_stones,
                 "active_badge_text": active_badge_text,
                 "equipped_artifact_name": equipped_artifact_name,
+                "equipped_artifact_details": equipped_artifact_details,
+                "sect_recent_reply_text": sect_recent_reply_text,
                 "recipes_known_text": recipes_known_text,
                 "formations_known_text": formations_known_text,
                 "learned_techniques_text": learned_techniques_text,
@@ -2932,7 +3326,10 @@ def create_app() -> FastAPI:
                 "title": selected_dungeon["title"],
             },
             "messages": _build_dungeon_messages(
-                storage, resolved_chat_id or 0, selected_dungeon["key"]
+                storage,
+                resolved_chat_id or 0,
+                selected_dungeon["key"],
+                profile_id=active_profile.id if active_profile else None,
             ),
         }
 
@@ -2966,7 +3363,10 @@ def create_app() -> FastAPI:
         message_ids = [
             int(message.get("message_id") or 0)
             for message in _list_dungeon_feed_source_messages(
-                storage, resolved_chat_id, dungeon_key
+                storage,
+                resolved_chat_id,
+                dungeon_key,
+                profile_id=profile.id,
             )
             if int(message.get("message_id") or 0)
         ]
@@ -3083,9 +3483,7 @@ def create_app() -> FastAPI:
         bot_username: str = Form("fanrenxiuxian_bot"),
         redirect_to: str = Form("/"),
     ) -> RedirectResponse:
-        profile = (
-            getattr(request.state, "auth_profile", None) or storage.get_active_profile()
-        )
+        profile = getattr(request.state, "auth_profile", None)
         if not profile:
             raise HTTPException(status_code=401, detail="Profile not active")
         expired_redirect = _ensure_external_session_active(profile)
@@ -3162,6 +3560,7 @@ def create_app() -> FastAPI:
                 thread_id=int(thread_id) if thread_id and thread_id.isdigit() else None,
                 chat_type=chat_type,
                 bot_username=bot_username,
+                delay_seconds=5,
             )
         except Exception as exc:
             storage.finish_divination_batch(
@@ -3307,20 +3706,31 @@ def create_app() -> FastAPI:
         db = CompatDb(storage)
         try:
             sect_game.ensure_tables(db)
-            sect_game.set_enabled(db, int(chat_id_text), True)
-            sect_game.start_yinluo_batch(db, int(chat_id_text), "imprison", commands)
+            sect_game.set_enabled(
+                db,
+                int(chat_id_text),
+                True,
+                profile_id=profile.id,
+            )
+            sect_game.start_yinluo_batch(
+                db,
+                int(chat_id_text),
+                "imprison",
+                commands,
+                profile_id=profile.id,
+            )
         finally:
             db.close()
         return RedirectResponse(url=redirect_to or "/modules/sect", status_code=303)
 
     @application.post("/runtime/cultivation/toggle")
     async def toggle_cultivation_runtime(
-        chat_id: int = Form(...), enabled: str = Form(...)
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             fanren_game.ensure_tables(db)
-            active_profile = storage.get_active_profile()
+            active_profile = _get_request_profile(request)
             binding = (
                 storage.get_chat_binding(active_profile.id, chat_id)
                 if active_profile
@@ -3332,12 +3742,26 @@ def create_app() -> FastAPI:
                 fanren_game.update_session(
                     db,
                     chat_id,
+                    profile_id=active_profile.id if active_profile else None,
                     thread_id=getattr(binding, "thread_id", None),
                 )
-                fanren_game.set_enabled(db, chat_id, True, reset_failure=True)
+                fanren_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    reset_failure=True,
+                    profile_id=active_profile.id if active_profile else None,
+                )
             else:
-                fanren_game.set_enabled(db, chat_id, False)
-            session = fanren_game.get_session(db, chat_id)
+                fanren_game.set_enabled(
+                    db,
+                    chat_id,
+                    False,
+                    profile_id=active_profile.id if active_profile else None,
+                )
+            session = fanren_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
         finally:
             db.close()
         if not session:
@@ -3346,21 +3770,29 @@ def create_app() -> FastAPI:
 
     @application.post("/runtime/cultivation/mode")
     async def set_cultivation_mode(
-        chat_id: int = Form(...), mode: str = Form(...)
+        request: Request, chat_id: int = Form(...), mode: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             fanren_game.ensure_tables(db)
-            fanren_game.set_mode(db, chat_id, mode)
-            active_profile = storage.get_active_profile()
+            active_profile = _get_request_profile(request)
+            fanren_game.set_mode(
+                db,
+                chat_id,
+                mode,
+                profile_id=active_profile.id if active_profile else None,
+            )
             if active_profile:
                 sync_cultivation_session(storage, active_profile.id, chat_id, db)
             fanren_game.update_session(
                 db,
                 chat_id,
+                profile_id=active_profile.id if active_profile else None,
                 last_summary=f"已切换为{'深度闭关' if mode == 'deep' else '普通闭关'}，将按接口冷却时间自动调度。",
             )
-            session = fanren_game.get_session(db, chat_id)
+            session = fanren_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
         finally:
             db.close()
         if not session:
@@ -3369,13 +3801,75 @@ def create_app() -> FastAPI:
 
     @application.post("/runtime/cultivation/delete-command-toggle")
     async def toggle_cultivation_delete_command(
-        chat_id: int = Form(...), enabled: str = Form(...)
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             fanren_game.ensure_tables(db)
-            fanren_game.set_delete_normal_command_message(db, chat_id, enabled == "1")
-            session = fanren_game.get_session(db, chat_id)
+            active_profile = _get_request_profile(request)
+            fanren_game.set_delete_normal_command_message(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id if active_profile else None,
+            )
+            session = fanren_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
+        finally:
+            db.close()
+        if not session:
+            raise HTTPException(status_code=404, detail="Cultivation session not found")
+        return RedirectResponse(url="/modules/cultivation", status_code=303)
+
+    @application.post("/runtime/cultivation/jiyin-toggle")
+    async def toggle_cultivation_jiyin_auto(
+        request: Request,
+        chat_id: int = Form(...),
+        enabled: str = Form(...),
+        choice: str = Form(""),
+    ) -> RedirectResponse:
+        db = CompatDb(storage)
+        try:
+            fanren_game.ensure_tables(db)
+            active_profile = _get_request_profile(request)
+            if not active_profile:
+                raise HTTPException(status_code=401, detail="Profile not active")
+            fanren_game.set_auto_jiyin(
+                db,
+                chat_id,
+                enabled == "1",
+                choice,
+                profile_id=active_profile.id,
+            )
+            session = fanren_game.get_session(db, chat_id, profile_id=active_profile.id)
+        finally:
+            db.close()
+        if not session:
+            raise HTTPException(status_code=404, detail="Cultivation session not found")
+        return RedirectResponse(url="/modules/cultivation", status_code=303)
+
+    @application.post("/runtime/cultivation/nanlong-toggle")
+    async def toggle_cultivation_nanlong_auto(
+        request: Request,
+        chat_id: int = Form(...),
+        enabled: str = Form(...),
+        choice: str = Form(""),
+    ) -> RedirectResponse:
+        db = CompatDb(storage)
+        try:
+            fanren_game.ensure_tables(db)
+            active_profile = _get_request_profile(request)
+            if not active_profile:
+                raise HTTPException(status_code=401, detail="Profile not active")
+            fanren_game.set_auto_nanlong(
+                db,
+                chat_id,
+                enabled == "1",
+                choice,
+                profile_id=active_profile.id,
+            )
+            session = fanren_game.get_session(db, chat_id, profile_id=active_profile.id)
         finally:
             db.close()
         if not session:
@@ -3384,20 +3878,32 @@ def create_app() -> FastAPI:
 
     @application.post("/runtime/sect/lingxiao-toggle")
     async def toggle_lingxiao_auto(
-        chat_id: int = Form(...), enabled: str = Form(...)
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             sect_game.ensure_tables(db)
-            sect_game.configure_lingxiao_auto(db, chat_id, enabled == "1")
+            active_profile = _get_request_profile(request)
+            sect_game.configure_lingxiao_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id if active_profile else None,
+            )
             if enabled == "1":
-                sect_game.set_enabled(db, chat_id, True)
-                active_profile = storage.get_active_profile()
+                sect_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=active_profile.id if active_profile else None,
+                )
                 if active_profile:
                     sect_game.sync_lingxiao_trial_state(
                         storage, db, active_profile.id, chat_id
                     )
-            session = sect_game.get_session(db, chat_id)
+            session = sect_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
         finally:
             db.close()
         if not session:
@@ -3406,20 +3912,32 @@ def create_app() -> FastAPI:
 
     @application.post("/runtime/sect/checkin-toggle")
     async def toggle_sect_checkin_auto(
-        chat_id: int = Form(...), enabled: str = Form(...)
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             sect_game.ensure_tables(db)
-            sect_game.configure_sect_checkin_auto(db, chat_id, enabled == "1")
+            active_profile = _get_request_profile(request)
+            sect_game.configure_sect_checkin_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id if active_profile else None,
+            )
             if enabled == "1":
-                sect_game.set_enabled(db, chat_id, True)
-                active_profile = storage.get_active_profile()
+                sect_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=active_profile.id if active_profile else None,
+                )
                 if active_profile:
                     sect_game.sync_common_sect_state(
                         storage, db, active_profile.id, chat_id
                     )
-            session = sect_game.get_session(db, chat_id)
+            session = sect_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
         finally:
             db.close()
         if not session:
@@ -3428,20 +3946,32 @@ def create_app() -> FastAPI:
 
     @application.post("/runtime/sect/teach-toggle")
     async def toggle_sect_teach_auto(
-        chat_id: int = Form(...), enabled: str = Form(...)
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             sect_game.ensure_tables(db)
-            sect_game.configure_sect_teach_auto(db, chat_id, enabled == "1")
+            active_profile = _get_request_profile(request)
+            sect_game.configure_sect_teach_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id if active_profile else None,
+            )
             if enabled == "1":
-                sect_game.set_enabled(db, chat_id, True)
-                active_profile = storage.get_active_profile()
+                sect_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=active_profile.id if active_profile else None,
+                )
                 if active_profile:
                     sect_game.sync_common_sect_state(
                         storage, db, active_profile.id, chat_id
                     )
-            session = sect_game.get_session(db, chat_id)
+            session = sect_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
         finally:
             db.close()
         if not session:
@@ -3450,18 +3980,30 @@ def create_app() -> FastAPI:
 
     @application.post("/runtime/sect/yinluo-sacrifice-toggle")
     async def toggle_yinluo_sacrifice_auto(
-        chat_id: int = Form(...), enabled: str = Form(...)
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             sect_game.ensure_tables(db)
-            sect_game.configure_yinluo_sacrifice_auto(db, chat_id, enabled == "1")
+            active_profile = _get_request_profile(request)
+            sect_game.configure_yinluo_sacrifice_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id if active_profile else None,
+            )
             if enabled == "1":
-                sect_game.set_enabled(db, chat_id, True)
-                active_profile = storage.get_active_profile()
+                sect_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=active_profile.id if active_profile else None,
+                )
                 if active_profile:
                     sect_game.sync_yinluo_state(storage, db, active_profile.id, chat_id)
-            session = sect_game.get_session(db, chat_id)
+            session = sect_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
         finally:
             db.close()
         if not session:
@@ -3470,18 +4012,30 @@ def create_app() -> FastAPI:
 
     @application.post("/runtime/sect/yinluo-blood-wash-toggle")
     async def toggle_yinluo_blood_wash_auto(
-        chat_id: int = Form(...), enabled: str = Form(...)
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             sect_game.ensure_tables(db)
-            sect_game.configure_yinluo_blood_wash_auto(db, chat_id, enabled == "1")
+            active_profile = _get_request_profile(request)
+            sect_game.configure_yinluo_blood_wash_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id if active_profile else None,
+            )
             if enabled == "1":
-                sect_game.set_enabled(db, chat_id, True)
-                active_profile = storage.get_active_profile()
+                sect_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=active_profile.id if active_profile else None,
+                )
                 if active_profile:
                     sect_game.sync_yinluo_state(storage, db, active_profile.id, chat_id)
-            session = sect_game.get_session(db, chat_id)
+            session = sect_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
         finally:
             db.close()
         if not session:
@@ -3489,8 +4043,10 @@ def create_app() -> FastAPI:
         return RedirectResponse(url="/modules/sect", status_code=303)
 
     @application.post("/runtime/sect/dev-switch")
-    async def switch_dev_sect(sect_name: str = Form("")) -> RedirectResponse:
-        active_profile = storage.get_active_profile()
+    async def switch_dev_sect(
+        request: Request, sect_name: str = Form("")
+    ) -> RedirectResponse:
+        active_profile = _get_request_profile(request)
         if not active_profile:
             raise HTTPException(status_code=404, detail="Active profile not found")
         normalized = (sect_name or "").strip()
@@ -3502,20 +4058,32 @@ def create_app() -> FastAPI:
 
     @application.post("/runtime/sect/lingxiao-gangfeng-toggle")
     async def toggle_lingxiao_gangfeng_auto(
-        chat_id: int = Form(...), enabled: str = Form(...)
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             sect_game.ensure_tables(db)
-            sect_game.configure_lingxiao_gangfeng_auto(db, chat_id, enabled == "1")
+            active_profile = _get_request_profile(request)
+            sect_game.configure_lingxiao_gangfeng_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id if active_profile else None,
+            )
             if enabled == "1":
-                sect_game.set_enabled(db, chat_id, True)
-                active_profile = storage.get_active_profile()
+                sect_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=active_profile.id if active_profile else None,
+                )
                 if active_profile:
                     sect_game.sync_lingxiao_trial_state(
                         storage, db, active_profile.id, chat_id
                     )
-            session = sect_game.get_session(db, chat_id)
+            session = sect_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
         finally:
             db.close()
         if not session:
@@ -3524,20 +4092,32 @@ def create_app() -> FastAPI:
 
     @application.post("/runtime/sect/lingxiao-borrow-toggle")
     async def toggle_lingxiao_borrow_auto(
-        chat_id: int = Form(...), enabled: str = Form(...)
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             sect_game.ensure_tables(db)
-            sect_game.configure_lingxiao_borrow_auto(db, chat_id, enabled == "1")
+            active_profile = _get_request_profile(request)
+            sect_game.configure_lingxiao_borrow_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id if active_profile else None,
+            )
             if enabled == "1":
-                sect_game.set_enabled(db, chat_id, True)
-                active_profile = storage.get_active_profile()
+                sect_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=active_profile.id if active_profile else None,
+                )
                 if active_profile:
                     sect_game.sync_lingxiao_trial_state(
                         storage, db, active_profile.id, chat_id
                     )
-            session = sect_game.get_session(db, chat_id)
+            session = sect_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
         finally:
             db.close()
         if not session:
@@ -3546,20 +4126,32 @@ def create_app() -> FastAPI:
 
     @application.post("/runtime/sect/lingxiao-question-toggle")
     async def toggle_lingxiao_question_auto(
-        chat_id: int = Form(...), enabled: str = Form(...)
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
     ) -> RedirectResponse:
         db = CompatDb(storage)
         try:
             sect_game.ensure_tables(db)
-            sect_game.configure_lingxiao_question_auto(db, chat_id, enabled == "1")
+            active_profile = _get_request_profile(request)
+            sect_game.configure_lingxiao_question_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id if active_profile else None,
+            )
             if enabled == "1":
-                sect_game.set_enabled(db, chat_id, True)
-                active_profile = storage.get_active_profile()
+                sect_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=active_profile.id if active_profile else None,
+                )
                 if active_profile:
                     sect_game.sync_lingxiao_trial_state(
                         storage, db, active_profile.id, chat_id
                     )
-            session = sect_game.get_session(db, chat_id)
+            session = sect_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
         finally:
             db.close()
         if not session:

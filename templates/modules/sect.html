@@ -1,1 +1,269 @@
-    {% include 'modules/sect.html' %}
+<section class="detail-grid three-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>宗门总览</p>
+            <h2>仙门身份</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>宗门</span><strong style="color: var(--accent-gold);">{{ active_profile.sect_name or '未入宗门' if active_profile else '未入宗门' }}</strong></div>
+            <div class="kv-row"><span>尊位</span><strong>{{ active_profile.sect_position or '外门' if active_profile else '外门' }}</strong></div>
+            <div class="kv-row"><span>贡献</span><strong>{{ active_profile.sect_contribution_text or '0' if active_profile else '0' }}</strong></div>
+            <div class="kv-row"><span>签到状态</span><strong>{{ '今日已点卯' if sect_daily_state.checked_in_today else '今日未点卯' }}</strong></div>
+            <div class="kv-row"><span>连签</span><strong>{{ sect_daily_state.consecutive_check_in_days }} 天</strong></div>
+            <div class="kv-row"><span>传功进度</span><strong>{{ sect_daily_state.teach_progress_text }}</strong></div>
+        </div>
+        {% if sect_recent_reply_text %}
+        <div class="top-gap">
+            <p class="muted">最近摘要</p>
+            <div class="message-text scroll-panel">{{ sect_recent_reply_text }}</div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>宗门路线</p>
+            <h2>专属玩法</h2>
+        </div>
+        {% if current_sect_feature %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>当前路线</span><strong style="color: var(--accent-gold);">{{ current_sect_feature.name }}</strong></div>
+            <div class="kv-row"><span>定位</span><strong class="multiline-value">{{ current_sect_feature.summary }}</strong></div>
+        </div>
+        <p class="muted top-gap">{{ current_sect_feature.detail }}</p>
+        {% if current_sect_feature.playbook %}
+        <ul>
+            {% for item in current_sect_feature.playbook %}
+            <li>{{ item }}</li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        <div class="pill-row top-gap">
+            {% for item in current_sect_feature.notes or [] %}
+            <span class="pill">{{ item }}</span>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="muted">当前角色暂无宗门专属玩法配置。</p>
+        {% endif %}
+    </div>
+
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>自动链路</p>
+            <h2>调度开关</h2>
+        </div>
+        {% if sect_bound_chat_id %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>总调度</span><strong style="color: {% if sect_session and sect_session.enabled %}var(--accent-gold){% else %}var(--text-muted){% endif %};">{{ '运行中' if sect_session and sect_session.enabled else '未启动' }}</strong></div>
+            <div class="kv-row"><span>签到</span><strong>{{ '自动' if sect_session and sect_session.auto_sect_checkin_enabled else '手动' }}</strong></div>
+            <div class="kv-row"><span>传功</span><strong>{{ '自动' if sect_session and sect_session.auto_sect_teach_enabled else '手动' }}</strong></div>
+            {% if current_sect_feature and current_sect_feature.name == '凌霄宫' %}
+            <div class="kv-row"><span>凌霄登阶</span><strong>{{ '自动' if sect_session and sect_session.auto_lingxiao_enabled else '手动' }}</strong></div>
+            {% endif %}
+            {% if current_sect_feature and current_sect_feature.name == '阴罗宗' %}
+            <div class="kv-row"><span>阴罗献祭</span><strong>{{ '自动' if sect_session and sect_session.auto_yinluo_sacrifice_enabled else '手动' }}</strong></div>
+            <div class="kv-row"><span>阴罗血洗</span><strong>{{ '自动' if sect_session and sect_session.auto_yinluo_blood_wash_enabled else '手动' }}</strong></div>
+            {% endif %}
+        </div>
+        <div class="action-row top-gap" style="flex-wrap: wrap; gap: 10px;">
+            <form method="post" action="/runtime/sect/checkin-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if sect_session and sect_session.auto_sect_checkin_enabled else '1' }}">
+                <button type="submit">{{ '关闭自动点卯' if sect_session and sect_session.auto_sect_checkin_enabled else '开启自动点卯' }}</button>
+            </form>
+            <form method="post" action="/runtime/sect/teach-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if sect_session and sect_session.auto_sect_teach_enabled else '1' }}">
+                <button type="submit">{{ '关闭自动传功' if sect_session and sect_session.auto_sect_teach_enabled else '开启自动传功' }}</button>
+            </form>
+            {% if lingxiao_state and current_sect_feature and current_sect_feature.name == '凌霄宫' %}
+            <form method="post" action="/runtime/sect/lingxiao-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if sect_session and sect_session.auto_lingxiao_enabled else '1' }}">
+                <button type="submit">{{ '关闭自动登阶' if sect_session and sect_session.auto_lingxiao_enabled else '开启自动登阶' }}</button>
+            </form>
+            {% endif %}
+        </div>
+        {% else %}
+        <p class="muted">当前未绑定宗门群聊，无法切换自动宗门链路。</p>
+        {% endif %}
+    </div>
+</section>
+
+{% if current_sect_feature and current_sect_feature.actions %}
+<section class="detail-grid">
+    {% for action in current_sect_feature.actions %}
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>宗门动作</p>
+            <h2>{{ action.title }}</h2>
+        </div>
+        <p class="muted">{{ action.description }}</p>
+        <form class="form-grid top-gap" method="post" action="/runtime/sect/action">
+            <input type="hidden" name="sect_name" value="{{ current_sect_feature.name }}">
+            <input type="hidden" name="action_key" value="{{ action.key }}">
+            <input type="hidden" name="redirect_to" value="/modules/sect">
+            <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ sect_bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ sect_bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ sect_bound_bot_username or 'luoxueyao_bot' }}">
+            {% for field in action.fields or [] %}
+                {% if field.type == 'select' %}
+                <label class="{{ 'full-span' if (field.options or [])|length > 4 else '' }}">
+                    {{ field.label }}
+                    <select name="{{ field.name }}" {% if field.required %}required{% endif %}>
+                        {% for option in field.options or [] %}
+                        <option value="{{ option.value }}">{{ option.label }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                {% else %}
+                <label>
+                    {{ field.label }}
+                    <input name="{{ field.name }}" placeholder="{{ field.placeholder or '' }}" {% if field.required %}required{% endif %}>
+                </label>
+                {% endif %}
+            {% endfor %}
+            <div class="full-span action-row">
+                <button type="submit" {% if not sect_command_chat_ready %}disabled{% endif %}>{{ action.submit_label or '加入队列' }}</button>
+            </div>
+        </form>
+        {% if action.command %}
+        <p class="muted top-gap">参考指令：<code>{{ action.command }}</code></p>
+        {% elif action.template %}
+        <p class="muted top-gap">指令模板：<code>{{ action.template }}</code></p>
+        {% endif %}
+    </div>
+    {% endfor %}
+</section>
+{% endif %}
+
+{% if lingxiao_state and current_sect_feature and current_sect_feature.name == '凌霄宫' %}
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>凌霄宫</p>
+            <h2>登阶状态</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>当前层数</span><strong>{{ lingxiao_state.step_display }}</strong></div>
+            <div class="kv-row"><span>循环轮次</span><strong>{{ lingxiao_state.cycles }}</strong></div>
+            <div class="kv-row"><span>肉身体魄</span><strong>{{ lingxiao_state.body_temper_display }}</strong></div>
+            <div class="kv-row"><span>心境</span><strong>{{ lingxiao_state.heart_state or '未记录' }}</strong></div>
+            <div class="kv-row"><span>下次登阶</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(lingxiao_state.climb_ready_time) if lingxiao_state.climb_ready_time else '已就绪' }}</strong></div>
+            <div class="kv-row"><span>罡风锻体</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(lingxiao_state.gangfeng_ready_time) if lingxiao_state.gangfeng_ready_time else '已就绪' }}</strong></div>
+            <div class="kv-row"><span>借天门</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(lingxiao_state.borrow_ready_time) if lingxiao_state.borrow_ready_time else '已就绪' }}</strong></div>
+            <div class="kv-row"><span>今日问心</span><strong>{{ '已完成' if lingxiao_state.questioned_today else '未完成' }}</strong></div>
+        </div>
+    </div>
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>凌霄调度</p>
+            <h2>专项开关</h2>
+        </div>
+        <div class="action-row" style="flex-wrap: wrap; gap: 10px;">
+            <form method="post" action="/runtime/sect/lingxiao-gangfeng-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if lingxiao_state.auto_gangfeng_enabled else '1' }}">
+                <button type="submit">{{ '关闭自动罡风' if lingxiao_state.auto_gangfeng_enabled else '开启自动罡风' }}</button>
+            </form>
+            <form method="post" action="/runtime/sect/lingxiao-borrow-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if lingxiao_state.auto_borrow_enabled else '1' }}">
+                <button type="submit">{{ '关闭自动借门' if lingxiao_state.auto_borrow_enabled else '开启自动借门' }}</button>
+            </form>
+            <form method="post" action="/runtime/sect/lingxiao-question-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if lingxiao_state.auto_question_enabled else '1' }}">
+                <button type="submit">{{ '关闭自动问心' if lingxiao_state.auto_question_enabled else '开启自动问心' }}</button>
+            </form>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+{% if yinluo_state and current_sect_feature and current_sect_feature.name == '阴罗宗' %}
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>阴罗宗</p>
+            <h2>幡灵与魂袋</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>持幡者</span><strong>{{ yinluo_state.owner_name or '-' }}</strong></div>
+            <div class="kv-row"><span>位阶</span><strong>{{ yinluo_state.rank_text or '-' }}</strong></div>
+            <div class="kv-row"><span>煞气池</span><strong>{{ yinluo_state.sha_pool_current }}/{{ yinluo_state.sha_pool_capacity }}</strong></div>
+            <div class="kv-row"><span>日常体力</span><strong>{{ yinluo_state.daily_battle_stamina }}</strong></div>
+            <div class="kv-row"><span>精华已成</span><strong>{{ yinluo_state.refining_slot_ready_count }} / {{ yinluo_state.refining_slot_total }}</strong></div>
+            <div class="kv-row"><span>空闲槽位</span><strong>{{ yinluo_state.refining_slot_idle_count }}</strong></div>
+        </div>
+        {% if yinluo_state.soul_pouch_entries %}
+        <div class="top-gap pill-row">
+            {% for entry in yinluo_state.soul_pouch_entries[:12] %}
+            <span class="pill">{{ entry.name }} x{{ entry.quantity }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>阴罗调度</p>
+            <h2>专项开关</h2>
+        </div>
+        <div class="action-row" style="flex-wrap: wrap; gap: 10px;">
+            <form method="post" action="/runtime/sect/yinluo-sacrifice-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if yinluo_state.auto_sacrifice_enabled else '1' }}">
+                <button type="submit">{{ '关闭自动献祭' if yinluo_state.auto_sacrifice_enabled else '开启自动献祭' }}</button>
+            </form>
+            <form method="post" action="/runtime/sect/yinluo-blood-wash-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if yinluo_state.auto_blood_wash_enabled else '1' }}">
+                <button type="submit">{{ '关闭自动血洗' if yinluo_state.auto_blood_wash_enabled else '开启自动血洗' }}</button>
+            </form>
+            <form method="post" action="/runtime/sect/yinluo-batch">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="thread_id" value="{{ sect_bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ sect_bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ sect_bound_bot_username or 'luoxueyao_bot' }}">
+                <input type="hidden" name="redirect_to" value="/modules/sect">
+                <input type="hidden" name="batch_mode" value="collect">
+                <button type="submit" {% if not sect_command_chat_ready %}disabled{% endif %}>一键收取精华</button>
+            </form>
+            <form method="post" action="/runtime/sect/yinluo-batch">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="thread_id" value="{{ sect_bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ sect_bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ sect_bound_bot_username or 'luoxueyao_bot' }}">
+                <input type="hidden" name="redirect_to" value="/modules/sect">
+                <input type="hidden" name="batch_mode" value="soothe">
+                <button type="submit" {% if not sect_command_chat_ready %}disabled{% endif %}>一键安抚幡灵</button>
+            </form>
+        </div>
+    </div>
+</section>
+{% endif %}
+
+<section class="detail-grid">
+    <div class="detail-card" style="grid-column: 1 / -1;">
+        <div class="section-header compact">
+            <p>开发切换</p>
+            <h2>宗门路线模拟</h2>
+        </div>
+        <form class="form-grid" method="post" action="/runtime/sect/dev-switch">
+            <label class="full-span">
+                强制查看宗门专属页面
+                <select name="sect_name">
+                    <option value="">按角色当前宗门</option>
+                    {% for sect_name in dev_sect_options %}
+                    <option value="{{ sect_name }}" {% if sect_name == dev_sect_override %}selected{% endif %}>{{ sect_name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit">切换展示</button>
+            </div>
+        </form>
+    </div>
+</section>

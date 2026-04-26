@@ -1,21 +1,59 @@
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>副本切换</p>
+            <h2>当前频道：{{ selected_dungeon.title }}</h2>
+        </div>
+        <div class="dungeon-tab-row">
+            {% for dungeon in dungeon_definitions %}
+            <a class="pagination-chip {% if dungeon.key == selected_dungeon.key %}active{% endif %}" href="/modules/dungeon?dungeon_key={{ dungeon.key }}">{{ dungeon.title }}</a>
+            {% endfor %}
+        </div>
+        <div class="top-gap message-text">
+当前副本仅展示与「{{ selected_dungeon.title }}」关键词命中的指令与机器人回包。
+副本之间消息相互隔离，可单独清理。
+        </div>
+    </div>
+</section>
+
 <section class="detail-grid">
     <div class="detail-card">
         <div class="section-header compact">
-            <p>秘境降魔</p>
-            <h2>秘境频道</h2>
+            <p>秘境频道</p>
+            <h2>消息流与指令发送</h2>
         </div>
-        
+
         <div class="dungeon-composer-sticky">
-            <form class="dungeon-composer-form" method="post" action="/runtime/commands/send-raw">
+            <div class="dungeon-tab-row top-gap">
+                {% for command_text in dungeon_command_buttons or [] %}
+                <button type="button" class="pagination-chip dungeon-command-fill" data-command="{{ command_text }}">{{ command_text }}</button>
+                {% endfor %}
+                {% if dungeon_cleanup_targets %}
+                <select id="dungeon-kick-target" class="pagination-chip" style="min-width: 180px;">
+                    {% for target in dungeon_cleanup_targets %}
+                    <option value="{{ target.command }}">{{ target.label }}</option>
+                    {% endfor %}
+                </select>
+                <button type="button" id="dungeon-kick-fill" class="pagination-chip">.请离</button>
+                {% endif %}
+            </div>
+            <form class="dungeon-composer-form" method="post" action="/runtime/commands/send-raw" id="dungeon-composer-form">
                 <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
-                <input type="hidden" name="thread_id" value="{{ selected_dungeon.thread_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
                 <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
                 <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
                 <input type="hidden" name="redirect_to" value="/modules/dungeon?dungeon_key={{ selected_dungeon.key }}">
-                
-                <input class="dungeon-command-input" type="text" name="text" placeholder="输入阵法指令 (如: .进入秘境) ..." required>
+                <input id="dungeon-command-input" class="dungeon-command-input" type="text" name="text" placeholder="输入阵法指令 (如: .进入{{ selected_dungeon.title }}) ..." required>
                 <button type="submit" class="button" {% if not command_chat_ready %}disabled{% endif %}>发送</button>
             </form>
+            <div class="action-row top-gap">
+                <form method="post" action="/runtime/dungeon/clear-messages">
+                    <input type="hidden" name="dungeon_key" value="{{ selected_dungeon.key }}">
+                    <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                    <input type="hidden" name="redirect_to" value="/modules/dungeon?dungeon_key={{ selected_dungeon.key }}">
+                    <button type="submit">清理当前副本消息</button>
+                </form>
+            </div>
         </div>
 
         <div id="dungeon-feed-list" class="dungeon-feed-list top-gap">
@@ -30,26 +68,27 @@ const dungeonFeedApiUrl = {{ ('/api/dungeon-feed?dungeon_key=' ~ selected_dungeo
 let dungeonFeedSignature = '';
 let dungeonFeedTimer = null;
 
+function fillDungeonCommand(commandText) {
+    const input = document.getElementById('dungeon-command-input');
+    if (!input) return;
+    input.value = commandText || '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+}
+
 function buildDungeonFeedSignature(messages) {
-    return JSON.stringify((messages || []).map(message => [
-        message.message_id,
-        message.created_at,
-        message.text,
-        message.reply_preview
-    ]));
+    return JSON.stringify((messages || []).map((message) => [message.message_id, message.created_at, message.text, message.reply_preview]));
 }
 
 function createDungeonFeedItem(message) {
     const article = document.createElement('article');
-    article.className = "dungeon-feed-item ";
+    article.className = `dungeon-feed-item ${message.is_bot ? 'bot' : 'user'}`;
 
     const meta = document.createElement('div');
     meta.className = 'dungeon-feed-meta';
-
     const sender = document.createElement('strong');
     sender.textContent = message.sender_display || (message.is_bot ? '天道傀儡' : '散修道友');
     meta.appendChild(sender);
-
     const time = document.createElement('span');
     time.className = 'muted';
     time.textContent = message.created_at_display || '-';
@@ -59,7 +98,7 @@ function createDungeonFeedItem(message) {
     if (message.reply_preview) {
         const replyPreview = document.createElement('div');
         replyPreview.className = 'dungeon-reply-preview';
-        replyPreview.textContent = "传音回复：";
+        replyPreview.textContent = `回复：${message.reply_preview}`;
         article.appendChild(replyPreview);
     }
 
@@ -72,40 +111,27 @@ function createDungeonFeedItem(message) {
 
 function renderDungeonFeed(messages) {
     const container = document.getElementById('dungeon-feed-list');
-    if (!container) {
-        return;
-    }
+    if (!container) return;
     container.innerHTML = '';
     if (!messages || !messages.length) {
         const empty = document.createElement('p');
         empty.className = 'muted';
-        empty.textContent = '当前秘境寂静无声，尚未有神识波动。';
+        empty.textContent = '当前副本暂时没有消息。';
         container.appendChild(empty);
         return;
     }
-    messages.forEach(message => {
-        container.appendChild(createDungeonFeedItem(message));
-    });
+    messages.forEach((message) => container.appendChild(createDungeonFeedItem(message)));
 }
 
 async function refreshDungeonFeed() {
-    if (!dungeonFeedApiUrl) {
-        return;
-    }
+    if (!dungeonFeedApiUrl) return;
     try {
-        const response = await fetch(dungeonFeedApiUrl, {
-            headers: { Accept: 'application/json' },
-            cache: 'no-store'
-        });
-        if (!response.ok) {
-            return;
-        }
+        const response = await fetch(dungeonFeedApiUrl, { headers: { Accept: 'application/json' }, cache: 'no-store' });
+        if (!response.ok) return;
         const payload = await response.json();
         const messages = Array.isArray(payload.messages) ? payload.messages : [];
         const nextSignature = buildDungeonFeedSignature(messages);
-        if (nextSignature === dungeonFeedSignature) {
-            return;
-        }
+        if (nextSignature === dungeonFeedSignature) return;
         dungeonFeedSignature = nextSignature;
         renderDungeonFeed(messages);
     } catch (_error) {
@@ -113,17 +139,21 @@ async function refreshDungeonFeed() {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    if (!document.getElementById('dungeon-feed-list')) {
-        return;
-    }
+    document.querySelectorAll('.dungeon-command-fill').forEach((button) => {
+        button.addEventListener('click', () => {
+            fillDungeonCommand(button.dataset.command || '');
+        });
+    });
+    document.getElementById('dungeon-kick-fill')?.addEventListener('click', () => {
+        const select = document.getElementById('dungeon-kick-target');
+        fillDungeonCommand(select?.value || '');
+    });
     renderDungeonFeed(initialDungeonMessages);
     dungeonFeedSignature = buildDungeonFeedSignature(initialDungeonMessages);
     dungeonFeedTimer = window.setInterval(refreshDungeonFeed, 5000);
 });
 
 window.addEventListener('beforeunload', () => {
-    if (dungeonFeedTimer) {
-        window.clearInterval(dungeonFeedTimer);
-    }
+    if (dungeonFeedTimer) window.clearInterval(dungeonFeedTimer);
 });
 </script>

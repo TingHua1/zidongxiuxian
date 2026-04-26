@@ -9,6 +9,10 @@ from typing import Iterable, Optional
 from tg_game.models import ChatBinding, FeatureModule, ModuleSetting, PlayerProfile
 
 
+BOUND_MESSAGE_RETENTION_SECONDS = 48 * 3600
+BOUND_MESSAGE_CLEANUP_INTERVAL_SECONDS = 3600
+
+
 def _bool_from_row(value: object) -> bool:
     return bool(int(value or 0))
 
@@ -180,6 +184,28 @@ class Storage:
                     FOREIGN KEY (profile_id) REFERENCES profiles(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS browser_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_token_hash TEXT NOT NULL UNIQUE,
+                    current_profile_id INTEGER,
+                    expires_at REAL NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    revoked_at REAL NOT NULL DEFAULT 0,
+                    FOREIGN KEY (current_profile_id) REFERENCES profiles(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS browser_session_profiles (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    browser_session_id INTEGER NOT NULL,
+                    profile_id INTEGER NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(browser_session_id, profile_id),
+                    FOREIGN KEY (browser_session_id) REFERENCES browser_sessions(id),
+                    FOREIGN KEY (profile_id) REFERENCES profiles(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS app_runtime_state (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL DEFAULT '',
@@ -241,6 +267,7 @@ class Storage:
                     text TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'pending',
                     error_text TEXT NOT NULL DEFAULT '',
+                    scheduled_at REAL NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     FOREIGN KEY (profile_id) REFERENCES profiles(id)
@@ -334,16 +361,34 @@ class Storage:
                     UNIQUE(chat_id, message_id, stock_code)
                 );
 
+                CREATE TABLE IF NOT EXISTS stock_player_replies (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL DEFAULT 0,
+                    thread_id INTEGER,
+                    command_text TEXT NOT NULL DEFAULT '',
+                    reply_text TEXT NOT NULL DEFAULT '',
+                    source_message_id INTEGER NOT NULL DEFAULT 0,
+                    reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(profile_id, command_text),
+                    FOREIGN KEY (profile_id) REFERENCES profiles(id)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_profiles_active ON profiles(is_active);
                 CREATE INDEX IF NOT EXISTS idx_chat_bindings_profile ON chat_bindings(profile_id, is_active);
                 CREATE INDEX IF NOT EXISTS idx_cultivation_results_profile_created ON cultivation_results(profile_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_bound_messages_profile_created ON bound_messages(profile_id, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_app_sessions_hash ON app_sessions(session_token_hash);
+                CREATE INDEX IF NOT EXISTS idx_browser_sessions_hash ON browser_sessions(session_token_hash);
+                CREATE INDEX IF NOT EXISTS idx_browser_session_profiles_session ON browser_session_profiles(browser_session_id, profile_id);
                 CREATE INDEX IF NOT EXISTS idx_outgoing_commands_status_created ON outgoing_commands(status, created_at ASC);
                 CREATE INDEX IF NOT EXISTS idx_divination_batches_profile_status ON divination_batches(profile_id, status, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_divination_batches_chat_status ON divination_batches(chat_id, status, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_stock_market_info_profile_updated ON stock_market_info(profile_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_stock_market_history_code_observed ON stock_market_history(stock_code, observed_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS idx_stock_player_replies_profile_updated ON stock_player_replies(profile_id, updated_at DESC);
                 """
             )
 
@@ -404,6 +449,7 @@ class Storage:
                     "text": "TEXT NOT NULL DEFAULT ''",
                     "status": "TEXT NOT NULL DEFAULT 'pending'",
                     "error_text": "TEXT NOT NULL DEFAULT ''",
+                    "scheduled_at": "REAL NOT NULL DEFAULT 0",
                     "created_at": "REAL NOT NULL DEFAULT 0",
                     "updated_at": "REAL NOT NULL DEFAULT 0",
                 },
@@ -498,6 +544,37 @@ class Storage:
                     "updated_at": "REAL NOT NULL DEFAULT 0",
                 },
             )
+            self._ensure_columns(
+                conn,
+                "stock_player_replies",
+                {
+                    "profile_id": "INTEGER NOT NULL DEFAULT 0",
+                    "chat_id": "INTEGER NOT NULL DEFAULT 0",
+                    "thread_id": "INTEGER",
+                    "command_text": "TEXT NOT NULL DEFAULT ''",
+                    "reply_text": "TEXT NOT NULL DEFAULT ''",
+                    "source_message_id": "INTEGER NOT NULL DEFAULT 0",
+                    "reply_to_msg_id": "INTEGER NOT NULL DEFAULT 0",
+                    "created_at": "REAL NOT NULL DEFAULT 0",
+                    "updated_at": "REAL NOT NULL DEFAULT 0",
+                },
+            )
+            if conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='fanren_sessions'"
+            ).fetchone():
+                self._ensure_columns(
+                    conn,
+                    "fanren_sessions",
+                    {"profile_id": "INTEGER NOT NULL DEFAULT 0"},
+                )
+            if conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='sect_sessions'"
+            ).fetchone():
+                self._ensure_columns(
+                    conn,
+                    "sect_sessions",
+                    {"profile_id": "INTEGER NOT NULL DEFAULT 0"},
+                )
             self._ensure_columns(
                 conn,
                 "shop_items",
@@ -1021,21 +1098,62 @@ class Storage:
             )
 
     def create_app_session(
-        self, profile_id: int, expires_seconds: int = 86400 * 7
+        self,
+        profile_id: int,
+        expires_seconds: int = 86400 * 7,
+        session_token: str = "",
     ) -> str:
-        token = secrets.token_urlsafe(32)
-        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         now = time.time()
+        current_token = str(session_token or "").strip()
+        current_token_hash = (
+            hashlib.sha256(current_token.encode("utf-8")).hexdigest()
+            if current_token
+            else ""
+        )
+        new_token = current_token or secrets.token_urlsafe(32)
+        new_token_hash = hashlib.sha256(new_token.encode("utf-8")).hexdigest()
         with self.connect() as conn:
+            existing_session = None
+            if current_token_hash:
+                existing_session = conn.execute(
+                    """
+                    SELECT * FROM browser_sessions
+                    WHERE session_token_hash=? AND revoked_at=0 AND expires_at>?
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (current_token_hash, now),
+                ).fetchone()
+            if existing_session:
+                browser_session_id = int(existing_session["id"])
+                conn.execute(
+                    """
+                    UPDATE browser_sessions
+                    SET current_profile_id=?, expires_at=?, updated_at=?
+                    WHERE id=?
+                    """,
+                    (int(profile_id), now + expires_seconds, now, browser_session_id),
+                )
+            else:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO browser_sessions (
+                        session_token_hash, current_profile_id, expires_at, created_at, updated_at, revoked_at
+                    ) VALUES (?, ?, ?, ?, ?, 0)
+                    """,
+                    (new_token_hash, int(profile_id), now + expires_seconds, now, now),
+                )
+                browser_session_id = int(cursor.lastrowid)
             conn.execute(
                 """
-                INSERT INTO app_sessions (
-                    profile_id, session_token_hash, expires_at, created_at, updated_at, revoked_at
-                ) VALUES (?, ?, ?, ?, ?, 0)
+                INSERT INTO browser_session_profiles (
+                    browser_session_id, profile_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(browser_session_id, profile_id) DO UPDATE SET
+                    updated_at=excluded.updated_at
                 """,
-                (profile_id, token_hash, now + expires_seconds, now, now),
+                (browser_session_id, int(profile_id), now, now),
             )
-        return token
+        return new_token
 
     def get_game_items(self) -> dict:
         with self.connect() as conn:
@@ -1166,8 +1284,8 @@ class Storage:
             row = conn.execute(
                 """
                 SELECT p.*
-                FROM app_sessions s
-                JOIN profiles p ON p.id = s.profile_id
+                FROM browser_sessions s
+                JOIN profiles p ON p.id = s.current_profile_id
                 WHERE s.session_token_hash=? AND s.revoked_at=0 AND s.expires_at>?
                 ORDER BY s.id DESC
                 LIMIT 1
@@ -1176,6 +1294,105 @@ class Storage:
             ).fetchone()
         return self._row_to_profile(row) if row else None
 
+    def list_profiles_by_session_token(self, session_token: str) -> list[PlayerProfile]:
+        token = str(session_token or "").strip()
+        if not token:
+            return []
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = time.time()
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT p.*
+                FROM browser_sessions s
+                JOIN browser_session_profiles sp ON sp.browser_session_id = s.id
+                JOIN profiles p ON p.id = sp.profile_id
+                WHERE s.session_token_hash=? AND s.revoked_at=0 AND s.expires_at>?
+                ORDER BY CASE WHEN p.id = s.current_profile_id THEN 0 ELSE 1 END,
+                         p.updated_at DESC,
+                         p.id DESC
+                """,
+                (token_hash, now),
+            ).fetchall()
+        return [self._row_to_profile(row) for row in rows]
+
+    def set_current_profile_by_session_token(
+        self, session_token: str, profile_id: int
+    ) -> Optional[PlayerProfile]:
+        token = str(session_token or "").strip()
+        if not token:
+            return None
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = time.time()
+        with self.connect() as conn:
+            browser_session = conn.execute(
+                """
+                SELECT * FROM browser_sessions
+                WHERE session_token_hash=? AND revoked_at=0 AND expires_at>?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (token_hash, now),
+            ).fetchone()
+            if not browser_session:
+                return None
+            allowed = conn.execute(
+                """
+                SELECT 1 FROM browser_session_profiles
+                WHERE browser_session_id=? AND profile_id=?
+                LIMIT 1
+                """,
+                (int(browser_session["id"]), int(profile_id)),
+            ).fetchone()
+            if not allowed:
+                return None
+            conn.execute(
+                "UPDATE browser_sessions SET current_profile_id=?, updated_at=? WHERE id=?",
+                (int(profile_id), now, int(browser_session["id"])),
+            )
+        return self.get_profile(int(profile_id))
+
+    def remove_profile_from_session_token(
+        self, session_token: str, profile_id: int
+    ) -> bool:
+        token = str(session_token or "").strip()
+        if not token:
+            return False
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = time.time()
+        with self.connect() as conn:
+            browser_session = conn.execute(
+                """
+                SELECT * FROM browser_sessions
+                WHERE session_token_hash=? AND revoked_at=0 AND expires_at>?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (token_hash, now),
+            ).fetchone()
+            if not browser_session:
+                return False
+            browser_session_id = int(browser_session["id"])
+            conn.execute(
+                "DELETE FROM browser_session_profiles WHERE browser_session_id=? AND profile_id=?",
+                (browser_session_id, int(profile_id)),
+            )
+            remaining = conn.execute(
+                "SELECT profile_id FROM browser_session_profiles WHERE browser_session_id=? ORDER BY updated_at DESC, id DESC",
+                (browser_session_id,),
+            ).fetchall()
+            if not remaining:
+                conn.execute(
+                    "UPDATE browser_sessions SET current_profile_id=NULL, revoked_at=?, updated_at=? WHERE id=?",
+                    (now, now, browser_session_id),
+                )
+                return False
+            current_profile_id = int(browser_session["current_profile_id"] or 0)
+            if current_profile_id == int(profile_id):
+                conn.execute(
+                    "UPDATE browser_sessions SET current_profile_id=?, updated_at=? WHERE id=?",
+                    (int(remaining[0]["profile_id"]), now, browser_session_id),
+                )
+        return True
+
     def revoke_app_session(self, session_token: str) -> None:
         token = str(session_token or "").strip()
         if not token:
@@ -1183,7 +1400,7 @@ class Storage:
         token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
         with self.connect() as conn:
             conn.execute(
-                "UPDATE app_sessions SET revoked_at=?, updated_at=? WHERE session_token_hash=?",
+                "UPDATE browser_sessions SET revoked_at=?, updated_at=? WHERE session_token_hash=?",
                 (time.time(), time.time(), token_hash),
             )
 
@@ -1208,6 +1425,50 @@ class Storage:
                 """,
                 (key or "", value or "", now),
             )
+
+    def delete_bound_messages_older_than(
+        self,
+        max_age_seconds: int = BOUND_MESSAGE_RETENTION_SECONDS,
+        *,
+        now: Optional[float] = None,
+    ) -> int:
+        safe_age_seconds = max(int(max_age_seconds or 0), 0)
+        if safe_age_seconds <= 0:
+            return 0
+        cutoff = float(now if now is not None else time.time()) - safe_age_seconds
+        with self.connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM bound_messages WHERE created_at < ?",
+                (cutoff,),
+            )
+        return int(cursor.rowcount or 0)
+
+    def maybe_cleanup_bound_messages(
+        self,
+        *,
+        max_age_seconds: int = BOUND_MESSAGE_RETENTION_SECONDS,
+        min_interval_seconds: int = BOUND_MESSAGE_CLEANUP_INTERVAL_SECONDS,
+        now: Optional[float] = None,
+    ) -> int:
+        current_time = float(now if now is not None else time.time())
+        state_key = "bound_messages:last_cleanup_at"
+        last_cleanup_text = self.get_runtime_state(state_key) or ""
+        try:
+            last_cleanup_at = float(last_cleanup_text)
+        except (TypeError, ValueError):
+            last_cleanup_at = 0.0
+        if (
+            min_interval_seconds > 0
+            and last_cleanup_at
+            and current_time - last_cleanup_at < int(min_interval_seconds)
+        ):
+            return 0
+        deleted_count = self.delete_bound_messages_older_than(
+            max_age_seconds=max_age_seconds,
+            now=current_time,
+        )
+        self.set_runtime_state(state_key, str(current_time))
+        return deleted_count
 
     def get_external_cookie_override(self) -> Optional[str]:
         return self.get_runtime_state("asc_default_cookie_override")
@@ -1456,10 +1717,16 @@ class Storage:
                 binding.chat_id for binding in self.list_chat_bindings(profile_id)
             ]
             for chat_id in chat_ids:
-                conn.execute(
-                    "UPDATE sect_sessions SET next_check_time=? WHERE chat_id=?",
-                    (next_check_time, chat_id),
-                )
+                try:
+                    conn.execute(
+                        "UPDATE sect_sessions SET next_check_time=? WHERE chat_id=? AND (profile_id=? OR profile_id IS NULL OR profile_id=0)",
+                        (next_check_time, chat_id, int(profile_id)),
+                    )
+                except sqlite3.OperationalError:
+                    conn.execute(
+                        "UPDATE sect_sessions SET next_check_time=? WHERE chat_id=?",
+                        (next_check_time, chat_id),
+                    )
 
     def request_cultivation_refresh(
         self, profile_id: int, cooldown_seconds: int = 0
@@ -1475,25 +1742,59 @@ class Storage:
                 binding.chat_id for binding in self.list_chat_bindings(profile_id)
             ]
             for chat_id in chat_ids:
-                conn.execute(
-                    "UPDATE fanren_sessions SET next_check_time=? WHERE chat_id=?",
-                    (next_check_time, chat_id),
-                )
+                try:
+                    conn.execute(
+                        "UPDATE fanren_sessions SET next_check_time=? WHERE chat_id=? AND (profile_id=? OR profile_id IS NULL OR profile_id=0)",
+                        (next_check_time, chat_id, int(profile_id)),
+                    )
+                except sqlite3.OperationalError:
+                    conn.execute(
+                        "UPDATE fanren_sessions SET next_check_time=? WHERE chat_id=?",
+                        (next_check_time, chat_id),
+                    )
 
-    def get_cultivation_session(self, chat_id: int) -> Optional[dict]:
+    def get_cultivation_session(
+        self, chat_id: int, profile_id: Optional[int] = None
+    ) -> Optional[dict]:
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM fanren_sessions WHERE chat_id=? LIMIT 1",
-                (chat_id,),
-            ).fetchone()
+            if profile_id is not None:
+                try:
+                    row = conn.execute(
+                        "SELECT * FROM fanren_sessions WHERE chat_id=? AND (profile_id=? OR profile_id IS NULL OR profile_id=0) ORDER BY profile_id DESC LIMIT 1",
+                        (chat_id, int(profile_id)),
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    row = conn.execute(
+                        "SELECT * FROM fanren_sessions WHERE chat_id=? LIMIT 1",
+                        (chat_id,),
+                    ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM fanren_sessions WHERE chat_id=? LIMIT 1",
+                    (chat_id,),
+                ).fetchone()
         return dict(row) if row else None
 
-    def get_sect_session(self, chat_id: int) -> Optional[dict]:
+    def get_sect_session(
+        self, chat_id: int, profile_id: Optional[int] = None
+    ) -> Optional[dict]:
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM sect_sessions WHERE chat_id=? ORDER BY bot_username ASC LIMIT 1",
-                (chat_id,),
-            ).fetchone()
+            if profile_id is not None:
+                try:
+                    row = conn.execute(
+                        "SELECT * FROM sect_sessions WHERE chat_id=? AND (profile_id=? OR profile_id IS NULL OR profile_id=0) ORDER BY profile_id DESC, bot_username ASC LIMIT 1",
+                        (chat_id, int(profile_id)),
+                    ).fetchone()
+                except sqlite3.OperationalError:
+                    row = conn.execute(
+                        "SELECT * FROM sect_sessions WHERE chat_id=? ORDER BY bot_username ASC LIMIT 1",
+                        (chat_id,),
+                    ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM sect_sessions WHERE chat_id=? ORDER BY bot_username ASC LIMIT 1",
+                    (chat_id,),
+                ).fetchone()
         return dict(row) if row else None
 
     def get_active_divination_batch(
@@ -1606,6 +1907,7 @@ class Storage:
         is_bot: bool,
         text: str,
     ) -> None:
+        self.maybe_cleanup_bound_messages()
         now = time.time()
         with self.connect() as conn:
             conn.execute(
@@ -1650,15 +1952,17 @@ class Storage:
         thread_id: Optional[int] = None,
         chat_type: str = "group",
         bot_username: str = "",
+        delay_seconds: int = 0,
     ) -> int:
         now = time.time()
+        scheduled_at = now + max(int(delay_seconds or 0), 0)
         with self.connect() as conn:
             cursor = conn.execute(
                 """
                 INSERT INTO outgoing_commands (
                     profile_id, chat_id, thread_id, chat_type, bot_username,
-                    text, status, error_text, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', '', ?, ?)
+                    text, status, error_text, scheduled_at, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', '', ?, ?, ?)
                 """,
                 (
                     profile_id,
@@ -1667,6 +1971,7 @@ class Storage:
                     chat_type or "group",
                     bot_username or "",
                     text or "",
+                    scheduled_at,
                     now,
                     now,
                 ),
@@ -1679,10 +1984,11 @@ class Storage:
             row = conn.execute(
                 """
                 SELECT * FROM outgoing_commands
-                WHERE status='pending'
-                ORDER BY created_at ASC, id ASC
+                WHERE status='pending' AND (scheduled_at IS NULL OR scheduled_at<=?)
+                ORDER BY scheduled_at ASC, created_at ASC, id ASC
                 LIMIT 1
-                """
+                """,
+                (now,),
             ).fetchone()
             if not row:
                 return None
@@ -1924,40 +2230,50 @@ class Storage:
         command_text: str,
         profile_id: Optional[int] = None,
         thread_id: Optional[int] = None,
+        sender_id: Optional[int] = None,
+        sender_username: str = "",
     ) -> Optional[dict]:
         normalized_command = str(command_text or "").strip()
         if not normalized_command:
             return None
 
+        normalized_sender_username = (
+            str(sender_username or "").strip().lower().lstrip("@")
+        )
+
         with self.connect() as conn:
-            command_filters = []
+            command_query = """
+                SELECT * FROM bound_messages
+                WHERE chat_id=? AND is_bot=0 AND text=?
+            """
+            command_params = [int(chat_id), normalized_command]
             if profile_id is not None:
-                command_filters.append((" AND profile_id=?", [int(profile_id)]))
-            command_filters.append(("", []))
-            for extra_query, extra_params in command_filters:
-                command_query = """
+                command_query += " AND profile_id=?"
+                command_params.append(int(profile_id))
+            if thread_id:
+                command_query += " AND (thread_id=? OR reply_to_msg_id=?)"
+                command_params.extend([int(thread_id), int(thread_id)])
+            if sender_id is not None:
+                command_query += " AND sender_id=?"
+                command_params.append(int(sender_id))
+            elif normalized_sender_username:
+                command_query += " AND LOWER(COALESCE(sender_username, ''))=?"
+                command_params.append(normalized_sender_username)
+            command_query += " ORDER BY created_at DESC, id DESC LIMIT 20"
+            command_rows = conn.execute(command_query, command_params).fetchall()
+            for command_row in command_rows:
+                reply_query = """
                     SELECT * FROM bound_messages
-                    WHERE chat_id=? AND is_bot=0 AND text=?
+                    WHERE chat_id=? AND is_bot=1 AND reply_to_msg_id=?
                 """
-                command_params = [int(chat_id), normalized_command, *extra_params]
-                command_query += extra_query
-                if thread_id:
-                    command_query += " AND (thread_id=? OR reply_to_msg_id=?)"
-                    command_params.extend([int(thread_id), int(thread_id)])
-                command_query += " ORDER BY created_at DESC, id DESC LIMIT 20"
-                command_rows = conn.execute(command_query, command_params).fetchall()
-                for command_row in command_rows:
-                    reply_row = conn.execute(
-                        """
-                        SELECT * FROM bound_messages
-                        WHERE chat_id=? AND is_bot=1 AND reply_to_msg_id=?
-                        ORDER BY created_at DESC, id DESC
-                        LIMIT 1
-                        """,
-                        (int(chat_id), int(command_row["message_id"])),
-                    ).fetchone()
-                    if reply_row:
-                        return dict(reply_row)
+                reply_params = [int(chat_id), int(command_row["message_id"])]
+                if profile_id is not None:
+                    reply_query += " AND profile_id=?"
+                    reply_params.append(int(profile_id))
+                reply_query += " ORDER BY created_at DESC, id DESC LIMIT 1"
+                reply_row = conn.execute(reply_query, reply_params).fetchone()
+                if reply_row:
+                    return dict(reply_row)
         return None
 
     def get_latest_bot_reply_message(
@@ -1981,6 +2297,68 @@ class Storage:
                 "SELECT MAX(observed_at) AS latest_observed_at FROM stock_market_history"
             ).fetchone()
         return float((row["latest_observed_at"] if row else 0) or 0)
+
+    def upsert_stock_player_reply(
+        self,
+        profile_id: int,
+        chat_id: int,
+        command_text: str,
+        reply_text: str,
+        *,
+        thread_id: Optional[int] = None,
+        source_message_id: int = 0,
+        reply_to_msg_id: int = 0,
+    ) -> None:
+        normalized_command = str(command_text or "").strip()
+        normalized_reply = str(reply_text or "").strip()
+        if not profile_id or not normalized_command or not normalized_reply:
+            return
+        now = time.time()
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO stock_player_replies (
+                    profile_id, chat_id, thread_id, command_text, reply_text,
+                    source_message_id, reply_to_msg_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_id, command_text) DO UPDATE SET
+                    chat_id=excluded.chat_id,
+                    thread_id=excluded.thread_id,
+                    reply_text=excluded.reply_text,
+                    source_message_id=excluded.source_message_id,
+                    reply_to_msg_id=excluded.reply_to_msg_id,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    int(profile_id),
+                    int(chat_id or 0),
+                    int(thread_id) if thread_id is not None else None,
+                    normalized_command,
+                    normalized_reply,
+                    int(source_message_id or 0),
+                    int(reply_to_msg_id or 0),
+                    now,
+                    now,
+                ),
+            )
+
+    def get_stock_player_reply(
+        self, profile_id: int, command_text: str
+    ) -> Optional[dict]:
+        normalized_command = str(command_text or "").strip()
+        if not profile_id or not normalized_command:
+            return None
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM stock_player_replies
+                WHERE profile_id=? AND command_text=?
+                ORDER BY updated_at DESC, id DESC
+                LIMIT 1
+                """,
+                (int(profile_id), normalized_command),
+            ).fetchone()
+        return dict(row) if row else None
 
     def list_stock_source_messages(
         self, limit: int = 5000, since_created_at: Optional[float] = None

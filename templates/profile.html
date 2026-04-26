@@ -34,7 +34,9 @@
                     <div class="full-profile-span"><span>仙门贡献</span><strong class="contribution-action">{{ active_profile.sect_contribution_text or '0' }}<button type="button" class="inline-button small-btn" onclick="openSectExchangeModal()" {% if not command_chat_ready or not (sect_treasury_items or []) %}disabled{% endif %}>宝库兑换</button></strong></div>
                 </div>
                 <div class="action-row top-gap">
+                    {% if is_admin_profile %}
                     <a class="button" href="/messages">翻阅传音卷宗</a>
+                    {% endif %}
                     <form method="post" action="/profiles/{{ active_profile.id }}/refresh-info">
                         <button class="button" type="submit" {% if not active_profile.telegram_verified_at or not external_account or external_account.status != 'connected' %}disabled{% endif %} style="border-color: var(--accent-gold);">探寻天机更新</button>
                     </form>

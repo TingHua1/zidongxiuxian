@@ -1,1 +1,290 @@
-    {% include 'modules/estate.html' %}
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>洞府总览</p>
+            <h2>灵脉与建筑</h2>
+        </div>
+        <div class="detail-grid estate-detail-grid" style="margin-bottom: 0; gap: 12px;">
+            <div class="stack-list compact-stack">
+                <div class="kv-row"><span>灵脉</span><strong>{{ dongfu_state.lingmai_level }}</strong></div>
+                <div class="kv-row"><span>静室</span><strong>{{ dongfu_state.jingshi_level }}</strong></div>
+                <div class="kv-row"><span>丹房</span><strong>{{ dongfu_state.danfang_level }}</strong></div>
+            </div>
+            <div class="stack-list compact-stack">
+                <div class="kv-row"><span>器室</span><strong>{{ dongfu_state.qishi_level }}</strong></div>
+                <div class="kv-row"><span>兽园</span><strong>{{ dongfu_state.shouyuan_level }}</strong></div>
+                <div class="kv-row"><span>大阵</span><strong>{{ dongfu_state.dazhen_level }}</strong></div>
+            </div>
+            <div class="stack-list compact-stack">
+                <div class="kv-row"><span>阵法</span><strong>{{ '已开启' if dongfu_state.dazhen_active else '未开启' }}</strong></div>
+                <div class="kv-row"><span>阵势</span><strong>{{ dongfu_state.dazhen_mode or '-' }}</strong></div>
+                <div class="kv-row"><span>灵气池</span><strong>{{ dongfu_state.lingqi_pool }}</strong></div>
+                <div class="kv-row"><span>更新时间</span><strong style="font-family: var(--font-mono);">{{ dongfu_state.last_update_time or '-' }}</strong></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>万宝阁</p>
+            <h2>展示架与景观</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            {% if dongfu_state.pavilion_slots %}
+                {% for slot_name, item_name in dongfu_state.pavilion_slots.items() %}
+                <div class="kv-row"><span>{{ slot_name }}</span><strong>{{ item_name }}</strong></div>
+                {% endfor %}
+            {% else %}
+            <p class="muted">当前展示架为空。</p>
+            {% endif %}
+        </div>
+        {% if dongfu_state.scenery_slots or dongfu_state.unlocked_scenery %}
+        <div class="top-gap">
+            <p class="muted">已摆放景观</p>
+            <div class="pill-row">
+                {% for item in dongfu_state.scenery_slots or [] %}
+                    {% if item is mapping %}
+                    <span class="pill">{{ item.name or item.item_name or item.item_id or '未知景观' }}</span>
+                    {% else %}
+                    <span class="pill">{{ item }}</span>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+        <div class="top-gap">
+            <p class="muted">已解锁景观</p>
+            <div class="pill-row">
+                {% for item in dongfu_state.unlocked_scenery or [] %}
+                    {% if item is mapping %}
+                    <span class="pill">{{ item.name or item.item_name or item.item_id or '未知景观' }}</span>
+                    {% else %}
+                    <span class="pill">{{ item }}</span>
+                    {% endif %}
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</section>
+
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>洞府操作</p>
+            <h2>快捷指令</h2>
+        </div>
+        <div class="estate-action-grid">
+            <form method="post" action="/runtime/commands/send-raw">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+                <input type="hidden" name="redirect_to" value="/modules/estate">
+                <input type="hidden" name="text" value=".洞府">
+                <button class="estate-action-btn" type="submit" {% if not command_chat_ready %}disabled{% endif %}>刷新洞府</button>
+            </form>
+            <form method="post" action="/runtime/commands/send-raw">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+                <input type="hidden" name="redirect_to" value="/modules/estate">
+                <input type="hidden" name="text" value=".升级灵脉">
+                <button class="estate-action-btn" type="submit" {% if not command_chat_ready %}disabled{% endif %}>升级灵脉</button>
+            </form>
+            <form method="post" action="/runtime/commands/send-raw">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+                <input type="hidden" name="redirect_to" value="/modules/estate">
+                <input type="hidden" name="text" value=".升级静室">
+                <button class="estate-action-btn" type="submit" {% if not command_chat_ready %}disabled{% endif %}>升级静室</button>
+            </form>
+            <form method="post" action="/runtime/commands/send-raw">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+                <input type="hidden" name="redirect_to" value="/modules/estate">
+                <input type="hidden" name="text" value=".升级大阵">
+                <button class="estate-action-btn" type="submit" {% if not command_chat_ready %}disabled{% endif %}>升级大阵</button>
+            </form>
+            <form method="post" action="/runtime/commands/send-raw">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+                <input type="hidden" name="redirect_to" value="/modules/estate">
+                <input type="hidden" name="text" value=".升级丹房">
+                <button class="estate-action-btn" type="submit" {% if not command_chat_ready %}disabled{% endif %}>升级丹房</button>
+            </form>
+            <form method="post" action="/runtime/commands/send-raw">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+                <input type="hidden" name="redirect_to" value="/modules/estate">
+                <input type="hidden" name="text" value=".升级器室">
+                <button class="estate-action-btn" type="submit" {% if not command_chat_ready %}disabled{% endif %}>升级器室</button>
+            </form>
+        </div>
+
+        <form class="form-grid top-gap" method="post" action="/runtime/commands/send-raw" id="estate-array-mode-form">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/estate">
+            <label>
+                切换阵势
+                <select id="estate-array-mode-select">
+                    <option value="聚灵">聚灵</option>
+                    <option value="守府">守府</option>
+                    <option value="迎客">迎客</option>
+                </select>
+            </label>
+            <label class="full-span">
+                生成指令
+                <input id="estate-array-mode-command" name="text" required>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit" {% if not command_chat_ready %}disabled{% endif %}>发送切换阵势</button>
+            </div>
+        </form>
+
+        <form class="form-grid top-gap" method="post" action="/runtime/commands/send-raw" id="estate-array-disc-form">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/estate">
+            <label>
+                激活阵盘
+                <select id="estate-array-disc-select">
+                    <option value="灵材">灵材</option>
+                    <option value="丹宝">丹宝</option>
+                    <option value="器冢">器冢</option>
+                </select>
+            </label>
+            <label class="full-span">
+                生成指令
+                <input id="estate-array-disc-command" name="text" required>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit" {% if not command_chat_ready %}disabled{% endif %}>发送激活阵盘</button>
+            </div>
+        </form>
+
+        <form class="form-grid top-gap" method="post" action="/runtime/commands/send-raw">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/estate">
+            <label>
+                布置景观
+                <select id="estate-scenery-select">
+                    {% for name in dongfu_state.scenery_options or [] %}
+                    <option value="{{ name }}">{{ name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="full-span">
+                生成指令
+                <input id="estate-scenery-command" name="text" required>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit" {% if not command_chat_ready or not (dongfu_state.scenery_options or []) %}disabled{% endif %}>发送景观指令</button>
+            </div>
+        </form>
+
+        <form class="form-grid top-gap" method="post" action="/runtime/commands/send-raw">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/estate">
+            <label>
+                上架到万宝阁
+                <select id="estate-pavilion-select">
+                    {% for name in dongfu_state.storage_bag_options or [] %}
+                    <option value="{{ name }}">{{ name }}</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="full-span">
+                生成指令
+                <input id="estate-pavilion-command" name="text" required>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit" {% if not command_chat_ready or not (dongfu_state.storage_bag_options or []) %}disabled{% endif %}>发送上架指令</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>洞府消息</p>
+            <h2>最近回响</h2>
+        </div>
+        <div class="estate-message-list">
+            {% for message in dongfu_state.messages or [] %}
+            <div class="estate-message-item">
+                {% if message is mapping %}
+                <div class="dungeon-feed-meta">
+                    <strong>{{ message.command_text or '洞府回包' }}</strong>
+                    <span class="muted">{{ message.created_at_display or '-' }}</span>
+                </div>
+                <pre class="message-text dungeon-feed-text">{{ message.text or '' }}</pre>
+                {% else %}
+                <div class="dungeon-feed-meta"><strong>洞府缓存</strong><span class="muted">-</span></div>
+                <pre class="message-text dungeon-feed-text">{{ message }}</pre>
+                {% endif %}
+            </div>
+            {% else %}
+            <p class="muted">最近没有新的洞府回包。</p>
+            {% endfor %}
+        </div>
+        <div class="pill-row top-gap">
+            {% for command in module_commands %}
+            <span class="pill">{{ command }}</span>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+<script>
+function updateEstateCommands() {
+    const scenerySelect = document.getElementById('estate-scenery-select');
+    const sceneryCommand = document.getElementById('estate-scenery-command');
+    const pavilionSelect = document.getElementById('estate-pavilion-select');
+    const pavilionCommand = document.getElementById('estate-pavilion-command');
+    const arrayModeSelect = document.getElementById('estate-array-mode-select');
+    const arrayModeCommand = document.getElementById('estate-array-mode-command');
+    const arrayDiscSelect = document.getElementById('estate-array-disc-select');
+    const arrayDiscCommand = document.getElementById('estate-array-disc-command');
+    if (scenerySelect && sceneryCommand) {
+        const value = (scenerySelect.value || '').trim();
+        sceneryCommand.value = value ? `.布置景观 ${value}` : '';
+    }
+    if (pavilionSelect && pavilionCommand) {
+        const value = (pavilionSelect.value || '').trim();
+        pavilionCommand.value = value ? `.上架至万宝阁 ${value}` : '';
+    }
+    if (arrayModeSelect && arrayModeCommand) {
+        const value = (arrayModeSelect.value || '').trim();
+        arrayModeCommand.value = value ? `.切换阵势 ${value}` : '';
+    }
+    if (arrayDiscSelect && arrayDiscCommand) {
+        const value = (arrayDiscSelect.value || '').trim();
+        arrayDiscCommand.value = value ? `.激活阵盘 ${value}` : '';
+    }
+}
+
+document.getElementById('estate-scenery-select')?.addEventListener('change', updateEstateCommands);
+document.getElementById('estate-pavilion-select')?.addEventListener('change', updateEstateCommands);
+document.getElementById('estate-array-mode-select')?.addEventListener('change', updateEstateCommands);
+document.getElementById('estate-array-disc-select')?.addEventListener('change', updateEstateCommands);
+document.addEventListener('DOMContentLoaded', updateEstateCommands);
+</script>

@@ -27,16 +27,7 @@ def should_sync_stock_market_message(storage: Storage, message: dict) -> bool:
         return False
     if not str(message.get("text") or "").strip():
         return False
-    if not extract_stock_snapshot_entries(message.get("text") or ""):
-        return False
-
-    chat_id = int(message.get("chat_id") or 0)
-    reply_to_msg_id = int(message.get("reply_to_msg_id") or 0)
-    if not chat_id or not reply_to_msg_id:
-        return False
-
-    reply_message = storage.get_bound_message(chat_id, reply_to_msg_id) or {}
-    return _is_stock_snapshot_command(reply_message.get("text") or "")
+    return bool(extract_stock_snapshot_entries(message.get("text") or ""))
 
 
 def _extract_stock_board_entries(text: str) -> list[dict]:

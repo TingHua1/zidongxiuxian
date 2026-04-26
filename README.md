@@ -16,6 +16,7 @@
 
 ```bash
 pip install -r requirements.txt
+copy .env.example .env
 python run_web.py
 ```
 
@@ -24,13 +25,17 @@ python run_web.py
 ## 启动 Telegram Runtime
 
 ```bash
+copy .env.example .env
 python run_telegram.py
 ```
+
+项目运行时会从仓库根目录的本地 `.env` 读取配置；真实 `.env` 不应提交到仓库，仓库只保留 `.env.example` 示例文件。
 
 需要 `.env` 中至少存在：
 
 - `TELEGRAM_API_ID`
 - `TELEGRAM_API_HASH`
+- `AUTHORIZED_USER_ID`（如果你要启用管理员统一写入 / 审计入口）
 
 ## 当前已实现
 

@@ -7,7 +7,9 @@
     <p class="hero-text">本地模式会先绑定当前 TG 登录账号，再使用你手动提供的天机阁 `session=...` 调用 `/api/cultivator/&lt;tg_username&gt;`。如果失效，会提醒你重新复制新的 session 过来。</p>
     <div class="action-row top-gap">
         <a class="inline-link tianji-link" href="https://asc.aiopenai.app/login" target="_blank" rel="noreferrer">打开官方天机阁登录</a>
+        {% if is_admin_profile %}
         <button class="inline-button" id="paste-session-btn" type="button">从剪贴板粘贴 session</button>
+        {% endif %}
     </div>
 </section>
 
@@ -89,6 +91,9 @@
             <p>第二步</p>
             <h2>登录天机阁</h2>
         </div>
+        {% if not is_admin_profile %}
+        <p class="muted">当前天机阁 Cookie 由管理员统一维护。你只能复用管理员 Cookie 调接口同步自己的人物信息，不能替换全局 Cookie。</p>
+        {% endif %}
         {% if external_account and external_account.status == 'connected' %}
         <div class="stack-list compact-stack">
             <div class="kv-row"><span>目标接口</span><strong>/api/cultivator/&lt;tg_username&gt;</strong></div>
@@ -108,6 +113,7 @@
             <div class="kv-row"><span>宗门资料</span><strong>按宗门静态资料映射描述与修炼加成</strong></div>
         </div>
         <form class="form-grid" method="post" action="/auth/external/connect">
+            {% if is_admin_profile %}
             <label class="full-span">
                 session Cookie
                 <textarea id="cookie-input" name="cookie_text" rows="10" placeholder="session=xxx" required></textarea>
@@ -115,8 +121,14 @@
             <div class="full-span action-row">
                 <button type="submit">验证并登录天机阁</button>
             </div>
+            <p class="muted top-gap">只需要粘贴新的整串 Cookie 或单独 `session=...`，提交时会自动只保留 `session`。</p>
+            {% else %}
+            <div class="full-span action-row">
+                <button type="submit" {% if not has_global_external_cookie %}disabled{% endif %}>使用管理员 Cookie 同步人物信息</button>
+            </div>
+            <p class="muted top-gap">{% if has_global_external_cookie %}将复用管理员维护的全局 Cookie 调用天机阁接口。{% else %}管理员尚未配置可用 Cookie，暂时无法同步。{% endif %}</p>
+            {% endif %}
         </form>
-        <p class="muted top-gap">只需要粘贴新的整串 Cookie 或单独 `session=...`，提交时会自动只保留 `session`。</p>
         {% endif %}
     </div>
 

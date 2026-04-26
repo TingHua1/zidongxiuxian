@@ -226,6 +226,7 @@ async def _bootstrap() -> TelegramClient:
     settings = get_settings()
     storage = Storage(settings.database_path)
     storage.init_schema()
+    storage.maybe_cleanup_bound_messages(min_interval_seconds=0)
     active_profile = storage.get_active_profile()
     preferred_session_name = (
         active_profile.telegram_session_name if active_profile else ""

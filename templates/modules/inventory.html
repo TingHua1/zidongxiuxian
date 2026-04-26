@@ -5,14 +5,77 @@
             <h2>本命法宝与储物袋</h2>
         </div>
         <div class="stack-list">
+            <div class="kv-row"><span>灵石</span><strong style="color: var(--accent-gold);">{{ spirit_stones }}</strong></div>
+            <div class="kv-row"><span>当前徽章</span><strong>{{ active_badge_text or '-' }}</strong></div>
             <div class="kv-row"><span>已炼器图纸</span><strong>{{ recipes_known_text }}</strong></div>
             <div class="kv-row"><span>已掌握阵法</span><strong>{{ formations_known_text }}</strong></div>
             <div class="kv-row"><span>已领悟功法</span><strong>{{ learned_techniques_text }}</strong></div>
-            <div class="kv-row"><span>当前携带法宝</span><strong style="color: var(--warning);">{{ equipped_artifact_name or '未装备法宝' }}</strong></div>
+        </div>
+        <div class="top-gap">
+            <p class="muted">已装备法宝详情</p>
+            <div class="message-text">{{ equipped_artifact_details }}</div>
         </div>
         <div class="top-gap" style="display: flex; gap: 8px;">
             <button class="button" onclick="openCraftRecipe()">炼制法宝 / 丹药</button>
         </div>
+    </div>
+</section>
+
+<section class="detail-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>储物袋</p>
+            <h2>个人物品清单</h2>
+        </div>
+        {% if inventory_items %}
+        <div class="inventory-grid inventory-grid-compact inventory-scroll-panel">
+            {% for item in inventory_items %}
+            <article class="inventory-item-card {% if item.is_equipped %}equipped{% endif %}">
+                <div class="stock-card-head">
+                    <div>
+                        <strong>{{ item.name or item.item_id }}</strong>
+                        <div class="muted">{{ item.type or '-' }}</div>
+                    </div>
+                    {% if item.is_equipped %}
+                    <span class="pill active">已装备</span>
+                    {% elif item.quantity %}
+                    <span class="pill">x{{ item.quantity }}</span>
+                    {% endif %}
+                </div>
+                <div class="inventory-item-meta">
+                    {% if item.durability is not none and item.max_durability is not none %}<span class="pill">耐久 {{ item.durability }}/{{ item.max_durability }}</span>{% endif %}
+                    {% if item.quantity and item.quantity > 1 %}<span class="pill">数量 {{ item.quantity }}</span>{% endif %}
+                </div>
+                <div class="top-gap action-row">
+                    <button class="inline-button small-btn" type="button" onclick="openInventorySellModal('{{ (item.name or item.item_id)|replace("'", "\\'") }}', {{ item.quantity or 1 }})" {% if not command_chat_ready %}disabled{% endif %}>上架</button>
+                </div>
+                {% if item.description %}
+                <p class="muted top-gap">{{ item.description }}</p>
+                {% endif %}
+            </article>
+            {% endfor %}
+        </div>
+        <div class="result-pagination top-gap">
+            <div class="result-pagination-links">
+                {% if inventory_page > 1 %}
+                <a class="pagination-chip" href="/modules/inventory?inv_page={{ inventory_page - 1 }}">上一页</a>
+                {% endif %}
+                {% for page_number in inventory_page_numbers %}
+                    {% if page_number %}
+                    <a class="pagination-chip {% if page_number == inventory_page %}active{% endif %}" href="/modules/inventory?inv_page={{ page_number }}">{{ page_number }}</a>
+                    {% else %}
+                    <span class="pagination-chip disabled">...</span>
+                    {% endif %}
+                {% endfor %}
+                {% if inventory_page < inventory_total_pages %}
+                <a class="pagination-chip" href="/modules/inventory?inv_page={{ inventory_page + 1 }}">下一页</a>
+                {% endif %}
+            </div>
+            <p class="muted">第 {{ inventory_page }} / {{ inventory_total_pages }} 页，共 {{ inventory_total }} 件，每页 {{ inventory_page_size }} 件</p>
+        </div>
+        {% else %}
+        <p class="muted">当前没有可展示的个人物品。</p>
+        {% endif %}
     </div>
 </section>
 
@@ -56,6 +119,46 @@
     </div>
 </dialog>
 
+<dialog id="inventory-sell-modal" class="modal">
+    <div class="modal-content detail-card" style="width: 560px; max-width: 92vw; margin: auto; border-radius: 8px;">
+        <div class="section-header compact">
+            <p>万宝阁上架</p>
+            <h2 id="inventory-sell-modal-title">生成上架指令</h2>
+        </div>
+        <form class="form-grid top-gap" method="post" action="/runtime/commands/send-raw" id="inventory-sell-form">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/inventory?inv_page={{ inventory_page }}">
+            <label>
+                上架物品
+                <input id="inventory-sell-item-name" type="text" required>
+            </label>
+            <label>
+                上架数量
+                <input id="inventory-sell-item-quantity" type="number" min="1" value="1" required>
+            </label>
+            <label class="full-span">
+                交换内容
+                <div id="inventory-sell-exchange-list" class="stack-list compact-stack"></div>
+            </label>
+            <div class="full-span action-row">
+                <button class="inline-button" type="button" onclick="addInventorySellExchangeRow()">增加交换项</button>
+            </div>
+            <label class="full-span">
+                生成指令
+                <input id="inventory-sell-command" name="text" required>
+            </label>
+            <p class="muted full-span">命令格式：.上架 物品名*数量 换 灵石*数量,物品名*数量。可添加多个交换项，并分别指定数量。</p>
+            <div class="action-row full-span">
+                <button type="submit" {% if not command_chat_ready %}disabled{% endif %}>立即发送上架指令</button>
+                <button type="button" class="inline-button" onclick="document.getElementById('inventory-sell-modal').close()">取消</button>
+            </div>
+        </form>
+    </div>
+</dialog>
+
 <script>
 function updateCraftCommand() {
     const itemSelect = document.getElementById('craft-item-select');
@@ -66,7 +169,7 @@ function updateCraftCommand() {
     }
     const craftName = (itemSelect.value || '').trim();
     const quantity = Math.max(parseInt(quantityInput.value || '1', 10) || 1, 1);
-    commandInput.value = .炼制 *;
+    commandInput.value = craftName ? `.炼制 ${craftName}*${quantity}` : '';
 }
 
 function openCraftRecipe(recipeName, craftName) {
@@ -78,8 +181,8 @@ function openCraftRecipe(recipeName, craftName) {
     if (!modal || !itemSelect || !quantityInput) {
         return;
     }
-    subtitle.textContent = recipeName ? "已掌握图纸：" : '炼制图纸';
-    title.textContent = craftName ? "炼制 " : '生成炼制指令';
+    subtitle.textContent = recipeName ? `已掌握图纸：${recipeName}` : '炼制图纸';
+    title.textContent = craftName ? `炼制 ${craftName}` : '生成炼制指令';
     if (craftName) {
         itemSelect.value = craftName;
     }
@@ -88,7 +191,95 @@ function openCraftRecipe(recipeName, craftName) {
     modal.showModal();
 }
 
+function updateInventorySellCommand() {
+    const itemNameInput = document.getElementById('inventory-sell-item-name');
+    const itemQuantityInput = document.getElementById('inventory-sell-item-quantity');
+    const commandInput = document.getElementById('inventory-sell-command');
+    if (!itemNameInput || !itemQuantityInput || !commandInput) {
+        return;
+    }
+    const itemName = (itemNameInput.value || '').trim();
+    const quantity = Math.max(parseInt(itemQuantityInput.value || '1', 10) || 1, 1);
+    const rows = Array.from(document.querySelectorAll('.inventory-sell-exchange-row'));
+    const exchangeParts = rows.map((row) => {
+        const select = row.querySelector('.inventory-sell-exchange-select');
+        const quantityInput = row.querySelector('.inventory-sell-exchange-quantity');
+        const targetName = (select?.value || '').trim();
+        const targetQuantity = Math.max(parseInt(quantityInput?.value || '1', 10) || 1, 1);
+        return targetName ? `${targetName}*${targetQuantity}` : '';
+    }).filter(Boolean);
+    const exchange = exchangeParts.join(',');
+    commandInput.value = itemName && exchange ? `.上架 ${itemName}*${quantity} 换 ${exchange}` : '';
+}
+
+function createInventorySellExchangeRow(initialName, initialQuantity) {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'inventory-sell-exchange-row action-row';
+    const options = [{% for option in inventory_trade_options %}'{{ option|replace("'", "\\'") }}',{% endfor %}];
+    wrapper.innerHTML = `
+        <select class="inventory-sell-exchange-select"></select>
+        <input class="inventory-sell-exchange-quantity" type="number" min="1" value="${Math.max(parseInt(initialQuantity || '1', 10) || 1, 1)}">
+        <button class="inline-button" type="button">删除</button>
+    `;
+    const select = wrapper.querySelector('.inventory-sell-exchange-select');
+    options.forEach((name) => {
+        const option = document.createElement('option');
+        option.value = name;
+        option.textContent = name;
+        select.appendChild(option);
+    });
+    if (initialName && options.includes(initialName)) {
+        select.value = initialName;
+    }
+    wrapper.querySelector('.inventory-sell-exchange-select')?.addEventListener('change', updateInventorySellCommand);
+    wrapper.querySelector('.inventory-sell-exchange-quantity')?.addEventListener('input', updateInventorySellCommand);
+    wrapper.querySelector('button')?.addEventListener('click', () => {
+        wrapper.remove();
+        if (!document.querySelector('.inventory-sell-exchange-row')) {
+            addInventorySellExchangeRow();
+        }
+        updateInventorySellCommand();
+    });
+    return wrapper;
+}
+
+function addInventorySellExchangeRow(initialName = '灵石', initialQuantity = 1) {
+    const list = document.getElementById('inventory-sell-exchange-list');
+    if (!list) {
+        return;
+    }
+    list.appendChild(createInventorySellExchangeRow(initialName, initialQuantity));
+    updateInventorySellCommand();
+}
+
+function openInventorySellModal(itemName, quantity) {
+    const modal = document.getElementById('inventory-sell-modal');
+    const title = document.getElementById('inventory-sell-modal-title');
+    const itemNameInput = document.getElementById('inventory-sell-item-name');
+    const itemQuantityInput = document.getElementById('inventory-sell-item-quantity');
+    const exchangeList = document.getElementById('inventory-sell-exchange-list');
+    if (!modal || !itemNameInput || !itemQuantityInput || !exchangeList) {
+        return;
+    }
+    itemNameInput.value = itemName || '';
+    itemQuantityInput.value = Math.max(parseInt(quantity || '1', 10) || 1, 1);
+    if (exchangeList) {
+        exchangeList.innerHTML = '';
+        addInventorySellExchangeRow();
+    }
+    title.textContent = itemName ? `上架 ${itemName}` : '生成上架指令';
+    updateInventorySellCommand();
+    modal.showModal();
+}
+
 document.getElementById('craft-item-select')?.addEventListener('change', updateCraftCommand);
 document.getElementById('craft-quantity')?.addEventListener('input', updateCraftCommand);
-document.addEventListener('DOMContentLoaded', updateCraftCommand);
+document.getElementById('inventory-sell-item-name')?.addEventListener('input', updateInventorySellCommand);
+document.getElementById('inventory-sell-item-quantity')?.addEventListener('input', updateInventorySellCommand);
+document.addEventListener('DOMContentLoaded', () => {
+    updateCraftCommand();
+    if (!document.querySelector('.inventory-sell-exchange-row')) {
+        addInventorySellExchangeRow();
+    }
+});
 </script>

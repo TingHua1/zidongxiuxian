@@ -1,1 +1,174 @@
-    {% include 'modules/cultivation.html' %}
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>闭关总览</p>
+            <h2>本命修为与调度状态</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>当前境界</span><strong>{{ active_profile.stage_name or '-' if active_profile else '-' }}</strong></div>
+            <div class="kv-row"><span>法力源泉</span><strong>{{ active_profile.cultivation_text or '-' if active_profile else '-' }}</strong></div>
+            <div class="kv-row"><span>识海广度</span><strong>{{ character_state.shenshi_points }} 缕</strong></div>
+            <div class="kv-row"><span>本轮模式</span><strong>{{ '深度闭关' if cultivation_session and cultivation_session.retreat_mode == 'deep' else '普通闭关' }}</strong></div>
+            <div class="kv-row"><span>自动调度</span><strong style="color: {% if cultivation_session and cultivation_session.enabled %}var(--accent-gold){% else %}var(--text-muted){% endif %};">{{ '运行中' if cultivation_session and cultivation_session.enabled else '未启动' }}</strong></div>
+            <div class="kv-row"><span>极阴祖师</span><strong>{{ ('开启 / ' ~ (cultivation_session.auto_jiyin_choice or '-')) if cultivation_session and cultivation_session.auto_jiyin_enabled else '关闭' }}</strong></div>
+            <div class="kv-row"><span>南陇侯</span><strong>{{ ('开启 / ' ~ (cultivation_session.auto_nanlong_choice or '-')) if cultivation_session and cultivation_session.auto_nanlong_enabled else '关闭' }}</strong></div>
+            <div class="kv-row"><span>轮询间隔</span><strong>{{ cultivation_session.interval_seconds if cultivation_session else '-' }} 秒</strong></div>
+            <div class="kv-row"><span>下次调度</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(cultivation_session.next_check_time) if cultivation_session and cultivation_session.next_check_time else '待触发' }}</strong></div>
+            <div class="kv-row"><span>近 24h 记录</span><strong>{{ cultivation_total }} 条</strong></div>
+        </div>
+        {% if cultivation_session and cultivation_session.last_summary %}
+        <div class="top-gap">
+            <p class="muted">最近摘要</p>
+            <p class="muted">时间：{{ format_timestamp(cultivation_session.last_action_time) if cultivation_session.last_action_time else '-' }}</p>
+            <div class="message-text">{{ cultivation_session.last_summary }}</div>
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>自动闭关</p>
+            <h2>运行控制</h2>
+        </div>
+        {% if bound_chat_id %}
+        <div class="action-row" style="flex-wrap: wrap; gap: 10px;">
+            <form method="post" action="/runtime/cultivation/toggle">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if cultivation_session and cultivation_session.enabled else '1' }}">
+                <button type="submit">{{ '停止自动闭关' if cultivation_session and cultivation_session.enabled else '启动自动闭关' }}</button>
+            </form>
+            <form method="post" action="/runtime/cultivation/mode">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id }}">
+                <input type="hidden" name="mode" value="normal">
+                <button type="submit" {% if cultivation_session and cultivation_session.retreat_mode != 'deep' %}disabled{% endif %}>切到普通闭关</button>
+            </form>
+            <form method="post" action="/runtime/cultivation/mode">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id }}">
+                <input type="hidden" name="mode" value="deep">
+                <button type="submit" {% if cultivation_session and cultivation_session.retreat_mode == 'deep' %}disabled{% endif %}>切到深度闭关</button>
+            </form>
+            <form method="post" action="/runtime/cultivation/delete-command-toggle">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if cultivation_session and cultivation_session.delete_normal_command_message else '1' }}">
+                <button type="submit">{{ '保留普通指令消息' if cultivation_session and cultivation_session.delete_normal_command_message else '自动删普通指令' }}</button>
+            </form>
+        </div>
+        <form class="form-grid top-gap" method="post" action="/runtime/commands/send-raw">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/cultivation">
+            <label class="full-span">
+                直接发送指令
+                <input name="text" placeholder="例如：.元婴闭关 / .闭关双修 / .查看闭关" required>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit" {% if not command_chat_ready %}disabled{% endif %}>发送到游戏群</button>
+            </div>
+        </form>
+        <div class="detail-grid two-column-grid top-gap">
+            <form class="detail-card" method="post" action="/runtime/cultivation/jiyin-toggle" style="padding: 16px;">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if cultivation_session and cultivation_session.auto_jiyin_enabled else '1' }}">
+                <div class="section-header compact">
+                    <p>特殊事件</p>
+                    <h2>自动极阴祖师</h2>
+                </div>
+                <label class="top-gap">
+                    自动选项
+                    <select name="choice">
+                        <option value="献上魂魄" {% if cultivation_session and cultivation_session.auto_jiyin_choice == '献上魂魄' %}selected{% endif %}>献上魂魄</option>
+                        <option value="收敛气息" {% if cultivation_session and cultivation_session.auto_jiyin_choice == '收敛气息' %}selected{% endif %}>收敛气息</option>
+                    </select>
+                </label>
+                <p class="muted top-gap">命中关键词：神念直入脑海，一个苍老的声音。仅在消息 @ 当前用户时自动回复并发送对应指令。</p>
+                <div class="action-row top-gap">
+                    <button type="submit">{{ '关闭自动极阴祖师' if cultivation_session and cultivation_session.auto_jiyin_enabled else '开启自动极阴祖师' }}</button>
+                </div>
+            </form>
+
+            <form class="detail-card" method="post" action="/runtime/cultivation/nanlong-toggle" style="padding: 16px;">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if cultivation_session and cultivation_session.auto_nanlong_enabled else '1' }}">
+                <div class="section-header compact">
+                    <p>特殊事件</p>
+                    <h2>自动南陇侯</h2>
+                </div>
+                <label class="top-gap">
+                    自动选项
+                    <select name="choice">
+                        <option value="交换 法宝" {% if cultivation_session and cultivation_session.auto_nanlong_choice in ['交换 法宝', '.交换 法宝'] %}selected{% endif %}>交换 法宝</option>
+                        <option value="交换 功法" {% if cultivation_session and cultivation_session.auto_nanlong_choice in ['交换 功法', '.交换 功法'] %}selected{% endif %}>交换 功法</option>
+                        <option value="拒绝交易" {% if cultivation_session and cultivation_session.auto_nanlong_choice in ['拒绝交易', '.拒绝交易'] %}selected{% endif %}>拒绝交易</option>
+                    </select>
+                </label>
+                <p class="muted top-gap">命中关键词：你感到一股无法抗拒的意志锁定了你的神魂。仅在消息 @ 当前用户时自动回复并发送对应指令。</p>
+                <div class="action-row top-gap">
+                    <button type="submit">{{ '关闭自动南陇侯' if cultivation_session and cultivation_session.auto_nanlong_enabled else '开启自动南陇侯' }}</button>
+                </div>
+            </form>
+        </div>
+        {% else %}
+        <p class="muted">当前未绑定凡人修仙群聊，无法控制自动闭关。</p>
+        {% endif %}
+        <div class="pill-row top-gap">
+            {% for command in module_commands %}
+            <span class="pill">{{ command }}</span>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+<section class="detail-grid">
+    <div class="detail-card" style="grid-column: 1 / -1;">
+        <div class="section-header compact">
+            <p>天机历</p>
+            <h2>最近 24 小时闭关记录</h2>
+        </div>
+        {% if cultivation_results %}
+        <div class="cultivation-result-grid">
+            {% for result in cultivation_results %}
+            <article class="cultivation-result-card">
+                <div class="result-card-meta">
+                    <p class="result-card-mode">{{ result.mode_label }}</p>
+                    <span class="result-card-time">{{ format_timestamp(result.created_at) }}</span>
+                </div>
+                <div class="detail-grid two-column-grid" style="margin: 0; padding: 16px;">
+                    <div class="stack-list compact-stack">
+                        <div class="kv-row"><span>修为变化</span><strong style="color: var(--accent-gold);">{{ result.gain_text }}</strong></div>
+                        <div class="kv-row"><span>境界</span><strong>{{ result.stage_display }}</strong></div>
+                        <div class="kv-row"><span>修为进度</span><strong>{{ result.progress_display }}</strong></div>
+                        <div class="kv-row"><span>奇遇摘要</span><strong class="multiline-value">{{ result.adventure_summary }}</strong></div>
+                        <div class="kv-row"><span>物品变化</span><strong class="multiline-value">{{ result.item_summary }}</strong></div>
+                    </div>
+                    <div class="result-message-shell">
+                        <div class="result-card-body">{{ result.raw_text or '未记录原始回包。' }}</div>
+                    </div>
+                </div>
+            </article>
+            {% endfor %}
+        </div>
+        <div class="result-pagination top-gap">
+            <div class="result-pagination-links">
+                {% if cultivation_page > 1 %}
+                <a class="pagination-chip" href="/modules/cultivation?page={{ cultivation_page - 1 }}">上一页</a>
+                {% endif %}
+                {% for page_number in cultivation_page_numbers %}
+                    {% if page_number %}
+                    <a class="pagination-chip {% if page_number == cultivation_page %}active{% endif %}" href="/modules/cultivation?page={{ page_number }}">{{ page_number }}</a>
+                    {% else %}
+                    <span class="pagination-chip disabled">...</span>
+                    {% endif %}
+                {% endfor %}
+                {% if cultivation_page < cultivation_total_pages %}
+                <a class="pagination-chip" href="/modules/cultivation?page={{ cultivation_page + 1 }}">下一页</a>
+                {% endif %}
+            </div>
+            <p class="muted">第 {{ cultivation_page }} / {{ cultivation_total_pages }} 页，共 {{ cultivation_total }} 条记录</p>
+        </div>
+        {% else %}
+        <p class="muted">近 24 小时暂无闭关结算记录。</p>
+        {% endif %}
+    </div>
+</section>

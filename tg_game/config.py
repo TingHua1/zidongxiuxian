@@ -62,6 +62,7 @@ class Settings(BaseModel):
         "yes",
         "on",
     }
+    authorized_user_id: str = os.getenv("AUTHORIZED_USER_ID", "").strip()
 
 
 @lru_cache(maxsize=1)

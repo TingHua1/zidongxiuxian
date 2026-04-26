@@ -1,1 +1,357 @@
-    {% include 'modules/stock.html' %}
+<section class="detail-grid three-column-grid">
+    <div class="detail-card other-overview-card">
+        <p>追踪股票</p>
+        <strong class="overview-stat-value">{{ stock_state.count }}</strong>
+        <span class="muted">首屏直接读取 `stock_market_info`</span>
+    </div>
+    <div class="detail-card other-overview-card">
+        <p>领涨焦点</p>
+        <strong class="overview-stat-value" style="font-size: 20px;">{{ stock_state.top_gainer.stock_name if stock_state.top_gainer else '-' }}</strong>
+        <span class="muted">{{ '%.2f%%'|format(stock_state.top_gainer.change_percent or 0) if stock_state.top_gainer else '-' }}</span>
+    </div>
+    <div class="detail-card other-overview-card">
+        <p>数据时间</p>
+        <strong class="overview-stat-value" style="font-size: 20px;">{{ stock_state.latest_updated_display }}</strong>
+        <span class="muted">最后一次监听写入时刻</span>
+    </div>
+</section>
+
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>行情查询</p>
+            <h2>快速指令</h2>
+        </div>
+        <div class="action-row" style="flex-wrap: wrap; gap: 10px;">
+            {% for command in ['.股市', '.大盘', '.我的持仓', '.股市任务'] %}
+            <form method="post" action="/runtime/commands/send-raw">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+                <input type="hidden" name="redirect_to" value="/modules/stock">
+                <input type="hidden" name="text" value="{{ command }}">
+                <button type="submit" {% if not command_chat_ready %}disabled{% endif %}>{{ command }}</button>
+            </form>
+            {% endfor %}
+        </div>
+
+        <form class="form-grid top-gap" method="post" action="/runtime/commands/send-raw" id="stock-query-form">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/stock">
+            <label>
+                个股查询
+                <select id="stock-query-code">
+                    {% for stock in stock_state.tracked_stocks or [] %}
+                    <option value="{{ stock.stock_code }}">{{ stock.stock_name }} ({{ stock.stock_code }})</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label class="full-span">
+                生成指令
+                <input id="stock-query-command" name="text" required>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit" {% if not command_chat_ready or not (stock_state.tracked_stocks or []) %}disabled{% endif %}>发送个股查询</button>
+            </div>
+        </form>
+    </div>
+
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>交易面板</p>
+            <h2>买卖与融资</h2>
+        </div>
+        <form class="form-grid" method="post" action="/runtime/commands/send-raw" id="stock-trade-form">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/stock">
+            <label>
+                动作
+                <select id="stock-trade-action">
+                    <option value="buy">买入</option>
+                    <option value="sell">卖出</option>
+                    <option value="margin_buy">融资买入</option>
+                    <option value="margin_close">融资平仓</option>
+                </select>
+            </label>
+            <label>
+                股票
+                <select id="stock-trade-code">
+                    {% for stock in stock_state.tracked_stocks or [] %}
+                    <option value="{{ stock.stock_code }}">{{ stock.stock_name }} ({{ stock.stock_code }})</option>
+                    {% endfor %}
+                </select>
+            </label>
+            <label>
+                金额 / 数量
+                <input id="stock-trade-amount" type="number" min="1" value="1000">
+            </label>
+            <label class="full-span">
+                生成指令
+                <input id="stock-trade-command" name="text" required>
+            </label>
+            <div class="full-span action-row">
+                <button type="submit" {% if not command_chat_ready or not (stock_state.tracked_stocks or []) %}disabled{% endif %}>发送交易指令</button>
+            </div>
+        </form>
+        <div class="pill-row top-gap">
+            {% for command in module_commands %}
+            <span class="pill">{{ command }}</span>
+            {% endfor %}
+        </div>
+    </div>
+</section>
+
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>最新持仓</p>
+            <h2>我的持仓回包</h2>
+        </div>
+        <p class="muted">时间：{{ stock_state.latest_account_time_display or '-' }}</p>
+        <div class="stock-feed-text">{{ stock_state.latest_account_text or '尚未捕获 .我的持仓 回包。' }}</div>
+    </div>
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>股市任务</p>
+            <h2>任务回包</h2>
+        </div>
+        <p class="muted">时间：{{ stock_state.latest_task_time_display or '-' }}</p>
+        <div class="stock-feed-text">{{ stock_state.latest_task_text or '尚未捕获 .股市任务 回包。' }}</div>
+    </div>
+</section>
+
+<section class="detail-grid">
+    <div class="detail-card" style="grid-column: 1 / -1;">
+        <div class="section-header compact">
+            <p>市场快照</p>
+            <h2>仙股列表</h2>
+        </div>
+        {% if stock_state.rows %}
+        <div class="stock-grid">
+            {% for row in stock_state.rows %}
+            {% set delta = row.change_percent or 0 %}
+            <article class="stock-card stock-card-clickable" role="button" tabindex="0" data-stock-code="{{ row.stock_code }}" data-stock-name="{{ row.stock_name }}">
+                <div class="stock-card-head">
+                    <div>
+                        <strong>{{ row.stock_name }}</strong>
+                        <div class="stock-card-subtitle muted">{{ row.stock_code }}</div>
+                    </div>
+                    <span class="pill">{{ row.direction_emoji or '盘中' }}</span>
+                </div>
+                <div class="stock-card-price">{{ '%.2f'|format(row.current_price or 0) }}</div>
+                <div class="stock-change {% if delta > 0 %}up{% elif delta < 0 %}down{% endif %}">
+                    {{ '%+.2f%%'|format(delta) }}
+                </div>
+                <div class="stock-compact-meta top-gap">
+                    <span>赛道 {{ row.sector or '-' }}</span>
+                    <span>风向 {{ row.trend or '-' }}</span>
+                    <span>热度 {{ row.heat or '-' }}</span>
+                    <span>流动性 {{ row.liquidity or '-' }}</span>
+                </div>
+                <div class="stock-card-footer top-gap muted">
+                    <span>更新时间</span>
+                    <span>{{ row.data_time_display }}</span>
+                </div>
+            </article>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="muted">当前没有股票快照数据，请先发送 `.股市` 或 `.大盘`。</p>
+        {% endif %}
+    </div>
+</section>
+
+<dialog id="stock-history-modal" class="modal">
+    <div class="modal-content detail-card stock-modal-card">
+        <div class="section-header compact">
+            <p id="stock-history-subtitle">股票历史</p>
+            <h2 id="stock-history-title">未选择股票</h2>
+        </div>
+        <div class="stock-modal-toolbar">
+            <label>
+                时间范围
+                <select id="stock-history-range">
+                    <option value="12h">最近 12 小时</option>
+                    <option value="24h">最近 24 小时</option>
+                    <option value="3d">最近 3 天</option>
+                    <option value="7d" selected>最近 7 天</option>
+                    <option value="30d">最近 30 天</option>
+                    <option value="all">全部</option>
+                </select>
+            </label>
+            <div class="detail-card stock-modal-summary-row">
+                <div class="kv-row"><span>最新价格</span><strong id="stock-history-latest">-</strong></div>
+                <div class="kv-row"><span>区间变化</span><strong id="stock-history-delta">-</strong></div>
+            </div>
+            <div class="detail-card stock-modal-summary-row">
+                <div class="kv-row"><span>样本数</span><strong id="stock-history-count">0</strong></div>
+                <div class="kv-row"><span>最新时间</span><strong id="stock-history-time">-</strong></div>
+            </div>
+        </div>
+        <div class="stock-modal-chart-shell top-gap">
+            <svg class="stock-sparkline" viewBox="0 0 220 72" preserveAspectRatio="none">
+                <polyline id="stock-history-line" fill="none" stroke="currentColor" stroke-width="2"></polyline>
+            </svg>
+        </div>
+        <p id="stock-history-status" class="muted stock-modal-status top-gap">点击股票卡片加载历史。</p>
+        <div id="stock-history-list" class="stock-history-list stock-modal-list top-gap"></div>
+        <div class="action-row top-gap">
+            <button type="button" class="inline-button" onclick="document.getElementById('stock-history-modal').close()">关闭</button>
+        </div>
+    </div>
+</dialog>
+
+<script>
+const stockHistoryState = {
+    code: '',
+    name: ''
+};
+
+function updateStockCommandBuilders() {
+    const queryCode = document.getElementById('stock-query-code');
+    const queryCommand = document.getElementById('stock-query-command');
+    if (queryCode && queryCommand) {
+        queryCommand.value = queryCode.value ? `.个股 ${queryCode.value}` : '';
+    }
+
+    const tradeAction = document.getElementById('stock-trade-action');
+    const tradeCode = document.getElementById('stock-trade-code');
+    const tradeAmount = document.getElementById('stock-trade-amount');
+    const tradeCommand = document.getElementById('stock-trade-command');
+    if (!tradeAction || !tradeCode || !tradeAmount || !tradeCommand) {
+        return;
+    }
+    const actionMap = {
+        buy: '.买入',
+        sell: '.卖出',
+        margin_buy: '.融资买入',
+        margin_close: '.融资平仓'
+    };
+    const amount = Math.max(parseInt(tradeAmount.value || '0', 10) || 0, 1);
+    const commandHead = actionMap[tradeAction.value] || '.买入';
+    tradeCommand.value = `${commandHead} ${tradeCode.value} ${amount}`;
+}
+
+function renderStockHistoryRows(rows) {
+    const list = document.getElementById('stock-history-list');
+    if (!list) {
+        return;
+    }
+    list.innerHTML = '';
+    if (!rows || !rows.length) {
+        const empty = document.createElement('p');
+        empty.className = 'muted stock-modal-empty';
+        empty.textContent = '这个时间范围内还没有历史样本。';
+        list.appendChild(empty);
+        return;
+    }
+    rows.slice().reverse().forEach((row) => {
+        const item = document.createElement('div');
+        item.className = 'stock-history-item';
+        const percent = Number(row.change_percent || 0);
+        item.innerHTML = `
+            <span>${row.observed_at_display || '-'}</span>
+            <strong>${Number(row.current_price || 0).toFixed(2)}</strong>
+            <span class="stock-change ${percent > 0 ? 'up' : (percent < 0 ? 'down' : '')}">${percent >= 0 ? '+' : ''}${percent.toFixed(2)}%</span>
+        `;
+        list.appendChild(item);
+    });
+}
+
+async function loadStockHistory() {
+    if (!stockHistoryState.code) {
+        return;
+    }
+    const rangeSelect = document.getElementById('stock-history-range');
+    const status = document.getElementById('stock-history-status');
+    const latestNode = document.getElementById('stock-history-latest');
+    const deltaNode = document.getElementById('stock-history-delta');
+    const countNode = document.getElementById('stock-history-count');
+    const timeNode = document.getElementById('stock-history-time');
+    const lineNode = document.getElementById('stock-history-line');
+    const rangeKey = rangeSelect ? rangeSelect.value : '7d';
+    if (status) {
+        status.textContent = '正在调取历史快照...';
+    }
+    try {
+        const response = await fetch(`/api/stock-history?stock_code=${encodeURIComponent(stockHistoryState.code)}&range_key=${encodeURIComponent(rangeKey)}`, {
+            headers: { Accept: 'application/json' },
+            cache: 'no-store'
+        });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        if (latestNode) {
+            latestNode.textContent = Number(payload.latest_price || 0).toFixed(2);
+        }
+        if (deltaNode) {
+            const delta = Number(payload.delta_price || 0);
+            deltaNode.textContent = `${delta >= 0 ? '+' : ''}${delta.toFixed(2)}`;
+            deltaNode.className = `stock-change ${delta > 0 ? 'up' : (delta < 0 ? 'down' : '')}`;
+        }
+        if (countNode) {
+            countNode.textContent = String(payload.count || 0);
+        }
+        if (timeNode) {
+            timeNode.textContent = payload.latest_observed_at_display || '-';
+        }
+        if (lineNode) {
+            lineNode.setAttribute('points', payload.sparkline_points || '');
+        }
+        renderStockHistoryRows(Array.isArray(payload.rows) ? payload.rows : []);
+        if (status) {
+            status.textContent = `${payload.stock_name || stockHistoryState.name} · ${payload.range_label || ''}`;
+        }
+    } catch (_error) {
+        renderStockHistoryRows([]);
+        if (status) {
+            status.textContent = '历史数据加载失败，请稍后重试。';
+        }
+    }
+}
+
+function openStockHistory(code, name) {
+    const modal = document.getElementById('stock-history-modal');
+    const title = document.getElementById('stock-history-title');
+    const subtitle = document.getElementById('stock-history-subtitle');
+    stockHistoryState.code = code;
+    stockHistoryState.name = name;
+    if (title) {
+        title.textContent = `${name || code} (${code})`;
+    }
+    if (subtitle) {
+        subtitle.textContent = '历史趋势 / 时间切片';
+    }
+    if (modal && typeof modal.showModal === 'function') {
+        modal.showModal();
+    }
+    loadStockHistory();
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    updateStockCommandBuilders();
+    document.getElementById('stock-query-code')?.addEventListener('change', updateStockCommandBuilders);
+    document.getElementById('stock-trade-action')?.addEventListener('change', updateStockCommandBuilders);
+    document.getElementById('stock-trade-code')?.addEventListener('change', updateStockCommandBuilders);
+    document.getElementById('stock-trade-amount')?.addEventListener('input', updateStockCommandBuilders);
+    document.getElementById('stock-history-range')?.addEventListener('change', loadStockHistory);
+
+    document.querySelectorAll('[data-stock-code]').forEach((node) => {
+        node.addEventListener('click', () => openStockHistory(node.dataset.stockCode || '', node.dataset.stockName || ''));
+        node.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                openStockHistory(node.dataset.stockCode || '', node.dataset.stockName || '');
+            }
+        });
+    });
+});
+</script>

@@ -41,6 +41,7 @@ LINGXIAO_BORROW_SECONDS = 18 * 3600
 LINGXIAO_GANGFENG_HEART_RECHECK_SECONDS = 10 * 60
 LINGXIAO_QUESTION_RECHECK_SECONDS = 2 * 3600
 LINGXIAO_COMMAND_REFRESH_SECONDS = 180
+LINGXIAO_ACTION_SYNC_TIMEOUT_SECONDS = 15 * 60
 YINLUO_BLOOD_WASH_SECONDS = 4 * 3600
 
 SECT_NAME_PATTERNS = [
@@ -585,9 +586,35 @@ def _recompute_overall_next_check(session, updates, now=None):
     return min(candidates) if candidates else merged.get("next_check_time") or 0
 
 
+def _lingxiao_action_still_syncing(
+    session,
+    now,
+    *,
+    command_text: str,
+    observed_time: float = 0,
+) -> bool:
+    last_action = str((session or {}).get("last_action") or "").strip()
+    last_action_time = float((session or {}).get("last_action_time") or 0)
+    if last_action != str(command_text or "").strip() or not last_action_time:
+        return False
+    if float(observed_time or 0) >= max(last_action_time - 1, 0):
+        return False
+    return now - last_action_time < LINGXIAO_ACTION_SYNC_TIMEOUT_SECONDS
+
+
+def _lingxiao_sync_retry_time(session, now) -> float:
+    last_action_time = float((session or {}).get("last_action_time") or 0)
+    hard_deadline = (
+        last_action_time + LINGXIAO_ACTION_SYNC_TIMEOUT_SECONDS
+        if last_action_time
+        else now + LINGXIAO_COMMAND_REFRESH_SECONDS
+    )
+    return min(hard_deadline, now + LINGXIAO_COMMAND_REFRESH_SECONDS)
+
+
 def sync_common_sect_state(storage, db, profile_id, chat_id, payload=None, now=None):
     now = now or time.time()
-    session = get_session(db, chat_id)
+    session = get_session(db, chat_id, profile_id=profile_id)
     if not session:
         return None, None
     if payload is None:
@@ -642,13 +669,13 @@ def sync_common_sect_state(storage, db, profile_id, chat_id, payload=None, now=N
     updates["next_check_time"] = _recompute_overall_next_check(session, updates, now)
     if _has_any_auto_keys(session):
         updates["next_check_source"] = "已同步宗门缓存状态"
-    update_session(db, chat_id, **updates)
-    return get_session(db, chat_id), daily
+    update_session(db, chat_id, profile_id=profile_id, **updates)
+    return get_session(db, chat_id, profile_id=profile_id), daily
 
 
 def sync_yinluo_state(storage, db, profile_id, chat_id, payload=None, now=None):
     now = now or time.time()
-    session = get_session(db, chat_id)
+    session = get_session(db, chat_id, profile_id=profile_id)
     if not session:
         return None, None
     if payload is None:
@@ -694,22 +721,23 @@ def sync_yinluo_state(storage, db, profile_id, chat_id, payload=None, now=None):
     updates["next_check_time"] = _recompute_overall_next_check(session, updates, now)
     if _has_any_auto_keys(session):
         updates["next_check_source"] = "已同步宗门缓存状态"
-    update_session(db, chat_id, **updates)
-    return get_session(db, chat_id), view
+    update_session(db, chat_id, profile_id=profile_id, **updates)
+    return get_session(db, chat_id, profile_id=profile_id), view
 
 
 def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
     now = time.time()
     profile = storage.get_profile(profile_id)
     if not profile:
-        session = get_session(db, chat_id)
+        session = get_session(db, chat_id, profile_id=profile_id)
         update_session(
             db,
             chat_id,
+            profile_id=profile_id,
             **_lingxiao_sync_error_updates("角色不存在", now, session),
         )
-        return get_session(db, chat_id), None
-    session = get_session(db, chat_id)
+        return get_session(db, chat_id, profile_id=profile_id), None
+    session = get_session(db, chat_id, profile_id=profile_id)
     external_account = storage.get_external_account(profile_id, ASC_PROVIDER) or {}
     external_status = str(external_account.get("status") or "").strip().lower()
     if payload is not None and external_status and external_status != "connected":
@@ -717,9 +745,10 @@ def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
         update_session(
             db,
             chat_id,
+            profile_id=profile_id,
             **_lingxiao_sync_error_updates(message, now, session),
         )
-        return get_session(db, chat_id), None
+        return get_session(db, chat_id, profile_id=profile_id), None
     if payload is None:
         username = get_cultivator_username(profile)
         default_cookie = get_effective_external_cookie(storage)
@@ -729,9 +758,10 @@ def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
             update_session(
                 db,
                 chat_id,
+                profile_id=profile_id,
                 **_lingxiao_sync_error_updates(message, now, session),
             )
-            return get_session(db, chat_id), None
+            return get_session(db, chat_id, profile_id=profile_id), None
         try:
             payload = sync_external_account(
                 storage, profile_id, cookie_text=cookie_text
@@ -743,11 +773,12 @@ def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
             update_session(
                 db,
                 chat_id,
+                profile_id=profile_id,
                 **_lingxiao_sync_error_updates(
                     f"凌霄宫状态同步失败: {exc}", now, session
                 ),
             )
-            return get_session(db, chat_id), None
+            return get_session(db, chat_id, profile_id=profile_id), None
 
     view = build_lingxiao_view(
         payload, session=session, sect_position=profile.sect_position, now=now
@@ -757,9 +788,10 @@ def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
         update_session(
             db,
             chat_id,
+            profile_id=profile_id,
             **_lingxiao_sync_error_updates(message, now, session),
         )
-        return get_session(db, chat_id), None
+        return get_session(db, chat_id, profile_id=profile_id), None
 
     updates = {
         "last_panel_time": now,
@@ -767,12 +799,24 @@ def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
 
     if session.get("auto_lingxiao_enabled"):
         step_next = float(view["climb_ready_time"] or 0)
-        updates["lingxiao_next_check_time"] = step_next if step_next > now else 0
-        updates["lingxiao_next_check_source"] = (
-            f"登天阶冷却至 {format_timestamp(step_next)}"
-            if step_next > now
-            else "登天阶已到时，可执行"
-        )
+        if _lingxiao_action_still_syncing(
+            session,
+            now,
+            command_text=".登天阶",
+            observed_time=float(view["last_climb_time"] or 0),
+        ):
+            pending_time = _lingxiao_sync_retry_time(session, now)
+            updates["lingxiao_next_check_time"] = pending_time
+            updates["lingxiao_next_check_source"] = (
+                "已发送 .登天阶，等待天机阁同步云阶状态"
+            )
+        else:
+            updates["lingxiao_next_check_time"] = step_next if step_next > now else 0
+            updates["lingxiao_next_check_source"] = (
+                f"登天阶冷却至 {format_timestamp(step_next)}"
+                if step_next > now
+                else "登天阶已到时，可执行"
+            )
 
     if session.get("auto_lingxiao_gangfeng_enabled"):
         gangfeng_ready = float(view["gangfeng_ready_time"] or 0)
@@ -782,7 +826,18 @@ def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
         existing_gangfeng_source = str(
             session.get("lingxiao_gangfeng_next_check_source") or ""
         ).strip()
-        if gangfeng_ready > now:
+        if _lingxiao_action_still_syncing(
+            session,
+            now,
+            command_text=".引九天罡风",
+            observed_time=float(view["last_gangfeng_time"] or 0),
+        ):
+            pending_time = _lingxiao_sync_retry_time(session, now)
+            updates["lingxiao_gangfeng_next_check_time"] = pending_time
+            updates["lingxiao_gangfeng_next_check_source"] = (
+                "已发送 .引九天罡风，等待天机阁同步淬体状态"
+            )
+        elif gangfeng_ready > now:
             updates["lingxiao_gangfeng_next_check_time"] = gangfeng_ready
             updates["lingxiao_gangfeng_next_check_source"] = (
                 f"引九天罡风冷却至 {format_timestamp(gangfeng_ready)}"
@@ -805,14 +860,26 @@ def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
 
     if session.get("auto_lingxiao_borrow_enabled"):
         borrow_ready = float(view["borrow_ready_time"] or 0)
-        updates["lingxiao_borrow_next_check_time"] = (
-            borrow_ready if borrow_ready > now else 0
-        )
-        updates["lingxiao_borrow_next_check_source"] = (
-            f"借天门势冷却至 {format_timestamp(borrow_ready)}"
-            if borrow_ready > now
-            else "可执行借天门势"
-        )
+        if _lingxiao_action_still_syncing(
+            session,
+            now,
+            command_text=".借天门势",
+            observed_time=float(view["last_borrow_time"] or 0),
+        ):
+            pending_time = _lingxiao_sync_retry_time(session, now)
+            updates["lingxiao_borrow_next_check_time"] = pending_time
+            updates["lingxiao_borrow_next_check_source"] = (
+                "已发送 .借天门势，等待天机阁同步借势状态"
+            )
+        else:
+            updates["lingxiao_borrow_next_check_time"] = (
+                borrow_ready if borrow_ready > now else 0
+            )
+            updates["lingxiao_borrow_next_check_source"] = (
+                f"借天门势冷却至 {format_timestamp(borrow_ready)}"
+                if borrow_ready > now
+                else "可执行借天门势"
+            )
 
     if session.get("auto_lingxiao_question_enabled"):
         if view["questioned_today"]:
@@ -835,8 +902,8 @@ def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
     updates["next_check_time"] = _recompute_overall_next_check(session, updates, now)
     if _active_lingxiao_auto_keys(session):
         updates["next_check_source"] = "已同步天机阁凌霄宫状态"
-    update_session(db, chat_id, **updates)
-    return get_session(db, chat_id), view
+    update_session(db, chat_id, profile_id=profile_id, **updates)
+    return get_session(db, chat_id, profile_id=profile_id), view
 
 
 def _daily_time_due(session, now=None):
@@ -849,6 +916,7 @@ def ensure_tables(db):
     db.cur.execute(
         """
         CREATE TABLE IF NOT EXISTS sect_sessions (
+            profile_id INTEGER NOT NULL DEFAULT 0,
             chat_id INTEGER NOT NULL,
             bot_username TEXT NOT NULL,
             enabled INTEGER DEFAULT 0,
@@ -901,7 +969,7 @@ def ensure_tables(db):
             last_teach_count INTEGER DEFAULT 0,
             last_yinluo_sacrifice_date TEXT,
             last_command_msg_id INTEGER DEFAULT 0,
-            PRIMARY KEY (chat_id, bot_username)
+            PRIMARY KEY (profile_id, chat_id, bot_username)
         )
         """
     )
@@ -947,6 +1015,7 @@ def ensure_tables(db):
         "last_teach_count": "INTEGER DEFAULT 0",
         "last_yinluo_sacrifice_date": "TEXT",
         "last_command_msg_id": "INTEGER DEFAULT 0",
+        "profile_id": "INTEGER NOT NULL DEFAULT 0",
     }
     for column_name, column_type in alter_columns.items():
         if column_name not in columns:
@@ -956,45 +1025,80 @@ def ensure_tables(db):
     db.conn.commit()
 
 
-def ensure_session(db, chat_id, bot_username=SECT_BOT_USERNAME):
+def ensure_session(db, chat_id, bot_username=SECT_BOT_USERNAME, profile_id=None):
     ensure_tables(db)
+    resolved_profile_id = int(profile_id or 0)
     db.cur.execute(
         """
         INSERT OR IGNORE INTO sect_sessions
-            (chat_id, bot_username, interval_seconds, command_text)
-        VALUES (?, ?, ?, ?)
+            (profile_id, chat_id, bot_username, interval_seconds, command_text)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (chat_id, bot_username, SECT_DEFAULT_INTERVAL, SECT_CHECK_COMMAND),
+        (
+            resolved_profile_id,
+            chat_id,
+            bot_username,
+            SECT_DEFAULT_INTERVAL,
+            SECT_CHECK_COMMAND,
+        ),
     )
+    if resolved_profile_id:
+        db.cur.execute(
+            "UPDATE sect_sessions SET profile_id=? WHERE chat_id=? AND bot_username=? AND (profile_id IS NULL OR profile_id=0)",
+            (resolved_profile_id, chat_id, bot_username),
+        )
     db.conn.commit()
 
 
-def get_session(db, chat_id, bot_username=SECT_BOT_USERNAME):
-    ensure_session(db, chat_id, bot_username)
-    db.cur.execute(
-        "SELECT * FROM sect_sessions WHERE chat_id=? AND bot_username=?",
-        (chat_id, bot_username),
-    )
+def get_session(db, chat_id, bot_username=SECT_BOT_USERNAME, profile_id=None):
+    ensure_session(db, chat_id, bot_username, profile_id=profile_id)
+    resolved_profile_id = int(profile_id or 0)
+    if resolved_profile_id:
+        db.cur.execute(
+            "SELECT * FROM sect_sessions WHERE profile_id=? AND chat_id=? AND bot_username=?",
+            (resolved_profile_id, chat_id, bot_username),
+        )
+    else:
+        db.cur.execute(
+            "SELECT * FROM sect_sessions WHERE chat_id=? AND bot_username=? ORDER BY profile_id DESC LIMIT 1",
+            (chat_id, bot_username),
+        )
     row = db.cur.fetchone()
     return dict(zip([col[0] for col in db.cur.description], row)) if row else None
 
 
-def update_session(db, chat_id, bot_username=SECT_BOT_USERNAME, **fields):
+def update_session(
+    db, chat_id, bot_username=SECT_BOT_USERNAME, profile_id=None, **fields
+):
     if not fields:
         return
-    ensure_session(db, chat_id, bot_username)
+    ensure_session(db, chat_id, bot_username, profile_id=profile_id)
+    resolved_profile_id = int(profile_id or 0)
     assignments = ", ".join(f"{key}=?" for key in fields)
-    values = list(fields.values()) + [chat_id, bot_username]
-    db.cur.execute(
-        f"UPDATE sect_sessions SET {assignments} WHERE chat_id=? AND bot_username=?",
-        values,
-    )
+    if resolved_profile_id:
+        values = list(fields.values()) + [resolved_profile_id, chat_id, bot_username]
+        db.cur.execute(
+            f"UPDATE sect_sessions SET {assignments} WHERE profile_id=? AND chat_id=? AND bot_username=?",
+            values,
+        )
+    else:
+        values = list(fields.values()) + [chat_id, bot_username]
+        db.cur.execute(
+            f"UPDATE sect_sessions SET {assignments} WHERE chat_id=? AND bot_username=?",
+            values,
+        )
     db.conn.commit()
 
 
-def list_sessions(db):
+def list_sessions(db, profile_id=None):
     ensure_tables(db)
-    db.cur.execute("SELECT * FROM sect_sessions ORDER BY chat_id")
+    if profile_id:
+        db.cur.execute(
+            "SELECT * FROM sect_sessions WHERE profile_id=? ORDER BY chat_id",
+            (int(profile_id),),
+        )
+    else:
+        db.cur.execute("SELECT * FROM sect_sessions ORDER BY profile_id, chat_id")
     return [
         dict(zip([col[0] for col in db.cur.description], row))
         for row in db.cur.fetchall()
@@ -1031,8 +1135,8 @@ def _restore_session_thread_from_binding(storage, db, profile_id, session):
         updates["next_check_time"] = 0
         updates["next_check_source"] = "已恢复话题线程，准备重试宗门自动任务"
         updates["last_summary"] = "检测到有效话题线程，已恢复自动发送目标"
-    update_session(db, chat_id, **updates)
-    refreshed_session = get_session(db, chat_id)
+    update_session(db, chat_id, profile_id=profile_id, **updates)
+    refreshed_session = get_session(db, chat_id, profile_id=profile_id)
     return refreshed_session or session
 
 
@@ -1339,38 +1443,42 @@ def build_status_text(session):
     )
 
 
-def set_enabled(db, chat_id, enabled):
+def set_enabled(db, chat_id, enabled, profile_id=None):
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         enabled=_normalize_bool(enabled),
         next_check_time=0 if enabled else 0,
     )
 
 
-def set_dry_run(db, chat_id, enabled):
-    update_session(db, chat_id, dry_run=_normalize_bool(enabled))
+def set_dry_run(db, chat_id, enabled, profile_id=None):
+    update_session(db, chat_id, profile_id=profile_id, dry_run=_normalize_bool(enabled))
 
 
-def set_interval(db, chat_id, interval_seconds):
+def set_interval(db, chat_id, interval_seconds, profile_id=None):
     interval_seconds = max(int(interval_seconds), 30)
-    update_session(db, chat_id, interval_seconds=interval_seconds)
+    update_session(
+        db, chat_id, profile_id=profile_id, interval_seconds=interval_seconds
+    )
     return interval_seconds
 
 
-def set_check_command(db, chat_id, command_text):
+def set_check_command(db, chat_id, command_text, profile_id=None):
     command_text = (command_text or "").strip()
     if not command_text:
         raise ValueError("宗门查询指令不能为空")
-    update_session(db, chat_id, command_text=command_text)
+    update_session(db, chat_id, profile_id=profile_id, command_text=command_text)
     return command_text
 
 
-def configure_lingxiao_auto(db, chat_id, enabled):
-    session = get_session(db, chat_id)
+def configure_lingxiao_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         auto_lingxiao_enabled=_normalize_bool(enabled),
         lingxiao_next_check_time=0,
         lingxiao_next_check_source=(
@@ -1385,11 +1493,12 @@ def configure_lingxiao_auto(db, chat_id, enabled):
     )
 
 
-def configure_sect_checkin_auto(db, chat_id, enabled):
-    session = get_session(db, chat_id)
+def configure_sect_checkin_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         auto_sect_checkin_enabled=_normalize_bool(enabled),
         sect_checkin_next_check_time=0,
         sect_checkin_next_check_source=(
@@ -1406,11 +1515,12 @@ def configure_sect_checkin_auto(db, chat_id, enabled):
     )
 
 
-def configure_sect_teach_auto(db, chat_id, enabled):
-    session = get_session(db, chat_id)
+def configure_sect_teach_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         auto_sect_teach_enabled=_normalize_bool(enabled),
         sect_teach_next_check_time=0,
         sect_teach_next_check_source=(
@@ -1427,11 +1537,12 @@ def configure_sect_teach_auto(db, chat_id, enabled):
     )
 
 
-def configure_yinluo_sacrifice_auto(db, chat_id, enabled):
-    session = get_session(db, chat_id)
+def configure_yinluo_sacrifice_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         auto_yinluo_sacrifice_enabled=_normalize_bool(enabled),
         yinluo_sacrifice_next_check_time=0,
         yinluo_sacrifice_next_check_source=(
@@ -1448,11 +1559,12 @@ def configure_yinluo_sacrifice_auto(db, chat_id, enabled):
     )
 
 
-def configure_yinluo_blood_wash_auto(db, chat_id, enabled):
-    session = get_session(db, chat_id)
+def configure_yinluo_blood_wash_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         auto_yinluo_blood_wash_enabled=_normalize_bool(enabled),
         yinluo_blood_wash_next_check_time=0,
         yinluo_blood_wash_next_check_source=(
@@ -1486,7 +1598,7 @@ def has_active_yinluo_batch(session):
     return bool(_load_yinluo_batch_commands(session))
 
 
-def start_yinluo_batch(db, chat_id, mode, commands):
+def start_yinluo_batch(db, chat_id, mode, commands, profile_id=None):
     normalized_commands = [
         str(command or "").strip()
         for command in (commands or [])
@@ -1497,6 +1609,7 @@ def start_yinluo_batch(db, chat_id, mode, commands):
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         yinluo_batch_mode=str(mode or "imprison").strip() or "imprison",
         yinluo_batch_commands=json.dumps(normalized_commands, ensure_ascii=False),
         yinluo_batch_index=0,
@@ -1508,10 +1621,11 @@ def start_yinluo_batch(db, chat_id, mode, commands):
     )
 
 
-def clear_yinluo_batch(db, chat_id, summary=""):
+def clear_yinluo_batch(db, chat_id, summary="", profile_id=None):
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         yinluo_batch_mode=None,
         yinluo_batch_commands=None,
         yinluo_batch_index=0,
@@ -1521,11 +1635,12 @@ def clear_yinluo_batch(db, chat_id, summary=""):
     )
 
 
-def configure_lingxiao_gangfeng_auto(db, chat_id, enabled):
-    session = get_session(db, chat_id)
+def configure_lingxiao_gangfeng_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         auto_lingxiao_gangfeng_enabled=_normalize_bool(enabled),
         lingxiao_gangfeng_next_check_time=0,
         lingxiao_gangfeng_next_check_source=(
@@ -1542,11 +1657,12 @@ def configure_lingxiao_gangfeng_auto(db, chat_id, enabled):
     )
 
 
-def configure_lingxiao_borrow_auto(db, chat_id, enabled):
-    session = get_session(db, chat_id)
+def configure_lingxiao_borrow_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         auto_lingxiao_borrow_enabled=_normalize_bool(enabled),
         lingxiao_borrow_next_check_time=0,
         lingxiao_borrow_next_check_source=(
@@ -1563,11 +1679,12 @@ def configure_lingxiao_borrow_auto(db, chat_id, enabled):
     )
 
 
-def configure_lingxiao_question_auto(db, chat_id, enabled):
-    session = get_session(db, chat_id)
+def configure_lingxiao_question_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
     update_session(
         db,
         chat_id,
+        profile_id=profile_id,
         auto_lingxiao_question_enabled=_normalize_bool(enabled),
         lingxiao_question_next_check_time=0,
         lingxiao_question_next_check_source=(
@@ -1675,7 +1792,7 @@ async def maybe_send_check(
     storage=None,
     profile_id=None,
 ):
-    session = get_session(db, chat_id)
+    session = get_session(db, chat_id, profile_id=profile_id)
     if not session or not session["enabled"]:
         return False, "disabled", 0
     now = time.time()
@@ -1693,6 +1810,7 @@ async def maybe_send_check(
         update_session(
             db,
             chat_id,
+            profile_id=session.get("profile_id"),
             last_action=f"dry-run:{command_text}",
             last_action_time=now,
             next_check_time=now + session["interval_seconds"],
@@ -1713,6 +1831,7 @@ async def maybe_send_check(
     update_session(
         db,
         chat_id,
+        profile_id=session.get("profile_id"),
         last_command_time=now,
         last_command_msg_id=getattr(sent_message, "id", 0),
         last_action=command_text,
@@ -1725,30 +1844,39 @@ async def maybe_send_check(
         update_session(
             db,
             chat_id,
+            profile_id=session.get("profile_id"),
+            lingxiao_next_check_time=now + LINGXIAO_COMMAND_REFRESH_SECONDS,
             lingxiao_next_check_source="已发送 .登天阶，等待机器人回复",
         )
     elif command_text == ".引九天罡风":
         update_session(
             db,
             chat_id,
+            profile_id=session.get("profile_id"),
+            lingxiao_gangfeng_next_check_time=now + LINGXIAO_COMMAND_REFRESH_SECONDS,
             lingxiao_gangfeng_next_check_source="已发送 .引九天罡风，等待机器人回复",
         )
     elif command_text == ".借天门势":
         update_session(
             db,
             chat_id,
+            profile_id=session.get("profile_id"),
+            lingxiao_borrow_next_check_time=now + LINGXIAO_COMMAND_REFRESH_SECONDS,
             lingxiao_borrow_next_check_source="已发送 .借天门势，等待机器人回复",
         )
     elif command_text == ".问心台":
         update_session(
             db,
             chat_id,
+            profile_id=session.get("profile_id"),
+            lingxiao_question_next_check_time=now + LINGXIAO_COMMAND_REFRESH_SECONDS,
             lingxiao_question_next_check_source="已发送 .问心台，等待机器人回复",
         )
     elif command_text == ".每日献祭":
         update_session(
             db,
             chat_id,
+            profile_id=session.get("profile_id"),
             last_yinluo_sacrifice_date=current_date_key(now),
             yinluo_sacrifice_next_check_source="已发送 .每日献祭，等待机器人回复",
         )
@@ -1756,6 +1884,7 @@ async def maybe_send_check(
         update_session(
             db,
             chat_id,
+            profile_id=session.get("profile_id"),
             yinluo_blood_wash_next_check_source="已发送 .血洗山林，等待机器人回复",
         )
     return True, "sent", getattr(sent_message, "id", 0)
@@ -1771,7 +1900,12 @@ async def maybe_run_yinluo_batch(client, db, session, *, storage=None, profile_i
     if pending_msg_id:
         return True
     if current_index >= len(commands):
-        clear_yinluo_batch(db, chat_id, summary="阴罗批次已完成")
+        clear_yinluo_batch(
+            db,
+            chat_id,
+            summary="阴罗批次已完成",
+            profile_id=session.get("profile_id"),
+        )
         return True
     command_text = commands[current_index]
     _ok, status, sent_message_id = await maybe_send_check(
@@ -1787,6 +1921,7 @@ async def maybe_run_yinluo_batch(client, db, session, *, storage=None, profile_i
         update_session(
             db,
             chat_id,
+            profile_id=session.get("profile_id"),
             yinluo_batch_pending_msg_id=int(sent_message_id),
             next_check_time=time.time() + LINGXIAO_COMMAND_REFRESH_SECONDS,
             next_check_source=f"阴罗批次等待回复: {command_text}",
@@ -1794,13 +1929,13 @@ async def maybe_run_yinluo_batch(client, db, session, *, storage=None, profile_i
     return True
 
 
-async def handle_bot_message(event, db, client=None):
+async def handle_bot_message(event, db, client=None, profile_id=None):
     sender = await event.get_sender()
     username = (getattr(sender, "username", "") or "").lower()
     if username != SECT_BOT_USERNAME:
         return None
 
-    session = get_session(db, event.chat_id)
+    session = get_session(db, event.chat_id, profile_id=profile_id)
     if not session or not session["enabled"]:
         return None
     raw_text = (event.raw_text or "").strip()
@@ -1907,6 +2042,7 @@ async def handle_bot_message(event, db, client=None):
     update_session(
         db,
         event.chat_id,
+        profile_id=session.get("profile_id"),
         **update_fields,
     )
     return parsed
@@ -1917,13 +2053,13 @@ async def runner(client, storage):
         try:
             db = RuntimeDb(storage)
             now = time.time()
-            active_profile = storage.get_active_profile()
             for session in list_sessions(db):
                 if not session["enabled"]:
                     continue
-                if active_profile:
+                session_profile_id = int(session.get("profile_id") or 0) or None
+                if session_profile_id:
                     session = _restore_session_thread_from_binding(
-                        storage, db, active_profile.id, session
+                        storage, db, session_profile_id, session
                     )
                 if has_active_yinluo_batch(session):
                     try:
@@ -1932,7 +2068,7 @@ async def runner(client, storage):
                             db,
                             session,
                             storage=storage,
-                            profile_id=active_profile.id if active_profile else None,
+                            profile_id=session_profile_id,
                         )
                         if handled:
                             continue
@@ -1952,50 +2088,50 @@ async def runner(client, storage):
                     continue
                 try:
                     payload = None
-                    if active_profile and (
+                    if session_profile_id and (
                         _active_common_auto_keys(session)
                         or _active_yinluo_auto_keys(session)
                         or _active_lingxiao_auto_keys(session)
                     ):
                         payload = _read_cached_profile_payload(
-                            storage, active_profile.id
+                            storage, session_profile_id
                         )
-                    if active_profile and _active_common_auto_keys(session):
+                    if session_profile_id and _active_common_auto_keys(session):
                         session, _daily_state = sync_common_sect_state(
                             storage,
                             db,
-                            active_profile.id,
+                            session_profile_id,
                             session["chat_id"],
                             payload=payload,
                             now=now,
                         )
                         now = time.time()
-                    if active_profile and _active_yinluo_auto_keys(session):
+                    if session_profile_id and _active_yinluo_auto_keys(session):
                         session, _view = sync_yinluo_state(
                             storage,
                             db,
-                            active_profile.id,
+                            session_profile_id,
                             session["chat_id"],
                             payload=payload,
                             now=now,
                         )
                         now = time.time()
-                    if active_profile and _active_lingxiao_auto_keys(session):
+                    if session_profile_id and _active_lingxiao_auto_keys(session):
                         session, _view = sync_lingxiao_trial_state(
                             storage,
                             db,
-                            active_profile.id,
+                            session_profile_id,
                             session["chat_id"],
-                            payload=payload,
+                            payload=None,
                         )
                         now = time.time()
                     command_info = build_auto_command(session, now)
                     if not command_info:
                         continue
                     reply_to_msg_id = None
-                    if command_info.get("requires_reply_target") and active_profile:
+                    if command_info.get("requires_reply_target") and session_profile_id:
                         latest_command = storage.get_latest_outgoing_command_message(
-                            active_profile.id,
+                            session_profile_id,
                             session["chat_id"],
                             thread_id=session.get("thread_id"),
                         )
@@ -2010,6 +2146,7 @@ async def runner(client, storage):
                             update_session(
                                 db,
                                 session["chat_id"],
+                                profile_id=session_profile_id,
                                 sect_teach_next_check_time=pending_time,
                                 sect_teach_next_check_source=pending_source,
                                 next_check_time=pending_time,
@@ -2023,9 +2160,16 @@ async def runner(client, storage):
                         command_text=command_info["command"],
                         reply_to_msg_id=reply_to_msg_id,
                         storage=storage,
-                        profile_id=active_profile.id if active_profile else None,
+                        profile_id=session_profile_id,
                     )
-                    current_session = get_session(db, session["chat_id"]) or session
+                    current_session = (
+                        get_session(
+                            db,
+                            session["chat_id"],
+                            profile_id=session_profile_id,
+                        )
+                        or session
+                    )
                     if _status == "sent":
                         pending_time = now + int(
                             command_info.get("pending_delay_seconds")
@@ -2070,7 +2214,12 @@ async def runner(client, storage):
                     }
                     update_fields["next_check_time"] = pending_time
                     update_fields["next_check_source"] = pending_source
-                    update_session(db, session["chat_id"], **update_fields)
+                    update_session(
+                        db,
+                        session["chat_id"],
+                        profile_id=session_profile_id,
+                        **update_fields,
+                    )
                 except Exception as exc:
                     logger.warning(
                         "Sect runner failed in chat %s: %s", session["chat_id"], exc
@@ -2078,6 +2227,7 @@ async def runner(client, storage):
                     update_session(
                         db,
                         session["chat_id"],
+                        profile_id=session_profile_id,
                         next_check_time=now + max(session["interval_seconds"], 60),
                         next_check_source="runner 异常后退避等待",
                         last_summary=f"runner failed: {exc}",

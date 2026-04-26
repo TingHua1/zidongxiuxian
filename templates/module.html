@@ -77,6 +77,97 @@
     border-radius: 12px;
     background: rgba(255, 255, 255, 0.03);
 }
+.scroll-panel {
+    max-height: 260px;
+    overflow: auto;
+}
+.inventory-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+.inventory-item-card {
+    padding: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.03);
+}
+.inventory-grid-compact {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+}
+.inventory-grid-compact .inventory-item-card {
+    padding: 10px;
+}
+.inventory-grid-compact .stock-card-head {
+    gap: 8px;
+}
+.inventory-grid-compact .inventory-item-meta {
+    gap: 6px;
+    margin-top: 8px;
+}
+.inventory-grid-compact .muted.top-gap {
+    margin-top: 8px;
+    font-size: 12px;
+    line-height: 1.45;
+}
+.inventory-scroll-panel {
+    max-height: 560px;
+    overflow: auto;
+    padding-right: 4px;
+}
+.inventory-item-card.equipped {
+    border-color: rgba(212, 175, 55, 0.4);
+    box-shadow: inset 0 0 0 1px rgba(212, 175, 55, 0.1);
+}
+.inventory-item-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 10px;
+}
+.market-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.5fr) minmax(180px, auto);
+    gap: 12px;
+    align-items: end;
+}
+.market-buy-form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+}
+.market-buy-form input[type='number'] {
+    width: 88px;
+}
+.market-buy-form input[type='text'] {
+    min-width: 200px;
+    flex: 1 1 220px;
+}
+.dungeon-tab-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.dungeon-help-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+}
+.dungeon-help-item {
+    padding: 12px 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.03);
+}
+.dungeon-help-item code {
+    display: inline-block;
+    margin-bottom: 8px;
+}
+.quick-fill-btn {
+    margin-top: 8px;
+}
 .dungeon-composer-sticky {
     position: sticky;
     top: 12px;
@@ -277,10 +368,20 @@
     .estate-detail-grid {
         grid-template-columns: 1fr;
     }
+    .inventory-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .inventory-grid-compact {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
     .stock-grid {
         grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .stock-modal-toolbar {
+        grid-template-columns: 1fr;
+    }
+    .market-toolbar,
+    .dungeon-help-grid {
         grid-template-columns: 1fr;
     }
 }
@@ -292,6 +393,9 @@
         top: 0;
     }
     .stock-grid {
+        grid-template-columns: 1fr;
+    }
+    .inventory-grid {
         grid-template-columns: 1fr;
     }
 }

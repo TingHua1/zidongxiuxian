@@ -1,1 +1,151 @@
-    {% include 'modules/market.html' %}
+<section class="detail-grid three-column-grid">
+    <div class="detail-card other-overview-card">
+        <p>当前在售</p>
+        <strong class="overview-stat-value">{{ market_total }}</strong>
+        <span class="muted">符合当前搜索条件的订单数</span>
+    </div>
+    <div class="detail-card other-overview-card">
+        <p>当前页</p>
+        <strong class="overview-stat-value">{{ market_page }}</strong>
+        <span class="muted">共 {{ market_total_pages }} 页，每页 {{ market_page_size }} 条</span>
+    </div>
+    <div class="detail-card other-overview-card">
+        <p>最新上架</p>
+        <strong class="overview-stat-value" style="font-size: 20px;">{{ market_listings[0].listing_time_display if market_listings else '-' }}</strong>
+            <span class="muted">可按交换价格排序</span>
+    </div>
+</section>
+
+<section class="detail-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>订单搜索</p>
+            <h2>快速筛选与购买</h2>
+        </div>
+        <form class="market-toolbar" method="get" action="/modules/market">
+            <label>
+                搜上架
+                <input name="q" type="text" value="{{ market_query or '' }}" placeholder="订单号、上架物品、类型、卖家">
+            </label>
+            <label>
+                搜交换
+                <input name="q_exchange" type="text" value="{{ market_exchange_query or '' }}" placeholder="灵石、交换物品、数量">
+            </label>
+            <div class="action-row">
+                <input type="hidden" name="sort" value="{{ market_sort or '' }}">
+                <button type="submit">搜索</button>
+                {% if market_query or market_exchange_query or market_sort %}
+                <a class="button" href="/modules/market">清空</a>
+                {% endif %}
+            </div>
+        </form>
+        <div class="pill-row top-gap">
+            <span class="pill">购买命令默认格式：`.购买 订单ID 数量`</span>
+            <span class="pill">整包订单建议数量填 1</span>
+        </div>
+    </div>
+</section>
+
+<section class="detail-grid">
+    <div class="detail-card" style="grid-column: 1 / -1;">
+        <div class="section-header compact">
+            <p>在售订单</p>
+            <h2>修真市集实时快照</h2>
+        </div>
+        {% if market_listings %}
+        <div class="table-container">
+            <table class="data-table">
+                <thead>
+                    <tr>
+                        <th>订单</th>
+                        <th>物品</th>
+                        <th>类型</th>
+                        <th>数量</th>
+                        <th>
+                            价格
+                            <div class="stock-compact-meta">
+                                <a class="inline-link" href="/modules/market?sort=price_asc{% if market_query_qs %}&q={{ market_query_qs }}{% endif %}{% if market_exchange_query_qs %}&q_exchange={{ market_exchange_query_qs }}{% endif %}">升序</a>
+                                <a class="inline-link" href="/modules/market?sort=price_desc{% if market_query_qs %}&q={{ market_query_qs }}{% endif %}{% if market_exchange_query_qs %}&q_exchange={{ market_exchange_query_qs }}{% endif %}">降序</a>
+                            </div>
+                        </th>
+                        <th>卖家</th>
+                        <th>上架时间</th>
+                        <th>购买</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in market_listings %}
+                    <tr>
+                        <td>#{{ item.id }}</td>
+                        <td>
+                            <strong>{{ item.display_name }}</strong>
+                            {% if item.is_bundle %}
+                            <div class="muted">整包上架</div>
+                            {% endif %}
+                        </td>
+                        <td>{{ item.display_type }}</td>
+                        <td>{{ item.quantity or '-' }}</td>
+                        <td title="{{ item.price_full_text or item.price_text }}">{{ item.price_preview_text or item.price_text }}</td>
+                        <td>{{ item.seller_display }}</td>
+                        <td>{{ item.listing_time_display }}</td>
+                        <td>
+                            <form class="market-buy-form" method="post" action="/runtime/commands/send-raw">
+                                <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                                <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+                                <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+                                <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+                                <input type="hidden" name="redirect_to" value="/modules/market?page={{ market_page }}{% if market_query_qs %}&q={{ market_query_qs }}{% endif %}{% if market_exchange_query_qs %}&q_exchange={{ market_exchange_query_qs }}{% endif %}{% if market_sort %}&sort={{ market_sort }}{% endif %}">
+                                {% if not item.is_bundle %}
+                                <input type="number" name="market_buy_quantity" value="1" min="1" max="{{ item.quantity or 1 }}">
+                                {% endif %}
+                                <input type="text" name="text" value=".购买 {{ item.id }} 1">
+                                <button type="submit" {% if not command_chat_ready %}disabled{% endif %}>购买</button>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div class="result-pagination top-gap">
+            <div class="result-pagination-links">
+                {% if market_page > 1 %}
+                <a class="pagination-chip" href="/modules/market?page={{ market_page - 1 }}{% if market_query_qs %}&q={{ market_query_qs }}{% endif %}{% if market_exchange_query_qs %}&q_exchange={{ market_exchange_query_qs }}{% endif %}{% if market_sort %}&sort={{ market_sort }}{% endif %}">上一页</a>
+                {% endif %}
+                {% for page_number in market_page_numbers %}
+                    {% if page_number %}
+                    <a class="pagination-chip {% if page_number == market_page %}active{% endif %}" href="/modules/market?page={{ page_number }}{% if market_query_qs %}&q={{ market_query_qs }}{% endif %}{% if market_exchange_query_qs %}&q_exchange={{ market_exchange_query_qs }}{% endif %}{% if market_sort %}&sort={{ market_sort }}{% endif %}">{{ page_number }}</a>
+                    {% else %}
+                    <span class="pagination-chip disabled">...</span>
+                    {% endif %}
+                {% endfor %}
+                {% if market_page < market_total_pages %}
+                <a class="pagination-chip" href="/modules/market?page={{ market_page + 1 }}{% if market_query_qs %}&q={{ market_query_qs }}{% endif %}{% if market_exchange_query_qs %}&q_exchange={{ market_exchange_query_qs }}{% endif %}{% if market_sort %}&sort={{ market_sort }}{% endif %}">下一页</a>
+                {% endif %}
+            </div>
+            <p class="muted">第 {{ market_page }} / {{ market_total_pages }} 页，共 {{ market_total }} 条订单</p>
+        </div>
+        {% else %}
+        <p class="muted">当前没有匹配的市集订单。</p>
+        {% endif %}
+    </div>
+</section>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.market-buy-form').forEach((form) => {
+        const quantityInput = form.querySelector('input[name="market_buy_quantity"]');
+        const commandInput = form.querySelector('input[name="text"]');
+        if (!quantityInput || !commandInput) {
+            return;
+        }
+        const orderId = (commandInput.value || '').split(' ')[1] || '';
+        const updateCommand = () => {
+            const quantity = Math.max(parseInt(quantityInput.value || '0', 10) || 0, 1);
+            commandInput.value = `.购买 ${orderId} ${quantity}`;
+        };
+        quantityInput.addEventListener('input', updateCommand);
+        updateCommand();
+    });
+});
+</script>
