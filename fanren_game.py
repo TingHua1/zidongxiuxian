@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -18,21 +17,17 @@ from tg_game.telegram.send_utils import send_message_with_thread_fallback
 logger = logging.getLogger(__name__)
 
 
-FANREN_BOT_USERNAME = (
-    os.getenv("FANREN_BOT_USERNAME", "fanrenxiuxian_bot").lstrip("@").lower()
-)
-FANREN_CHECK_COMMAND = os.getenv("FANREN_CHECK_COMMAND", ".查看闭关")
-FANREN_NORMAL_COMMAND = os.getenv("FANREN_NORMAL_COMMAND", ".闭关修炼")
-FANREN_DEEP_COMMAND = os.getenv("FANREN_DEEP_COMMAND", ".深度闭关")
-FANREN_DEFAULT_MODE = os.getenv("FANREN_DEFAULT_MODE", "normal")
-FANREN_DEFAULT_INTERVAL = int(os.getenv("FANREN_DEFAULT_INTERVAL", "300"))
-FANREN_COMMAND_COOLDOWN = int(os.getenv("FANREN_COMMAND_COOLDOWN", "30"))
-FANREN_MAX_FAILURES = int(os.getenv("FANREN_MAX_FAILURES", "3"))
-FANREN_MIN_INTERVAL = int(os.getenv("FANREN_MIN_INTERVAL", "30"))
-FANREN_RUNNER_POLL_SECONDS = int(os.getenv("FANREN_RUNNER_POLL_SECONDS", "5"))
-FANREN_REPLY_SYNC_GRACE_SECONDS = int(
-    os.getenv("FANREN_REPLY_SYNC_GRACE_SECONDS", "300")
-)
+FANREN_BOT_USERNAME = "fanrenxiuxian_bot"
+FANREN_CHECK_COMMAND = ".查看闭关"
+FANREN_NORMAL_COMMAND = ".闭关修炼"
+FANREN_DEEP_COMMAND = ".深度闭关"
+FANREN_DEFAULT_MODE = "normal"
+FANREN_DEFAULT_INTERVAL = 300
+FANREN_COMMAND_COOLDOWN = 30
+FANREN_MAX_FAILURES = 3
+FANREN_MIN_INTERVAL = 30
+FANREN_RUNNER_POLL_SECONDS = 5
+FANREN_REPLY_SYNC_GRACE_SECONDS = 300
 FANREN_AUTO_JIYIN_KEYWORD = "神念直入脑海，一个苍老的声音"
 FANREN_AUTO_NANLONG_KEYWORD = "你感到一股无法抗拒的意志锁定了你的神魂"
 FANREN_AUTO_JIYIN_CHOICES = {

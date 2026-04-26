@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 from datetime import datetime, timedelta
@@ -21,17 +20,15 @@ from tg_game.telegram.send_utils import send_message_with_thread_fallback
 logger = logging.getLogger(__name__)
 
 
-SECT_BOT_USERNAME = (
-    os.getenv("SECT_BOT_USERNAME", "fanrenxiuxian_bot").lstrip("@").lower()
-)
-SECT_CHECK_COMMAND = os.getenv("SECT_CHECK_COMMAND", ".我的宗门")
-SECT_DEFAULT_INTERVAL = int(os.getenv("SECT_DEFAULT_INTERVAL", "1800"))
-SECT_COMMAND_COOLDOWN = int(os.getenv("SECT_COMMAND_COOLDOWN", "15"))
-SECT_RUNNER_POLL_SECONDS = int(os.getenv("SECT_RUNNER_POLL_SECONDS", "5"))
-SECT_DAILY_TEACH_LIMIT = int(os.getenv("SECT_DAILY_TEACH_LIMIT", "3"))
-SECT_AUTO_CHECK_IN_TIME = os.getenv("SECT_AUTO_CHECK_IN_TIME", "02:00")
-SECT_AUTO_TEACH_TIME = os.getenv("SECT_AUTO_TEACH_TIME", "02:10")
-YINLUO_AUTO_SACRIFICE_TIME = os.getenv("YINLUO_AUTO_SACRIFICE_TIME", "02:20")
+SECT_BOT_USERNAME = "fanrenxiuxian_bot"
+SECT_CHECK_COMMAND = ".我的宗门"
+SECT_DEFAULT_INTERVAL = 1800
+SECT_COMMAND_COOLDOWN = 15
+SECT_RUNNER_POLL_SECONDS = 5
+SECT_DAILY_TEACH_LIMIT = 3
+SECT_AUTO_CHECK_IN_TIME = "02:00"
+SECT_AUTO_TEACH_TIME = "02:10"
+YINLUO_AUTO_SACRIFICE_TIME = "02:20"
 SECT_AUTO_TEACH_REPLY_RECHECK_SECONDS = 30
 LINGXIAO_STEP_DEFAULT_SECONDS = 7200
 LINGXIAO_STEP_SECONDS = 14400
