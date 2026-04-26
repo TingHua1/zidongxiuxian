@@ -65,6 +65,11 @@
             <div class="kv-row"><span>阴罗献祭</span><strong>{{ '自动' if sect_session and sect_session.auto_yinluo_sacrifice_enabled else '手动' }}</strong></div>
             <div class="kv-row"><span>阴罗血洗</span><strong>{{ '自动' if sect_session and sect_session.auto_yinluo_blood_wash_enabled else '手动' }}</strong></div>
             {% endif %}
+            {% if current_sect_feature and current_sect_feature.name == '黄枫谷' %}
+            <div class="kv-row"><span>黄枫谷播种</span><strong>{{ '自动' if sect_session and sect_session.auto_huangfeng_enabled else '手动' }}</strong></div>
+            <div class="kv-row"><span>播种种子</span><strong>{{ sect_session.huangfeng_seed_name or '-' if sect_session else '-' }}</strong></div>
+            <div class="kv-row"><span>自动宗门兑换</span><strong>{{ '开启' if sect_session and sect_session.auto_huangfeng_exchange_enabled else '关闭' }}</strong></div>
+            {% endif %}
         </div>
         <div class="action-row top-gap" style="flex-wrap: wrap; gap: 10px;">
             <form method="post" action="/runtime/sect/checkin-toggle">
@@ -85,11 +90,108 @@
             </form>
             {% endif %}
         </div>
+        {% if current_sect_feature and current_sect_feature.name == '黄枫谷' %}
+        <div class="top-gap" style="border-top: 1px dashed var(--border-color); padding-top: 15px;">
+            <p style="margin-bottom: 10px; color: var(--accent-gold);">黄枫谷专属调度</p>
+            
+            {% if not sect_command_chat_ready %}
+            <p class="muted" style="margin-bottom: 10px; font-size: 0.9em;">⚠️ 宗门群聊未就绪，无法操作自动化。</p>
+            {% endif %}
+
+            <form class="form-grid" method="post" action="/runtime/sect/huangfeng-auto">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                {% if sect_session and sect_session.auto_huangfeng_enabled %}
+                    <input type="hidden" name="enabled" value="0">
+                    <input type="hidden" name="exchange_enabled" value="{{ '1' if sect_session.auto_huangfeng_exchange_enabled else '0' }}">
+                    <input type="hidden" name="seed_name" value="{{ sect_session.huangfeng_seed_name if sect_session else '' }}">
+                    
+                    <label>
+                        播种种子
+                        <input value="{{ sect_session.huangfeng_seed_name }}" disabled>
+                    </label>
+                    <label>
+                        种子不足时
+                        <select disabled>
+                            <option>{% if sect_session.auto_huangfeng_exchange_enabled %}自动宗门兑换{% else %}停止自动{% endif %}</option>
+                        </select>
+                    </label>
+                    <div class="full-span action-row">
+                        <button type="submit" {% if not sect_command_chat_ready %}disabled{% endif %} style="background: transparent; border: 1px solid var(--accent-gold); color: var(--accent-gold);">停止黄枫谷自动化</button>
+                    </div>
+                    {% if sect_session.huangfeng_next_check_source %}
+                    <p class="muted full-span" style="font-size: 0.9em;">运行状态: {{ sect_session.huangfeng_next_check_source }}</p>
+                    {% endif %}
+                {% else %}
+                    <input type="hidden" name="enabled" value="1">
+                    <label>
+                        播种种子
+                        <input name="seed_name" value="{{ sect_session.huangfeng_seed_name if sect_session else '' }}" placeholder="例如：凝血草种子" required {% if not sect_command_chat_ready %}disabled{% endif %}>
+                    </label>
+                    <label>
+                        种子不足时
+                        <select name="exchange_enabled" {% if not sect_command_chat_ready %}disabled{% endif %}>
+                            <option value="0" {% if not sect_session or not sect_session.auto_huangfeng_exchange_enabled %}selected{% endif %}>停止自动</option>
+                            <option value="1" {% if sect_session and sect_session.auto_huangfeng_exchange_enabled %}selected{% endif %}>自动宗门兑换</option>
+                        </select>
+                    </label>
+                    <div class="full-span action-row">
+                        <button type="submit" {% if not sect_command_chat_ready %}disabled{% endif %}>开启黄枫谷自动化</button>
+                    </div>
+                    <p class="muted full-span" style="font-size: 0.9em;">提示：开启后将自动在药园播种指定种子。如需修改配置，请先停止自动化。</p>
+                {% endif %}
+            </form>
+        </div>
+        {% endif %}
         {% else %}
         <p class="muted">当前未绑定宗门群聊，无法切换自动宗门链路。</p>
         {% endif %}
     </div>
 </section>
+
+{% if huangfeng_state and current_sect_feature and current_sect_feature.name == '黄枫谷' %}
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>黄枫谷</p>
+            <h2>药园状态</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>地块数量</span><strong>{{ huangfeng_state.size or huangfeng_state.plot_count }}</strong></div>
+            <div class="kv-row"><span>生长中</span><strong>{{ huangfeng_state.counts.growing }}</strong></div>
+            <div class="kv-row"><span>干旱</span><strong>{{ huangfeng_state.counts.dry }}</strong></div>
+            <div class="kv-row"><span>虫害</span><strong>{{ huangfeng_state.counts.pests }}</strong></div>
+            <div class="kv-row"><span>杂草</span><strong>{{ huangfeng_state.counts.weeds }}</strong></div>
+            <div class="kv-row"><span>成熟 / 空闲</span><strong>{{ huangfeng_state.counts.mature }} / {{ huangfeng_state.counts.idle }}</strong></div>
+            <div class="kv-row"><span>状态来源</span><strong>{{ '角色结构化数据' if huangfeng_state.source == 'payload' else '最近药园回包' }}</strong></div>
+        </div>
+        {% if huangfeng_state.next_check_source %}
+        <p class="muted top-gap">{{ huangfeng_state.next_check_source }}</p>
+        {% endif %}
+    </div>
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>黄枫谷</p>
+            <h2>每块药田</h2>
+        </div>
+        {% if huangfeng_state.plots %}
+        <div class="stack-list compact-stack">
+            {% for plot in huangfeng_state.plots %}
+            <div class="kv-row" style="align-items: flex-start; gap: 14px;">
+                <span>{{ plot.plot }}号地</span>
+                <strong style="display: flex; flex-direction: column; align-items: flex-end; gap: 4px;">
+                    <span>{{ plot.status_label }}</span>
+                    {% if plot.seed_name %}<span class="muted" style="font-size: 0.9em; font-weight: 400;">{{ plot.seed_name }}</span>{% endif %}
+                    <span class="muted" style="font-size: 0.85em; font-weight: 400;">{{ plot.suggested_action }}</span>
+                </strong>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="muted">当前没有可展示的药园结构化数据，可先等待角色信息同步或执行一次小药园。</p>
+        {% endif %}
+    </div>
+</section>
+{% endif %}
 
 {% if current_sect_feature and current_sect_feature.actions %}
 <section class="detail-grid">

@@ -2720,6 +2720,7 @@ def create_app() -> FastAPI:
         current_sect_feature = profile_state["current_sect_feature"]
         lingxiao_state = profile_state["lingxiao_state"]
         yinluo_state = profile_state["yinluo_state"]
+        huangfeng_state = profile_state.get("huangfeng_state")
         sect_chat = profile_state["sect_chat"]
         external_account = page_state["external_account"]
         if active_profile:
@@ -2904,6 +2905,7 @@ def create_app() -> FastAPI:
         current_sect_feature = profile_state["current_sect_feature"]
         lingxiao_state = profile_state["lingxiao_state"]
         yinluo_state = profile_state["yinluo_state"]
+        huangfeng_state = profile_state.get("huangfeng_state")
         sect_chat = profile_state["sect_chat"]
         external_account = page_state["external_account"]
         cultivation_page = max(int(page or 1), 1)
@@ -3328,6 +3330,7 @@ def create_app() -> FastAPI:
                 "sect_daily_state": sect_daily_state,
                 "lingxiao_state": lingxiao_state,
                 "yinluo_state": yinluo_state,
+                "huangfeng_state": huangfeng_state,
                 "character_state": character_state,
                 "taiyi_state": taiyi_state,
                 "other_play_definitions": OTHER_PLAY_DEFINITIONS,
@@ -4135,6 +4138,50 @@ def create_app() -> FastAPI:
             session = sect_game.get_session(
                 db, chat_id, profile_id=active_profile.id if active_profile else None
             )
+        finally:
+            db.close()
+        if not session:
+            raise HTTPException(status_code=404, detail="Sect session not found")
+        return RedirectResponse(url="/modules/sect", status_code=303)
+
+    @application.post("/runtime/sect/huangfeng-auto")
+    async def configure_huangfeng_auto(
+        request: Request,
+        chat_id: int = Form(...),
+        enabled: str = Form(...),
+        seed_name: str = Form(""),
+        exchange_enabled: str = Form("0"),
+    ) -> RedirectResponse:
+        db = CompatDb(storage)
+        try:
+            sect_game.ensure_tables(db)
+            active_profile = _get_request_profile(request)
+            if not active_profile:
+                raise HTTPException(status_code=401, detail="Profile not active")
+            session = sect_game.get_session(db, chat_id, profile_id=active_profile.id)
+            normalized_seed_name = (
+                str(seed_name or "").strip()
+                or str((session or {}).get("huangfeng_seed_name") or "").strip()
+            )
+            exchange_flag = exchange_enabled == "1"
+            if enabled == "1" and not normalized_seed_name:
+                raise HTTPException(status_code=400, detail="Seed name required")
+            sect_game.configure_huangfeng_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                seed_name=normalized_seed_name if enabled == "1" else None,
+                exchange_enabled=exchange_flag,
+                profile_id=active_profile.id,
+            )
+            if enabled == "1":
+                sect_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=active_profile.id,
+                )
+            session = sect_game.get_session(db, chat_id, profile_id=active_profile.id)
         finally:
             db.close()
         if not session:
