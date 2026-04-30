@@ -123,7 +123,7 @@
                 </div>
                 <div class="stack-list compact-stack top-gap">
                     <div class="kv-row"><span>CD</span><strong>12 小时</strong></div>
-                    <div class="kv-row"><span>状态</span><strong style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{{ cultivation_session.rift_state if cultivation_session else '-' }}</strong></div>
+                    <div class="kv-row"><span>状态</span><strong style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ cultivation_session.rift_state if cultivation_session else '' }}">{{ cultivation_session.rift_state if cultivation_session else '-' }}</strong></div>
                     <div class="kv-row"><span>下次执行</span><strong style="font-family: var(--font-mono);" id="rift-countdown">{{ format_timestamp(cultivation_session.rift_next_check_time) if cultivation_session and cultivation_session.rift_next_check_time else '立即执行' }}</strong></div>
                     <div class="kv-row"><span>重试次数</span><strong>{{ (cultivation_session.rift_retry_count or 0) if cultivation_session else 0 }} / 1</strong></div>
                 </div>
