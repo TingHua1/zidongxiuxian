@@ -1324,6 +1324,26 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
     if session["last_bot_msg_id"] == event.id and last_bot_text == raw_text[:1000]:
         return None
 
+    # 检测编辑：同一条 bot 消息被编辑，只更新文本不重跑状态机
+    is_edit = (
+        session.get("last_bot_msg_id") == event.id and raw_text[:1000] != last_bot_text
+    )
+    if is_edit:
+        last_event = session.get("last_event") or ""
+        update_session(
+            db,
+            event.chat_id,
+            profile_id=session.get("profile_id"),
+            last_bot_text=raw_text[:1000],
+            last_bot_msg_id=event.id,
+        )
+        # 仅当是探寻裂缝或元婴相关事件时返回结果以更新闭关记录
+        if any(last_event.startswith(p) for p in ("rift_", "yuanying_")):
+            return FanrenParseResult(
+                f"{last_event}_edited", f"[已编辑] {raw_text[:120]}"
+            )
+        return None
+
     # 处理自动探寻裂缝回包
     last_action = (session.get("last_action") or "").strip()
     if last_action == RIFT_EXPLORE_COMMAND and session.get("auto_rift_enabled"):

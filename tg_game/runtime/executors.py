@@ -259,14 +259,18 @@ class FanrenExecutor(BaseExecutor):
     def _record_result(
         self, context: EventContext, storage: Storage, event_name: str
     ) -> None:
-        if event_name not in {
-            "retreat_complete",
-            "deep_retreat_summary",
-            "retreat_setback",
-            "rift_explore_success",
-            "yuanying_outing_success",
-            "yuanying_settled",
-        }:
+        if not event_name or (
+            event_name
+            not in {
+                "retreat_complete",
+                "deep_retreat_summary",
+                "retreat_setback",
+                "rift_explore_success",
+                "yuanying_outing_success",
+                "yuanying_settled",
+            }
+            and not event_name.endswith("_edited")
+        ):
             return
         session_setting = context.get_setting("cultivation") or context.get_setting(
             "basic"
