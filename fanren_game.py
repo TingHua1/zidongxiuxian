@@ -793,10 +793,15 @@ async def _check_asc_rift_time_changed(storage, profile_id, chat_id, db):
             rift_last_asc_time=new_rift_time,
         )
         changed = new_rift_time != old_rift_time
-        return (
-            changed,
-            f"新时间: {new_rift_time}" if changed else f"时间未变: {new_rift_time}",
-        )
+        # 截短时间戳: "2026-04-30T05:08:58..." → "04-30 05:08"
+        try:
+            clean = new_rift_time.replace("T", " ")[:16]
+            if "+" in clean:
+                clean = clean[: clean.index("+")].strip()
+            short_time = clean
+        except Exception:
+            short_time = new_rift_time[:16]
+        return changed, f"新: {short_time}" if changed else f"未变: {short_time}"
     except Exception as exc:
         logger.warning("ASC rift time check failed: %s", exc)
         return False, f"天机阁查询失败: {exc}"
