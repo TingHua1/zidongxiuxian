@@ -229,8 +229,19 @@ async def _shutdown_client(client: TelegramClient) -> None:
         outgoing_task.cancel()
         with suppress(asyncio.CancelledError):
             await outgoing_task
+    # 先停 Telethon 内部的 sender，取消底层 send/recv 循环
+    sender = getattr(client, "_sender", None)
+    if sender is not None:
+        with suppress(Exception):
+            sender.cancel_all()
+        with suppress(Exception):
+            await asyncio.sleep(0.1)
     if client.is_connected():
-        await client.disconnect()
+        with suppress(Exception):
+            await client.disconnect()
+    # 给事件循环一点时间处理待取消的内部协程
+    with suppress(Exception):
+        await asyncio.sleep(0.15)
 
 
 async def _run_profile_worker(profile_id: int) -> None:
@@ -381,6 +392,9 @@ async def _main() -> None:
         for task in worker_tasks.values():
             with suppress(asyncio.CancelledError):
                 await task
+        # 给 Telethon 底层连接循环一点时间完成取消
+        with suppress(Exception):
+            await asyncio.sleep(0.2)
 
 
 def run_telegram_runtime() -> None:
