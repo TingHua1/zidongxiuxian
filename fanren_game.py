@@ -34,6 +34,22 @@ FANREN_AUTO_JIYIN_CHOICES = {
     "献上魂魄": ".献上魂魄",
     "收敛气息": ".收敛气息",
 }
+
+# 自动探寻裂缝
+RIFT_EXPLORE_COMMAND = ".探寻裂缝"
+RIFT_EXPLORE_COOLDOWN_SECONDS = 43200  # 12 小时
+RIFT_RETRY_INTERVAL_SECONDS = 600  # 10 分钟
+RIFT_RETRY_MAX = 1
+RIFT_SUCCESS_KEYWORD = "探寻裂缝"  # 成功回包关键词
+
+# 自动元婴出窍
+YUANYING_OUTING_COMMAND = ".元婴出窍"
+YUANYING_OUTING_COOLDOWN_SECONDS = 28800  # 8 小时
+YUANYING_SUCCESS_KEYWORDS = [
+    "元婴化作一道流光飞出",
+    "元婴出窍",
+    "云游",
+]
 FANREN_AUTO_NANLONG_CHOICES = {
     "交换 法宝": ".交换 法宝",
     "交换 功法": ".交换 功法",
@@ -179,6 +195,38 @@ def ensure_tables(db):
     if "profile_id" not in columns:
         db.cur.execute(
             "ALTER TABLE fanren_sessions ADD COLUMN profile_id INTEGER NOT NULL DEFAULT 0"
+        )
+    if "auto_rift_enabled" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN auto_rift_enabled INTEGER DEFAULT 0"
+        )
+    if "rift_next_check_time" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN rift_next_check_time REAL DEFAULT 0"
+        )
+    if "rift_retry_count" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN rift_retry_count INTEGER DEFAULT 0"
+        )
+    if "rift_state" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN rift_state TEXT DEFAULT ''"
+        )
+    if "auto_yuanying_enabled" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN auto_yuanying_enabled INTEGER DEFAULT 0"
+        )
+    if "yuanying_next_check_time" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN yuanying_next_check_time REAL DEFAULT 0"
+        )
+    if "yuanying_state" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN yuanying_state TEXT DEFAULT ''"
+        )
+    if "rift_last_asc_time" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN rift_last_asc_time TEXT DEFAULT ''"
         )
     db.conn.commit()
 
@@ -474,6 +522,13 @@ def build_status_text(session):
             f"普通闭关删原消息: {'开启' if session.get('delete_normal_command_message') else '关闭'}",
             f"自动极阴祖师: {'开启' if session.get('auto_jiyin_enabled') else '关闭'} / {session.get('auto_jiyin_choice') or '-'}",
             f"自动南陇侯: {'开启' if session.get('auto_nanlong_enabled') else '关闭'} / {session.get('auto_nanlong_choice') or '-'}",
+            f"自动探寻裂缝: {'开启' if session.get('auto_rift_enabled') else '关闭'}",
+            f"  裂缝状态: {session.get('rift_state') or '-'}",
+            f"  裂缝下次: {format_timestamp(session.get('rift_next_check_time') or 0)}",
+            f"  裂缝重试: {session.get('rift_retry_count') or 0}/{RIFT_RETRY_MAX}",
+            f"自动元婴出窍: {'开启' if session.get('auto_yuanying_enabled') else '关闭'}",
+            f"  出窍状态: {session.get('yuanying_state') or '-'}",
+            f"  出窍下次: {format_timestamp(session.get('yuanying_next_check_time') or 0)}",
             f"检查指令: {session.get('command_text') or FANREN_CHECK_COMMAND}",
             f"普通闭关指令: {FANREN_NORMAL_COMMAND}",
             f"深度闭关指令: {FANREN_DEEP_COMMAND}",
@@ -595,6 +650,199 @@ def set_auto_nanlong(db, chat_id, enabled, choice, profile_id=None):
         auto_nanlong_choice=normalized_choice,
     )
     return normalized_choice
+
+
+def set_auto_rift(db, chat_id, enabled, *, profile_id=None):
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        auto_rift_enabled=_normalize_bool(enabled),
+        rift_state="" if enabled else "已关闭",
+    )
+    if enabled:
+        update_session(
+            db,
+            chat_id,
+            profile_id=profile_id,
+            rift_next_check_time=0,
+            rift_retry_count=0,
+            rift_state="等待首次执行",
+            rift_last_asc_time="",
+        )
+
+
+def set_auto_yuanying(db, chat_id, enabled, *, profile_id=None):
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        auto_yuanying_enabled=_normalize_bool(enabled),
+        yuanying_state="" if enabled else "已关闭",
+    )
+    if enabled:
+        update_session(
+            db,
+            chat_id,
+            profile_id=profile_id,
+            yuanying_next_check_time=0,
+            yuanying_state="等待首次执行",
+        )
+
+
+def parse_rift_reply(text):
+    """解析探寻裂缝回包，返回 (is_success, cooldown_seconds)"""
+    text = (text or "").strip()
+    if not text:
+        return False, None
+    cooldown = parse_cooldown_seconds(text)
+    if any(kw in text for kw in ["探寻裂缝", "裂缝", "裂隙"]):
+        return True, cooldown or RIFT_EXPLORE_COOLDOWN_SECONDS
+    if "失败" in text or "无法" in text or "不可" in text:
+        return False, cooldown
+    return True, cooldown or RIFT_EXPLORE_COOLDOWN_SECONDS
+
+
+def parse_yuanying_reply(text):
+    """解析元婴出窍回包，返回 (is_success, cooldown_seconds)"""
+    text = (text or "").strip()
+    if not text:
+        return False, None
+    cooldown = parse_cooldown_seconds(text)
+    for kw in YUANYING_SUCCESS_KEYWORDS:
+        if kw in text:
+            return True, cooldown or YUANYING_OUTING_COOLDOWN_SECONDS
+    if "失败" in text or "无法" in text or "不可" in text:
+        return False, cooldown
+    return False, cooldown
+
+
+async def _check_asc_rift_time_changed(storage, profile_id, chat_id, db):
+    """通过天机阁 API 检查 last_rift_explore_time 是否已刷新"""
+    try:
+        from tg_game.services.external_sync import (
+            get_effective_external_cookie,
+            sync_external_account,
+        )
+
+        cookie_text = get_effective_external_cookie(storage)
+        if not cookie_text:
+            return False, "天机阁未登录"
+        cultivator = sync_external_account(storage, profile_id, cookie_text=cookie_text)
+        new_rift_time = (cultivator.get("last_rift_explore_time") or "").strip()
+        if not new_rift_time:
+            return False, "天机阁未返回探寻裂缝时间"
+        session = get_session(db, chat_id, profile_id=profile_id)
+        old_rift_time = (session.get("rift_last_asc_time") or "").strip()
+        update_session(
+            db,
+            chat_id,
+            profile_id=profile_id,
+            rift_last_asc_time=new_rift_time,
+        )
+        changed = new_rift_time != old_rift_time
+        return (
+            changed,
+            f"新时间: {new_rift_time}" if changed else f"时间未变: {new_rift_time}",
+        )
+    except Exception as exc:
+        logger.warning("ASC rift time check failed: %s", exc)
+        return False, f"天机阁查询失败: {exc}"
+
+
+async def _maybe_send_rift_explore(
+    client, db, chat_id, *, storage=None, profile_id=None
+):
+    """处理自动探寻裂缝发送"""
+    session = get_session(db, chat_id, profile_id=profile_id)
+    if not session or not session.get("auto_rift_enabled"):
+        return False, "disabled"
+
+    now = time.time()
+    next_check = session.get("rift_next_check_time") or 0
+    if next_check and now < next_check:
+        return False, "not_due"
+
+    resolved_storage = storage or getattr(client, "_tg_game_storage", None)
+    if _pause_if_external_session_expired(
+        db, chat_id, storage=resolved_storage, profile_id=profile_id, now=now
+    ):
+        return False, "external_expired"
+
+    retry_count = int(session.get("rift_retry_count") or 0)
+    update_session(
+        db,
+        chat_id,
+        profile_id=session.get("profile_id"),
+        rift_state=f"准备发送{'(重试)' if retry_count > 0 else ''}",
+    )
+
+    await send_message_in_session(
+        client,
+        session,
+        chat_id,
+        RIFT_EXPLORE_COMMAND,
+        storage=storage,
+        profile_id=profile_id,
+    )
+    update_session(
+        db,
+        chat_id,
+        profile_id=session.get("profile_id"),
+        last_action=RIFT_EXPLORE_COMMAND,
+        last_action_time=now,
+        rift_next_check_time=now + RIFT_EXPLORE_COOLDOWN_SECONDS,
+        rift_state=f"已发送{'(第' + str(retry_count) + '次重试)' if retry_count > 0 else ''}，等待回包验证",
+    )
+    logger.info("Rift explore command sent to chat %s retry=%s", chat_id, retry_count)
+    return True, "sent"
+
+
+async def _maybe_send_yuanying_outing(
+    client, db, chat_id, *, storage=None, profile_id=None
+):
+    """处理自动元婴出窍发送"""
+    session = get_session(db, chat_id, profile_id=profile_id)
+    if not session or not session.get("auto_yuanying_enabled"):
+        return False, "disabled"
+
+    now = time.time()
+    next_check = session.get("yuanying_next_check_time") or 0
+    if next_check and now < next_check:
+        return False, "not_due"
+
+    resolved_storage = storage or getattr(client, "_tg_game_storage", None)
+    if _pause_if_external_session_expired(
+        db, chat_id, storage=resolved_storage, profile_id=profile_id, now=now
+    ):
+        return False, "external_expired"
+
+    update_session(
+        db,
+        chat_id,
+        profile_id=session.get("profile_id"),
+        yuanying_state="准备发送",
+    )
+
+    await send_message_in_session(
+        client,
+        session,
+        chat_id,
+        YUANYING_OUTING_COMMAND,
+        storage=storage,
+        profile_id=profile_id,
+    )
+    update_session(
+        db,
+        chat_id,
+        profile_id=session.get("profile_id"),
+        last_action=YUANYING_OUTING_COMMAND,
+        last_action_time=now,
+        yuanying_next_check_time=now + YUANYING_OUTING_COOLDOWN_SECONDS,
+        yuanying_state="已发送，等待回包",
+    )
+    logger.info("Yuanying outing command sent to chat %s", chat_id)
+    return True, "sent"
 
 
 async def maybe_handle_special_auto_event(
@@ -951,6 +1199,167 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
     if session["last_bot_msg_id"] == event.id and last_bot_text == raw_text[:1000]:
         return None
 
+    # 处理自动探寻裂缝回包
+    last_action = (session.get("last_action") or "").strip()
+    if last_action == RIFT_EXPLORE_COMMAND and session.get("auto_rift_enabled"):
+        rift_success, rift_cd = parse_rift_reply(raw_text)
+        now = time.time()
+        if rift_success:
+            # 通过天机阁 API 验证 last_rift_explore_time 是否刷新
+            storage = (
+                getattr(client, "_tg_game_storage", None)
+                if client is not None
+                else None
+            )
+            if storage and profile_id:
+                changed, check_msg = await _check_asc_rift_time_changed(
+                    storage, profile_id, event.chat_id, db
+                )
+                if changed:
+                    update_session(
+                        db,
+                        event.chat_id,
+                        profile_id=session.get("profile_id"),
+                        rift_next_check_time=now
+                        + (rift_cd or RIFT_EXPLORE_COOLDOWN_SECONDS),
+                        rift_retry_count=0,
+                        rift_state=f"探寻成功 - {check_msg}",
+                        last_summary=f"自动探寻裂缝成功，下次在 {format_duration(rift_cd or RIFT_EXPLORE_COOLDOWN_SECONDS)} 后",
+                        last_event="rift_explore_success",
+                        last_bot_text=raw_text[:1000],
+                        last_bot_msg_id=event.id,
+                    )
+                    logger.info(
+                        "Rift explore succeeded in chat %s: %s",
+                        event.chat_id,
+                        check_msg,
+                    )
+                    return FanrenParseResult(
+                        "rift_explore_success", f"探寻裂缝成功", rift_cd
+                    )
+                else:
+                    retry_count = int(session.get("rift_retry_count") or 0) + 1
+                    if retry_count <= RIFT_RETRY_MAX:
+                        update_session(
+                            db,
+                            event.chat_id,
+                            profile_id=session.get("profile_id"),
+                            rift_next_check_time=now + RIFT_RETRY_INTERVAL_SECONDS,
+                            rift_retry_count=retry_count,
+                            rift_state=f"将第{retry_count}次重试 - {check_msg}",
+                            last_summary=f"探寻裂缝时间未刷新，将在 {format_duration(RIFT_RETRY_INTERVAL_SECONDS)} 后重试(第{retry_count}次)",
+                            last_event="rift_explore_retry",
+                            last_bot_text=raw_text[:1000],
+                            last_bot_msg_id=event.id,
+                        )
+                        logger.info(
+                            "Rift explore will retry in chat %s (attempt %s)",
+                            event.chat_id,
+                            retry_count,
+                        )
+                    else:
+                        update_session(
+                            db,
+                            event.chat_id,
+                            profile_id=session.get("profile_id"),
+                            auto_rift_enabled=0,
+                            rift_state=f"失败已停止 - {check_msg}",
+                            last_summary=f"探寻裂缝失败: {check_msg}，超过最大重试次数已停止自动探寻",
+                            last_event="rift_explore_failed",
+                            last_bot_text=raw_text[:1000],
+                            last_bot_msg_id=event.id,
+                        )
+                        logger.warning(
+                            "Rift explore stopped in chat %s: %s",
+                            event.chat_id,
+                            check_msg,
+                        )
+                    return FanrenParseResult(
+                        "rift_explore_retry", f"探寻裂缝: {check_msg}"
+                    )
+            else:
+                # 无法调用 ASC API 时，默认视为成功
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    rift_next_check_time=now
+                    + (rift_cd or RIFT_EXPLORE_COOLDOWN_SECONDS),
+                    rift_retry_count=0,
+                    rift_state="探寻完成(无法验证)",
+                    last_summary=f"自动探寻裂缝完成(无法验证天机阁)，下次在 {format_duration(rift_cd or RIFT_EXPLORE_COOLDOWN_SECONDS)} 后",
+                    last_event="rift_explore_success",
+                    last_bot_text=raw_text[:1000],
+                    last_bot_msg_id=event.id,
+                )
+                return FanrenParseResult("rift_explore_success", "探寻裂缝完成")
+        else:
+            retry_count = int(session.get("rift_retry_count") or 0) + 1
+            if retry_count <= RIFT_RETRY_MAX:
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    rift_next_check_time=now + RIFT_RETRY_INTERVAL_SECONDS,
+                    rift_retry_count=retry_count,
+                    rift_state=f"回包失败，将重试(第{retry_count}次)",
+                    last_summary=f"探寻裂缝回包异常，将在 {format_duration(RIFT_RETRY_INTERVAL_SECONDS)} 后重试",
+                    last_event="rift_explore_retry",
+                )
+            else:
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    auto_rift_enabled=0,
+                    rift_state="失败已停止",
+                    last_summary=f"探寻裂缝连续失败，已停止自动探寻",
+                    last_event="rift_explore_failed",
+                )
+            return FanrenParseResult("rift_explore_retry", "探寻裂缝回包异常")
+
+    # 处理自动元婴出窍回包
+    if last_action == YUANYING_OUTING_COMMAND and session.get("auto_yuanying_enabled"):
+        yy_success, yy_cd = parse_yuanying_reply(raw_text)
+        now = time.time()
+        update_session(
+            db,
+            event.chat_id,
+            profile_id=session.get("profile_id"),
+            last_bot_text=raw_text[:1000],
+            last_bot_msg_id=event.id,
+        )
+        if yy_success:
+            update_session(
+                db,
+                event.chat_id,
+                profile_id=session.get("profile_id"),
+                yuanying_next_check_time=now
+                + (yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS),
+                yuanying_state=f"元婴已出窍，{format_duration(yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS)}后再次出窍",
+                last_summary=f"自动元婴出窍成功，下次在 {format_duration(yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS)} 后",
+                last_event="yuanying_outing_success",
+            )
+            logger.info("Yuanying outing succeeded in chat %s", event.chat_id)
+            return FanrenParseResult(
+                "yuanying_outing_success",
+                f"元婴出窍成功，{format_duration(yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS)}后再次出窍",
+                yy_cd,
+            )
+        else:
+            update_session(
+                db,
+                event.chat_id,
+                profile_id=session.get("profile_id"),
+                yuanying_next_check_time=now + YUANYING_OUTING_COOLDOWN_SECONDS,
+                yuanying_state="回包异常，将重试",
+                last_summary=f"元婴出窍回包异常，将在 {format_duration(YUANYING_OUTING_COOLDOWN_SECONDS)} 后重试",
+                last_event="yuanying_outing_retry",
+            )
+            return FanrenParseResult(
+                "yuanying_outing_retry", "元婴出窍回包异常，将重试"
+            )
+
     parsed = parse_message(raw_text)
     if parsed.event == "ignored":
         return None
@@ -1087,43 +1496,88 @@ async def runner(client, storage, profile_id=None):
             now = time.time()
             for session in list_sessions(db, profile_id=profile_id):
                 if not session["enabled"]:
-                    continue
+                    # 即使闭关主任务未启用，也检查独立子任务
+                    pass
                 if session.get("stopped_reason"):
                     continue
-                if session["next_check_time"] and now < session["next_check_time"]:
-                    continue
-                try:
-                    logger.info(
-                        "Fanren runner due chat=%s mode=%s next_check=%s now=%s",
-                        session["chat_id"],
-                        session.get("retreat_mode"),
-                        format_timestamp(session.get("next_check_time") or 0),
-                        format_timestamp(now),
-                    )
-                    await maybe_send_check(
-                        client,
-                        db,
-                        session["chat_id"],
-                        storage=storage,
-                        profile_id=session.get("profile_id"),
-                    )
-                except Exception as exc:
-                    record_failure(
-                        db,
-                        session["chat_id"],
-                        f"check failed: {exc}",
-                        profile_id=session.get("profile_id"),
-                    )
-                    update_session(
-                        db,
-                        session["chat_id"],
-                        profile_id=session.get("profile_id"),
-                        next_check_time=now + max(session["interval_seconds"], 60),
-                        next_check_source="runner 异常后退避等待",
-                    )
-                    logger.warning(
-                        "Fanren runner failed in chat %s: %s", session["chat_id"], exc
-                    )
+
+                # 主线：闭关调度
+                cultivation_due = session["enabled"] and (
+                    not session["next_check_time"] or now >= session["next_check_time"]
+                )
+                if cultivation_due:
+                    try:
+                        logger.info(
+                            "Fanren runner due chat=%s mode=%s next_check=%s now=%s",
+                            session["chat_id"],
+                            session.get("retreat_mode"),
+                            format_timestamp(session.get("next_check_time") or 0),
+                            format_timestamp(now),
+                        )
+                        await maybe_send_check(
+                            client,
+                            db,
+                            session["chat_id"],
+                            storage=storage,
+                            profile_id=session.get("profile_id"),
+                        )
+                    except Exception as exc:
+                        record_failure(
+                            db,
+                            session["chat_id"],
+                            f"check failed: {exc}",
+                            profile_id=session.get("profile_id"),
+                        )
+                        update_session(
+                            db,
+                            session["chat_id"],
+                            profile_id=session.get("profile_id"),
+                            next_check_time=now + max(session["interval_seconds"], 60),
+                            next_check_source="runner 异常后退避等待",
+                        )
+                        logger.warning(
+                            "Fanren runner failed in chat %s: %s",
+                            session["chat_id"],
+                            exc,
+                        )
+
+                # 自动探寻裂缝
+                if session.get("auto_rift_enabled"):
+                    rift_next = session.get("rift_next_check_time") or 0
+                    if not rift_next or now >= rift_next:
+                        try:
+                            await _maybe_send_rift_explore(
+                                client,
+                                db,
+                                session["chat_id"],
+                                storage=storage,
+                                profile_id=session.get("profile_id"),
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Rift explore runner failed in chat %s: %s",
+                                session["chat_id"],
+                                exc,
+                            )
+
+                # 自动元婴出窍
+                if session.get("auto_yuanying_enabled"):
+                    yy_next = session.get("yuanying_next_check_time") or 0
+                    if not yy_next or now >= yy_next:
+                        try:
+                            await _maybe_send_yuanying_outing(
+                                client,
+                                db,
+                                session["chat_id"],
+                                storage=storage,
+                                profile_id=session.get("profile_id"),
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Yuanying outing runner failed in chat %s: %s",
+                                session["chat_id"],
+                                exc,
+                            )
             db.close()
             await asyncio.sleep(FANREN_RUNNER_POLL_SECONDS)
         except Exception as exc:

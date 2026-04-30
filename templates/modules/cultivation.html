@@ -12,6 +12,8 @@
             <div class="kv-row"><span>自动调度</span><strong style="color: {% if cultivation_session and cultivation_session.enabled %}var(--accent-gold){% else %}var(--text-muted){% endif %};">{{ '运行中' if cultivation_session and cultivation_session.enabled else '未启动' }}</strong></div>
             <div class="kv-row"><span>极阴祖师</span><strong>{{ ('开启 / ' ~ (cultivation_session.auto_jiyin_choice or '-')) if cultivation_session and cultivation_session.auto_jiyin_enabled else '关闭' }}</strong></div>
             <div class="kv-row"><span>南陇侯</span><strong>{{ ('开启 / ' ~ (cultivation_session.auto_nanlong_choice or '-')) if cultivation_session and cultivation_session.auto_nanlong_enabled else '关闭' }}</strong></div>
+            <div class="kv-row"><span>探寻裂缝</span><strong>{{ ('开启' if cultivation_session and cultivation_session.auto_rift_enabled else '关闭') }}</strong></div>
+            <div class="kv-row"><span>元婴出窍</span><strong>{{ ('开启' if cultivation_session and cultivation_session.auto_yuanying_enabled else '关闭') }}</strong></div>
             <div class="kv-row"><span>轮询间隔</span><strong>{{ cultivation_session.interval_seconds if cultivation_session else '-' }} 秒</strong></div>
             <div class="kv-row"><span>下次调度</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(cultivation_session.next_check_time) if cultivation_session and cultivation_session.next_check_time else '待触发' }}</strong></div>
             <div class="kv-row"><span>近 24h 记录</span><strong>{{ cultivation_total }} 条</strong></div>
@@ -109,6 +111,48 @@
                 </div>
             </form>
         </div>
+
+        {% if bound_chat_id %}
+        <div class="detail-grid two-column-grid top-gap">
+            <form class="detail-card" method="post" action="/runtime/cultivation/rift-toggle" style="padding: 16px;">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if cultivation_session and cultivation_session.auto_rift_enabled else '1' }}">
+                <div class="section-header compact">
+                    <p>自动任务</p>
+                    <h2>自动探寻裂缝</h2>
+                </div>
+                <div class="stack-list compact-stack top-gap">
+                    <div class="kv-row"><span>CD</span><strong>12 小时</strong></div>
+                    <div class="kv-row"><span>状态</span><strong>{{ cultivation_session.rift_state if cultivation_session else '-' }}</strong></div>
+                    <div class="kv-row"><span>下次执行</span><strong style="font-family: var(--font-mono);" id="rift-countdown">{{ format_timestamp(cultivation_session.rift_next_check_time) if cultivation_session and cultivation_session.rift_next_check_time else '立即执行' }}</strong></div>
+                    <div class="kv-row"><span>重试次数</span><strong>{{ (cultivation_session.rift_retry_count or 0) if cultivation_session else 0 }} / 1</strong></div>
+                </div>
+                <p class="muted top-gap">CD 12 小时，发送指令 .探寻裂缝。通过天机阁验证时间刷新，失败自动重试一次(间隔10分钟)。</p>
+                <div class="action-row top-gap">
+                    <button type="submit">{{ '关闭自动探寻裂缝' if cultivation_session and cultivation_session.auto_rift_enabled else '开启自动探寻裂缝' }}</button>
+                </div>
+            </form>
+
+            <form class="detail-card" method="post" action="/runtime/cultivation/yuanying-toggle" style="padding: 16px;">
+                <input type="hidden" name="chat_id" value="{{ bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if cultivation_session and cultivation_session.auto_yuanying_enabled else '1' }}">
+                <div class="section-header compact">
+                    <p>自动任务</p>
+                    <h2>自动元婴出窍</h2>
+                </div>
+                <div class="stack-list compact-stack top-gap">
+                    <div class="kv-row"><span>CD</span><strong>8 小时</strong></div>
+                    <div class="kv-row"><span>状态</span><strong>{{ cultivation_session.yuanying_state if cultivation_session else '-' }}</strong></div>
+                    <div class="kv-row"><span>下次执行</span><strong style="font-family: var(--font-mono);" id="yuanying-countdown">{{ format_timestamp(cultivation_session.yuanying_next_check_time) if cultivation_session and cultivation_session.yuanying_next_check_time else '立即执行' }}</strong></div>
+                </div>
+                <p class="muted top-gap">CD 8 小时，发送指令 .元婴出窍。成功后等 8 小时再发下一次。</p>
+                <div class="action-row top-gap">
+                    <button type="submit">{{ '关闭自动元婴出窍' if cultivation_session and cultivation_session.auto_yuanying_enabled else '开启自动元婴出窍' }}</button>
+                </div>
+            </form>
+        </div>
+        {% endif %}
+
         {% else %}
         <p class="muted">当前未绑定凡人修仙群聊，无法控制自动闭关。</p>
         {% endif %}
@@ -172,3 +216,40 @@
         {% endif %}
     </div>
 </section>
+
+<script>
+(function() {
+    function updateCountdown(elId, ts) {
+        var el = document.getElementById(elId);
+        if (!el || !ts) return;
+        var now = Date.now() / 1000;
+        var remain = ts - now;
+        if (remain <= 0) {
+            el.textContent = '已到期';
+            el.style.color = 'var(--accent-gold)';
+            return;
+        }
+        var h = Math.floor(remain / 3600);
+        var m = Math.floor((remain % 3600) / 60);
+        var s = Math.floor(remain % 60);
+        var parts = [];
+        if (h > 0) parts.push(h + '时');
+        if (m > 0 || h > 0) parts.push(m + '分');
+        parts.push(s + '秒');
+        el.textContent = '剩余 ' + parts.join('');
+    }
+
+    {% if cultivation_session %}
+    var riftTs = {{ cultivation_session.rift_next_check_time or 0 }};
+    var yuanyingTs = {{ cultivation_session.yuanying_next_check_time or 0 }};
+    if (riftTs) {
+        updateCountdown('rift-countdown', riftTs);
+        setInterval(function() { updateCountdown('rift-countdown', riftTs); }, 1000);
+    }
+    if (yuanyingTs) {
+        updateCountdown('yuanying-countdown', yuanyingTs);
+        setInterval(function() { updateCountdown('yuanying-countdown', yuanyingTs); }, 1000);
+    }
+    {% endif %}
+})();
+</script>

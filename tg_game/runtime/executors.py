@@ -197,6 +197,8 @@ class FanrenExecutor(BaseExecutor):
                     fanren_game.FANREN_NORMAL_COMMAND,
                     fanren_game.FANREN_DEEP_COMMAND,
                     ".强行出关",
+                    fanren_game.RIFT_EXPLORE_COMMAND,
+                    fanren_game.YUANYING_OUTING_COMMAND,
                 }:
                     return False
                 stored_reply_message = self._get_stored_reply_message(context, storage)
@@ -260,6 +262,8 @@ class FanrenExecutor(BaseExecutor):
             "retreat_complete",
             "deep_retreat_summary",
             "retreat_setback",
+            "rift_explore_success",
+            "yuanying_outing_success",
         }:
             return
         session_setting = context.get_setting("cultivation") or context.get_setting(
@@ -441,9 +445,84 @@ class FanrenExecutor(BaseExecutor):
             )
             await context.reply("凡人修仙失败计数已重置。")
             return True
+        if action == "rift":
+            rift_action = payload.lower() if payload else "status"
+            rift_session = fanren_game.get_session(
+                db,
+                chat_id,
+                profile_id=context.profile.id if context.profile else None,
+            )
+            if rift_action == "on":
+                fanren_game.set_auto_rift(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply("自动探寻裂缝已开启，CD 12 小时。")
+                return True
+            if rift_action == "off":
+                fanren_game.set_auto_rift(
+                    db,
+                    chat_id,
+                    False,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply("自动探寻裂缝已关闭。")
+                return True
+            if rift_action == "status":
+                await context.reply(
+                    "\n".join(
+                        [
+                            "自动探寻裂缝状态",
+                            f"开关: {'开启' if rift_session.get('auto_rift_enabled') else '关闭'}",
+                            f"状态: {rift_session.get('rift_state') or '-'}",
+                            f"下次: {fanren_game.format_timestamp(rift_session.get('rift_next_check_time') or 0)}",
+                            f"重试: {rift_session.get('rift_retry_count') or 0}/{fanren_game.RIFT_RETRY_MAX}",
+                        ]
+                    )
+                )
+                return True
+        if action == "yuanying":
+            yy_action = payload.lower() if payload else "status"
+            yy_session = fanren_game.get_session(
+                db,
+                chat_id,
+                profile_id=context.profile.id if context.profile else None,
+            )
+            if yy_action == "on":
+                fanren_game.set_auto_yuanying(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply("自动元婴出窍已开启，CD 8 小时。")
+                return True
+            if yy_action == "off":
+                fanren_game.set_auto_yuanying(
+                    db,
+                    chat_id,
+                    False,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply("自动元婴出窍已关闭。")
+                return True
+            if yy_action == "status":
+                await context.reply(
+                    "\n".join(
+                        [
+                            "自动元婴出窍状态",
+                            f"开关: {'开启' if yy_session.get('auto_yuanying_enabled') else '关闭'}",
+                            f"状态: {yy_session.get('yuanying_state') or '-'}",
+                            f"下次: {fanren_game.format_timestamp(yy_session.get('yuanying_next_check_time') or 0)}",
+                        ]
+                    )
+                )
+                return True
 
         await context.reply(
-            "用法: .fanren status|on [normal|deep]|off|mode normal|deep|dry-run on|off|interval 5m|check 指令|run|reset"
+            "用法: .fanren status|on [normal|deep]|off|mode normal|deep|dry-run on|off|interval 5m|check 指令|run|reset|rift on|off|status|yuanying on|off|status"
         )
         return True
 
