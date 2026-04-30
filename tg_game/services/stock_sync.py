@@ -4,7 +4,7 @@ from typing import Optional
 
 from tg_game.storage import Storage
 
-_STOCK_RELATED_KEYWORDS = {
+_STOCK_MARKET_KEYWORDS = {
     "IDX_",
     "股市",
     "大盘",
@@ -14,20 +14,9 @@ _STOCK_RELATED_KEYWORDS = {
     ".股市",
     ".大盘",
     ".个股",
-    ".我的持仓",
-    ".股市任务",
-    ".买入",
-    ".卖出",
-    ".融资买入",
-    ".融资平仓",
 }
 
-_STOCK_REPLY_INDICATORS = {
-    "我的股票账户",
-    "我的持仓",
-    "浮盈",
-    "市值",
-    "仓位",
+_STOCK_MARKET_INDICATORS = {
     "股票",
     "天道综指",
     "市场总值",
@@ -39,10 +28,19 @@ _STOCK_REPLY_INDICATORS = {
 
 
 def is_stock_related(text: str) -> bool:
-    """判断 bot 消息文本是否与股市相关（供 router 无条件捕获）"""
+    """判断 bot 消息是否与股市行情相关（供 router 无条件捕获）
+
+    仅匹配大盘/板块/个股行情，不包含个人持仓/交易/任务指令。
+    个人指令（.我的持仓 / .买入 / .卖出 等）按原有 profile 隔离逻辑处理。
+    """
     t = (text or "").strip()
     if not t:
         return False
+    if any(kw in t for kw in _STOCK_MARKET_KEYWORDS):
+        return True
+    if any(ind in t for ind in _STOCK_MARKET_INDICATORS):
+        return True
+    return False
     if any(kw in t for kw in _STOCK_RELATED_KEYWORDS):
         return True
     if any(ind in t for ind in _STOCK_REPLY_INDICATORS):
