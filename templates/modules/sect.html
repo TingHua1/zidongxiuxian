@@ -13,17 +13,9 @@
             <div class="kv-row"><span>传功进度</span><strong>{{ sect_daily_state.teach_progress_text }}</strong></div>
         </div>
         {% if sect_command_chat_ready %}
-        <form class="action-row top-gap" method="post" action="/runtime/commands/send-raw" style="flex-wrap: wrap; gap: 6px; align-items: flex-end;" onsubmit="this.text.value = '.宗门兑换 ' + this._item.value + '*' + (parseInt(this._qty.value)||1);">
-            <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id or '' }}">
-            <input type="hidden" name="thread_id" value="{{ sect_bound_thread_id or '' }}">
-            <input type="hidden" name="chat_type" value="{{ sect_bound_chat_type or 'group' }}">
-            <input type="hidden" name="bot_username" value="{{ sect_bound_bot_username or 'fanrenxiuxian_bot' }}">
-            <input type="hidden" name="redirect_to" value="/modules/sect">
-            <input type="hidden" name="text" value="">
-            <input placeholder="物品名" name="_item" style="width: 100px; font-size: 0.85em;">
-            <input type="number" name="_qty" value="3" min="1" style="width: 50px; font-size: 0.85em;">
-            <button type="submit" style="background: transparent; border: 1px solid var(--accent-gold); color: var(--accent-gold); font-size: 0.85em;">宗门兑换</button>
-        </form>
+        <div class="top-gap" style="display: flex; gap: 8px; flex-wrap: wrap;">
+            <button type="button" class="inline-button small-btn" onclick="openSectExchangeModal()" {% if not (sect_treasury_items or []) %}disabled{% endif %}>宗门兑换</button>
+        </div>
         {% endif %}
         {% if sect_recent_reply_text %}
         <div class="top-gap">
