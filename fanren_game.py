@@ -51,13 +51,20 @@ YUANYING_SUCCESS_KEYWORDS = [
     "元婴出窍",
     "云游",
 ]
-# 元婴状态回包中表示已归来的关键词
+# 元婴状态回包中表示已归来/结算完成的关键词
 YUANYING_RETURNED_KEYWORDS = [
-    "元婴已归来",
-    "已结算",
-    "元婴归来",
+    "归窍总结",
+    "元神归窍",
     "已归来",
-    "收获",
+]
+# 元婴状态回包中表示元婴在家可直接出窍的关键词
+YUANYING_READY_KEYWORDS = [
+    "窍中温养",
+]
+# 元婴状态回包中表示元婴仍在外的关键词
+YUANYING_STILL_OUT_KEYWORDS = [
+    "无法分身",
+    "正在执行",
 ]
 FANREN_AUTO_NANLONG_CHOICES = {
     "交换 法宝": ".交换 法宝",
@@ -727,27 +734,39 @@ def parse_yuanying_reply(text):
 
 
 def parse_yuanying_status_reply(text):
-    """解析 .元婴状态 回包，返回 (is_settled, countdown_seconds)
+    """解析 .元婴状态 回包，返回 (status, countdown_seconds)
 
-    is_settled=True: 元婴已归来，结算完成
-    is_settled=False: 元婴仍在云游，返回剩余时间
+    status 取值:
+      "ready"   - 元婴在家(窍中温养)，可直接出窍
+      "settled" - 元婴已归来结算完成
+      "out"     - 元婴正在外云游，倒计时仍在
+      "unknown" - 无法识别
     """
     text = (text or "").strip()
     if not text:
-        return False, None
+        return "unknown", None
 
-    # 检查是否已归来/已结算
+    # 已归来结算完成
     for kw in YUANYING_RETURNED_KEYWORDS:
         if kw in text:
-            return True, 0
+            return "settled", 0
 
-    # 未归来，解析剩余云游时间
+    # 元婴在家，可直接出窍
+    for kw in YUANYING_READY_KEYWORDS:
+        if kw in text:
+            return "ready", 0
+
+    # 元婴仍在外
+    for kw in YUANYING_STILL_OUT_KEYWORDS:
+        if kw in text:
+            return "out", None
+
+    # 兜底：尝试解析倒计时
     cooldown = parse_cooldown_seconds(text)
     if cooldown:
-        return False, cooldown
+        return "out", cooldown
 
-    # 兜底：默认 8 小时
-    return False, YUANYING_OUTING_COOLDOWN_SECONDS
+    return "unknown", None
 
 
 async def _check_asc_rift_time_changed(storage, profile_id, chat_id, db):
@@ -1429,7 +1448,7 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
 
         # ---- .元婴状态 回包处理 ----
         if last_action == YUANYING_STATUS_COMMAND:
-            is_settled, yy_cd = parse_yuanying_status_reply(raw_text)
+            yy_status, yy_cd = parse_yuanying_status_reply(raw_text)
             update_session(
                 db,
                 event.chat_id,
@@ -1437,38 +1456,61 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 last_bot_text=raw_text[:1000],
                 last_bot_msg_id=event.id,
             )
-            if is_settled:
-                # 元婴已归来，结算完成 → 立即出窍
+            if yy_status in ("ready", "settled"):
+                # 元婴在家(窍中温养)或已归来结算 → 立即出窍
+                label = "可出窍" if yy_status == "ready" else "已归来结算"
                 update_session(
                     db,
                     event.chat_id,
                     profile_id=session.get("profile_id"),
                     yuanying_state="结算完成",
                     yuanying_next_check_time=0,
-                    last_summary="元婴已归来，结算完成，即将发送元婴出窍",
+                    last_summary=f"元婴{label}，即将发送元婴出窍",
                     last_event="yuanying_settled",
                 )
                 logger.info(
-                    "Yuanying settlement done in chat %s, will send outing",
+                    "Yuanying %s in chat %s, will send outing",
+                    yy_status,
                     event.chat_id,
                 )
-                return FanrenParseResult(
-                    "yuanying_settled", "元婴已归来，结算完成，即将出窍"
+                return FanrenParseResult("yuanying_settled", f"元婴{label}，即将出窍")
+            elif yy_status == "out":
+                # 元婴仍在外，沿用已有倒计时
+                if yy_cd:
+                    update_session(
+                        db,
+                        event.chat_id,
+                        profile_id=session.get("profile_id"),
+                        yuanying_next_check_time=now_yy + yy_cd,
+                    )
+                cd_remain = max(
+                    (session.get("yuanying_next_check_time") or 0) - now_yy, 0
                 )
-            else:
-                # 元婴仍在云游，设置倒计时
-                cd = yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS
+                cd_text = format_duration(cd_remain)
                 update_session(
                     db,
                     event.chat_id,
                     profile_id=session.get("profile_id"),
-                    yuanying_next_check_time=now_yy + cd,
-                    yuanying_state=f"等待归来: {format_duration(cd)}",
-                    last_summary=f"元婴云游中，预计 {format_duration(cd)} 后归来",
+                    yuanying_state=f"等待归来: {cd_text}",
+                    last_summary=f"元婴仍在云游中，预计 {cd_text} 后归来",
                     last_event="yuanying_waiting",
                 )
                 return FanrenParseResult(
-                    "yuanying_waiting", f"元婴云游中，{format_duration(cd)}后归来", cd
+                    "yuanying_waiting", f"元婴云游中，{cd_text}后归来"
+                )
+            else:
+                # 未知状态，设置兜底倒计时
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    yuanying_next_check_time=now_yy + YUANYING_OUTING_COOLDOWN_SECONDS,
+                    yuanying_state=f"等待归来: {format_duration(YUANYING_OUTING_COOLDOWN_SECONDS)}",
+                    last_summary=f"元婴状态未知，默认 {format_duration(YUANYING_OUTING_COOLDOWN_SECONDS)} 后重试",
+                    last_event="yuanying_waiting",
+                )
+                return FanrenParseResult(
+                    "yuanying_waiting", "元婴状态未知，使用默认倒计时"
                 )
 
         # ---- .元婴出窍 回包处理 ----
