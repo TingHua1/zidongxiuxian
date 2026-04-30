@@ -191,6 +191,9 @@
                 <div class="kv-row"><span>区间变化</span><strong id="stock-history-delta">-</strong></div>
             </div>
             <div class="detail-card stock-modal-summary-row">
+                <div class="kv-row"><span>涨跌幅度</span><strong id="stock-history-percent">-</strong></div>
+            </div>
+            <div class="detail-card stock-modal-summary-row">
                 <div class="kv-row"><span>样本数</span><strong id="stock-history-count">0</strong></div>
                 <div class="kv-row"><span>最新时间</span><strong id="stock-history-time">-</strong></div>
             </div>
@@ -273,6 +276,7 @@ async function loadStockHistory() {
     const status = document.getElementById('stock-history-status');
     const latestNode = document.getElementById('stock-history-latest');
     const deltaNode = document.getElementById('stock-history-delta');
+    const percentNode = document.getElementById('stock-history-percent');
     const countNode = document.getElementById('stock-history-count');
     const timeNode = document.getElementById('stock-history-time');
     const lineNode = document.getElementById('stock-history-line');
@@ -296,6 +300,11 @@ async function loadStockHistory() {
             const delta = Number(payload.delta_price || 0);
             deltaNode.textContent = `${delta >= 0 ? '+' : ''}${delta.toFixed(2)}`;
             deltaNode.className = `stock-change ${delta > 0 ? 'up' : (delta < 0 ? 'down' : '')}`;
+        }
+        if (percentNode) {
+            const pct = Number(payload.delta_percent || 0);
+            percentNode.textContent = `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+            percentNode.className = `stock-change ${pct > 0 ? 'up' : (pct < 0 ? 'down' : '')}`;
         }
         if (countNode) {
             countNode.textContent = String(payload.count || 0);
