@@ -323,14 +323,22 @@ async function loadStockHistory() {
         if (chartShell && tooltip && rows.length > 1) {
             chartShell.onmousemove = function(e) {
                 const rect = chartShell.getBoundingClientRect();
-                const xPct = (e.clientX - rect.left) / rect.width;
+                const xPct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
                 const idx = Math.min(Math.floor(xPct * rows.length), rows.length - 1);
                 const row = rows[idx];
                 const pct = Number(row.change_percent || 0);
-                tooltip.style.display = 'block';
-                tooltip.style.left = (e.clientX - rect.left + 10) + 'px';
-                tooltip.style.top = (e.clientY - rect.top - 40) + 'px';
                 tooltip.innerHTML = `${row.observed_at_display || '-'}<br>${Number(row.current_price || 0).toFixed(2)} <span style="color:${pct >= 0 ? 'var(--accent-up)' : 'var(--accent-down)'}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span>`;
+                tooltip.style.display = 'block';
+                // 先让浏览器计算 tooltip 实际宽度
+                const tipRect = tooltip.getBoundingClientRect();
+                const tipW = tipRect.width || 120;
+                let left = e.clientX - rect.left + 10;
+                // 右侧溢出时翻转到鼠标左边
+                if (left + tipW > rect.width) {
+                    left = e.clientX - rect.left - tipW - 10;
+                }
+                tooltip.style.left = Math.max(2, left) + 'px';
+                tooltip.style.top = (e.clientY - rect.top - 40) + 'px';
             };
             chartShell.onmouseleave = function() {
                 tooltip.style.display = 'none';

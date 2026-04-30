@@ -815,10 +815,21 @@ def _extract_dungeon_cleanup_targets(dungeon_messages: list[dict]) -> list[dict]
 
 
 _STOCK_BATCH_RE = re.compile(
-    r"IDX_(\w+)\s+(.+?)\s*([🟢🔴⚡🌙]+)\s*\n"
+    r"IDX_(\w+)\s+(.+?)\s*([🟢🔴⚡🌙\ufe0f]+)\s*\n"
     r"([\d.]+)\s*\|\s*([+\-]?[\d.]+)%\s*\(额:(\d+)\)\n"
     r"(.+?)/(.+?)/(.+?)/(.*)"
 )
+
+
+def _clean_stock_name(raw: str) -> str:
+    """去掉股票名称末尾的方向 emoji 和多余的空白"""
+    name = raw.strip()
+    # 去掉末尾的 emoji / variation-selector（🟢🔴⚡🌙 等）
+    while name and (
+        name[-1] in "🟢🔴⚡🌙" or ord(name[-1]) > 0x2000  # 大部分 emoji 和多字节符号
+    ):
+        name = name[:-1].strip()
+    return name
 
 
 def _parse_stock_market_batch(text: str, observed_at: float) -> list[dict]:
@@ -827,7 +838,7 @@ def _parse_stock_market_batch(text: str, observed_at: float) -> list[dict]:
     for m in _STOCK_BATCH_RE.finditer(text):
         try:
             code = m.group(1).upper()
-            name = m.group(2).strip()
+            name = _clean_stock_name(m.group(2))
             price = float(m.group(4))
             chg_pct = float(m.group(5))
             volume = int(m.group(6))
