@@ -2376,6 +2376,8 @@ class Storage:
                 OR text LIKE '%股市%'
                 OR text LIKE '%大盘%'
                 OR text LIKE '%个股%'
+                OR text LIKE '%天道股市%'
+                OR text LIKE '%虚实交汇%'
               )
         """
         params = []
