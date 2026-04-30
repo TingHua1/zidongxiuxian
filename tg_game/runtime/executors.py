@@ -950,16 +950,39 @@ class GeneralGameExecutor(BaseExecutor):
                     ".我的持仓",
                     ".股市任务",
                 }
+                and context.text
             ):
-                storage.upsert_stock_player_reply(
-                    context.profile.id,
-                    context.chat_id,
-                    reply_text,
-                    context.text,
-                    thread_id=context.thread_id,
-                    source_message_id=int(context.message_id or 0),
-                    reply_to_msg_id=int(context.reply_to_msg_id or 0),
+                # 校验回包内容确实是股票相关，过滤误匹配
+                stock_keywords = (
+                    "持仓",
+                    "股票",
+                    "浮盈",
+                    "市值",
+                    "仓位",
+                    "股息",
+                    "融资",
                 )
+                is_stock_reply = any(
+                    kw in (context.text or "") for kw in stock_keywords
+                )
+                if reply_text == ".我的持仓":
+                    is_stock_reply = is_stock_reply or "我的股票账户" in (
+                        context.text or ""
+                    )
+                elif reply_text == ".股市任务":
+                    is_stock_reply = is_stock_reply or "股市任务" in (
+                        context.text or ""
+                    )
+                if is_stock_reply:
+                    storage.upsert_stock_player_reply(
+                        context.profile.id,
+                        context.chat_id,
+                        reply_text,
+                        context.text,
+                        thread_id=context.thread_id,
+                        source_message_id=int(context.message_id or 0),
+                        reply_to_msg_id=int(context.reply_to_msg_id or 0),
+                    )
             for module_key, parser in self._parsers:
                 parsed = parser(context.text)
                 if parsed is not None:

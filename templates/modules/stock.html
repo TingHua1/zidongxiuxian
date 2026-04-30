@@ -198,13 +198,14 @@
                 <div class="kv-row"><span>最新时间</span><strong id="stock-history-time">-</strong></div>
             </div>
         </div>
-        <div class="stock-modal-chart-shell top-gap">
+        <div class="stock-modal-chart-shell top-gap" style="position: relative; height: 100px;">
             <svg class="stock-sparkline" viewBox="0 0 220 72" preserveAspectRatio="none">
-                <polyline id="stock-history-line" fill="none" stroke="currentColor" stroke-width="2"></polyline>
+                <polyline id="stock-history-line" fill="none" stroke="currentColor" stroke-width="1"></polyline>
             </svg>
+            <div id="stock-chart-tooltip" style="display:none; position:absolute; pointer-events:none; background:var(--bg-card); border:1px solid var(--border-color); border-radius:4px; padding:4px 8px; font-size:12px; white-space:nowrap; z-index:10;"></div>
         </div>
         <p id="stock-history-status" class="muted stock-modal-status top-gap">点击股票卡片加载历史。</p>
-        <div id="stock-history-list" class="stock-history-list stock-modal-list top-gap"></div>
+        <div id="stock-history-list" class="stock-history-list stock-modal-list top-gap" style="max-height: 180px; overflow-y: auto;"></div>
         <div class="action-row top-gap">
             <button type="button" class="inline-button" onclick="document.getElementById('stock-history-modal').close()">关闭</button>
         </div>
@@ -314,6 +315,26 @@ async function loadStockHistory() {
         }
         if (lineNode) {
             lineNode.setAttribute('points', payload.sparkline_points || '');
+        }
+        // 折线图 hover tooltip
+        const chartShell = document.querySelector('.stock-modal-chart-shell');
+        const tooltip = document.getElementById('stock-chart-tooltip');
+        const rows = Array.isArray(payload.rows) ? payload.rows : [];
+        if (chartShell && tooltip && rows.length > 1) {
+            chartShell.onmousemove = function(e) {
+                const rect = chartShell.getBoundingClientRect();
+                const xPct = (e.clientX - rect.left) / rect.width;
+                const idx = Math.min(Math.floor(xPct * rows.length), rows.length - 1);
+                const row = rows[idx];
+                const pct = Number(row.change_percent || 0);
+                tooltip.style.display = 'block';
+                tooltip.style.left = (e.clientX - rect.left + 10) + 'px';
+                tooltip.style.top = (e.clientY - rect.top - 40) + 'px';
+                tooltip.innerHTML = `${row.observed_at_display || '-'}<br>${Number(row.current_price || 0).toFixed(2)} <span style="color:${pct >= 0 ? 'var(--accent-up)' : 'var(--accent-down)'}">${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%</span>`;
+            };
+            chartShell.onmouseleave = function() {
+                tooltip.style.display = 'none';
+            };
         }
         renderStockHistoryRows(Array.isArray(payload.rows) ? payload.rows : []);
         if (status) {

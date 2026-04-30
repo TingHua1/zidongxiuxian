@@ -814,6 +814,46 @@ def _extract_dungeon_cleanup_targets(dungeon_messages: list[dict]) -> list[dict]
     ]
 
 
+_STOCK_BATCH_RE = re.compile(
+    r"IDX_(\w+)\s+(.+?)\s*([🟢🔴⚡🌙]+)\s*\n"
+    r"([\d.]+)\s*\|\s*([+\-]?[\d.]+)%\s*\(额:(\d+)\)\n"
+    r"(.+?)/(.+?)/(.+?)/(.*)"
+)
+
+
+def _parse_stock_market_batch(text: str, observed_at: float) -> list[dict]:
+    """从 天道股市·实时行情 消息文本中逐股解析"""
+    results = []
+    for m in _STOCK_BATCH_RE.finditer(text):
+        try:
+            code = m.group(1).upper()
+            name = m.group(2).strip()
+            price = float(m.group(4))
+            chg_pct = float(m.group(5))
+            volume = int(m.group(6))
+            sector = m.group(7).strip()
+            trend = m.group(8).strip()
+            heat = m.group(9).strip()
+            liquidity = m.group(10).strip().rstrip(")").rstrip("额")
+            results.append(
+                {
+                    "stock_code": f"IDX_{code}",
+                    "stock_name": name,
+                    "current_price": price,
+                    "change_percent": chg_pct,
+                    "volume": volume,
+                    "sector": sector,
+                    "trend": trend,
+                    "heat": heat,
+                    "liquidity": liquidity,
+                    "observed_at": observed_at,
+                }
+            )
+        except (ValueError, IndexError):
+            continue
+    return results
+
+
 def _build_stock_trend_points(
     history_rows: list[dict], width: int = 220, height: int = 72
 ) -> str:
@@ -845,9 +885,10 @@ def _decorate_stock_history(
         else list(history_rows)
     )
     latest = trimmed_rows[-1] if trimmed_rows else None
-    earliest = trimmed_rows[0] if trimmed_rows else None
+    # delta 始终以时间区间起点（history_rows[0]）为基准
+    range_start = history_rows[0] if history_rows else None
     latest_price = float((latest or {}).get("current_price") or 0)
-    earliest_price = float((earliest or {}).get("current_price") or 0)
+    earliest_price = float((range_start or {}).get("current_price") or 0)
     delta_price = latest_price - earliest_price
     delta_percent = (
         round((delta_price / earliest_price * 100), 2) if earliest_price > 0 else 0
@@ -908,22 +949,62 @@ def _build_stock_view(
         if fallback_rows:
             rows = []
             for msg in fallback_rows:
-                price = float(msg.get("current_price") or 0)
-                prev = float(msg.get("previous_price") or price)
-                rows.append(
-                    {
-                        "stock_code": str(msg.get("stock_code") or ""),
-                        "stock_name": str(msg.get("stock_name") or ""),
-                        "current_price": price,
-                        "previous_price": prev,
-                        "change_percent": round((price - prev) / prev * 100, 2)
-                        if prev > 0
-                        else 0,
-                        "updated_at": float(
-                            msg.get("observed_at") or msg.get("created_at") or 0
-                        ),
-                    }
-                )
+                raw_text = str(msg.get("text") or "")
+                observed_at = float(msg.get("created_at") or 0)
+                msg_id = int(msg.get("message_id") or 0)
+                chat_id = int(msg.get("chat_id") or 0)
+                profile_id = int(msg.get("profile_id") or 0)
+                # 尝试解析天道股市批量消息
+                batch_stocks = _parse_stock_market_batch(raw_text, observed_at)
+                if batch_stocks:
+                    for stock in batch_stocks:
+                        try:
+                            storage.upsert_stock_market_history(
+                                profile_id or None,
+                                chat_id,
+                                msg_id,
+                                stock["stock_code"],
+                                observed_at=stock["observed_at"],
+                                **{
+                                    k: v
+                                    for k, v in stock.items()
+                                    if k not in ("stock_code", "observed_at")
+                                },
+                            )
+                        except Exception:
+                            pass
+                        rows.append(
+                            {
+                                "stock_code": stock["stock_code"],
+                                "stock_name": stock["stock_name"],
+                                "current_price": stock["current_price"],
+                                "previous_price": stock["current_price"],
+                                "change_percent": stock["change_percent"],
+                                "sector": stock["sector"],
+                                "trend": stock["trend"],
+                                "heat": stock["heat"],
+                                "liquidity": stock["liquidity"],
+                                "volume": stock["volume"],
+                                "updated_at": observed_at,
+                            }
+                        )
+                else:
+                    price = float(msg.get("current_price") or 0)
+                    prev = float(msg.get("previous_price") or price)
+                    rows.append(
+                        {
+                            "stock_code": str(msg.get("stock_code") or ""),
+                            "stock_name": str(msg.get("stock_name") or ""),
+                            "current_price": price,
+                            "previous_price": prev,
+                            "change_percent": round((price - prev) / prev * 100, 2)
+                            if prev > 0
+                            else 0,
+                            "updated_at": float(
+                                msg.get("observed_at") or msg.get("created_at") or 0
+                            ),
+                        }
+                    )
     for row in rows:
         latest_updated_at = float(row.get("updated_at") or 0)
         row["data_time"] = latest_updated_at

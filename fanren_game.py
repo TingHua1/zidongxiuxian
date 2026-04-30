@@ -1389,7 +1389,8 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                             db,
                             event.chat_id,
                             profile_id=session.get("profile_id"),
-                            rift_next_check_time=now + RIFT_RETRY_INTERVAL_SECONDS,
+                            rift_next_check_time=now
+                            + (rift_cd or RIFT_RETRY_INTERVAL_SECONDS),
                             rift_retry_count=retry_count,
                             rift_state=f"将第{retry_count}次重试 - {check_msg}",
                             last_summary=f"探寻裂缝时间未刷新，将在 {format_duration(RIFT_RETRY_INTERVAL_SECONDS)} 后重试(第{retry_count}次)",
