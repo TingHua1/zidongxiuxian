@@ -4,6 +4,51 @@ from typing import Optional
 
 from tg_game.storage import Storage
 
+_STOCK_RELATED_KEYWORDS = {
+    "IDX_",
+    "股市",
+    "大盘",
+    "个股",
+    "天道股市",
+    "虚实交汇",
+    ".股市",
+    ".大盘",
+    ".个股",
+    ".我的持仓",
+    ".股市任务",
+    ".买入",
+    ".卖出",
+    ".融资买入",
+    ".融资平仓",
+}
+
+_STOCK_REPLY_INDICATORS = {
+    "我的股票账户",
+    "我的持仓",
+    "浮盈",
+    "市值",
+    "仓位",
+    "股票",
+    "天道综指",
+    "市场总值",
+    "今日成交",
+    "领涨焦点",
+    "成交焦点",
+    "风向",
+}
+
+
+def is_stock_related(text: str) -> bool:
+    """判断 bot 消息文本是否与股市相关（供 router 无条件捕获）"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if any(kw in t for kw in _STOCK_RELATED_KEYWORDS):
+        return True
+    if any(ind in t for ind in _STOCK_REPLY_INDICATORS):
+        return True
+    return False
+
 
 def _parse_float_text(value) -> float:
     text = str(value or "").replace(",", "").replace("灵石", "").replace("股", "")
