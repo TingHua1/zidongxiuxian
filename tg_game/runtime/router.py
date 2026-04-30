@@ -13,6 +13,7 @@ from tg_game.services import module_registry
 from tg_game.services.external_sync import is_authorized_profile
 from tg_game.services.stock_sync import sync_stock_market_message
 from tg_game.storage import Storage
+from tg_game.dungeon_defs import is_dungeon_related
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +59,9 @@ class Router:
                     should_store_message = await context.bot_message_targets_profile()
                 else:
                     should_store_message = context.is_profile_owner()
+            # 副本消息无条件存储（不限用户），以保证副本信息流完整
+            if not should_store_message and context.text:
+                should_store_message = is_dungeon_related(context.text)
             if should_store_message:
                 existing_message = self.storage.get_bound_message(
                     context.chat_id or 0, context.message_id
