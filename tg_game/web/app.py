@@ -539,9 +539,9 @@ def _build_divination_batch_view(raw_batch: Optional[dict]) -> dict:
 def _list_dungeon_feed_source_messages(
     storage: Storage, chat_id: int, dungeon_key: str, profile_id: Optional[int] = None
 ) -> list[dict]:
-    # 副本信息流需要看到群内所有玩家的消息，不按 profile_id 过滤
+    # 每个用户只看自己 worker 捕获的副本消息（profile 隔离）
     messages = storage.list_bound_messages(
-        profile_id=None,
+        profile_id=profile_id,
         chat_id=chat_id,
         limit=300,
     )
