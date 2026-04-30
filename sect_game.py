@@ -1170,6 +1170,8 @@ def sync_lingxiao_trial_state(storage, db, profile_id, chat_id, payload=None):
         )
         return get_session(db, chat_id, profile_id=profile_id), None
     session = get_session(db, chat_id, profile_id=profile_id)
+    if not session:
+        return None, None
     external_account = storage.get_external_account(profile_id, ASC_PROVIDER) or {}
     external_status = str(external_account.get("status") or "").strip().lower()
     if payload is not None and external_status and external_status != "connected":
