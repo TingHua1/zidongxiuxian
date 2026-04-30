@@ -7,16 +7,11 @@
         <div class="stack-list compact-stack">
             <div class="kv-row"><span>宗门</span><strong style="color: var(--accent-gold);">{{ active_profile.sect_name or '未入宗门' if active_profile else '未入宗门' }}</strong></div>
             <div class="kv-row"><span>尊位</span><strong>{{ active_profile.sect_position or '外门' if active_profile else '外门' }}</strong></div>
-            <div class="kv-row"><span>贡献</span><strong>{{ active_profile.sect_contribution_text or '0' if active_profile else '0' }}</strong></div>
+            <div class="kv-row"><span>贡献</span><strong class="contribution-action">{{ active_profile.sect_contribution_text or '0' if active_profile else '0' }}<button type="button" class="inline-button small-btn" onclick="openSectExchangeModal()" {% if not (sect_treasury_items or []) %}disabled{% endif %}>宗门兑换</button></strong></div>
             <div class="kv-row"><span>签到状态</span><strong>{{ '今日已点卯' if sect_daily_state.checked_in_today else '今日未点卯' }}</strong></div>
             <div class="kv-row"><span>连签</span><strong>{{ sect_daily_state.consecutive_check_in_days }} 天</strong></div>
             <div class="kv-row"><span>传功进度</span><strong>{{ sect_daily_state.teach_progress_text }}</strong></div>
         </div>
-        {% if sect_command_chat_ready %}
-        <div class="top-gap" style="display: flex; gap: 8px; flex-wrap: wrap;">
-            <button type="button" class="inline-button small-btn" onclick="openSectExchangeModal()" {% if not (sect_treasury_items or []) %}disabled{% endif %}>宗门兑换</button>
-        </div>
-        {% endif %}
         {% if sect_recent_reply_text %}
         <div class="top-gap">
             <p class="muted">最近摘要</p>
