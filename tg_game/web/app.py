@@ -673,7 +673,41 @@ def _build_divination_batch_view(raw_batch: Optional[dict]) -> dict:
 def _list_dungeon_feed_source_messages(
     storage: Storage, chat_id: int, dungeon_key: str, profile_id: Optional[int] = None
 ) -> list[dict]:
-    return []
+    messages = storage.list_bound_messages(
+        profile_id=profile_id,
+        chat_id=chat_id,
+        limit=300,
+    )
+    dungeon_def = _get_dungeon_definition(dungeon_key)
+    keywords = set(dungeon_def.get("keywords") or [])
+
+    dungeon_command_msg_ids = set()
+    dungeon_messages = []
+    for msg in messages:
+        text = str(msg.get("text") or "").strip()
+        message_id = int(msg.get("message_id") or 0)
+        reply_to = int(msg.get("reply_to_msg_id") or 0)
+        is_bot = bool(msg.get("is_bot"))
+
+        if any(kw in text for kw in keywords):
+            dungeon_command_msg_ids.add(message_id)
+            dungeon_messages.append(msg)
+        elif is_bot and reply_to and reply_to in dungeon_command_msg_ids:
+            dungeon_messages.append(msg)
+        elif not is_bot and reply_to:
+            dungeon_command_msg_ids.add(reply_to)
+
+    for msg in messages:
+        reply_to = int(msg.get("reply_to_msg_id") or 0)
+        is_bot = bool(msg.get("is_bot"))
+        if is_bot and reply_to and reply_to in dungeon_command_msg_ids:
+            if msg not in dungeon_messages:
+                dungeon_messages.append(msg)
+        elif not is_bot and reply_to and reply_to in dungeon_command_msg_ids:
+            if msg not in dungeon_messages:
+                dungeon_messages.append(msg)
+
+    return dungeon_messages
 
 
 def _build_dungeon_messages(
@@ -791,6 +825,10 @@ def _decorate_stock_history(
     earliest = trimmed_rows[0] if trimmed_rows else None
     latest_price = float((latest or {}).get("current_price") or 0)
     earliest_price = float((earliest or {}).get("current_price") or 0)
+    delta_price = latest_price - earliest_price
+    delta_percent = (
+        round((delta_price / earliest_price * 100), 2) if earliest_price > 0 else 0
+    )
     return {
         "rows": [
             {
@@ -805,7 +843,8 @@ def _decorate_stock_history(
         "sparkline_points": _build_stock_trend_points(trimmed_rows),
         "latest_price": latest_price,
         "earliest_price": earliest_price,
-        "delta_price": latest_price - earliest_price,
+        "delta_price": delta_price,
+        "delta_percent": delta_percent,
     }
 
 
@@ -841,6 +880,27 @@ def _build_stock_view(
         if admin_profile:
             source_profile_id = admin_profile.id
     rows = storage.list_stock_market_info(source_profile_id)
+    if not rows:
+        fallback_rows = storage.list_stock_source_messages(limit=200)
+        if fallback_rows:
+            rows = []
+            for msg in fallback_rows:
+                price = float(msg.get("current_price") or 0)
+                prev = float(msg.get("previous_price") or price)
+                rows.append(
+                    {
+                        "stock_code": str(msg.get("stock_code") or ""),
+                        "stock_name": str(msg.get("stock_name") or ""),
+                        "current_price": price,
+                        "previous_price": prev,
+                        "change_percent": round((price - prev) / prev * 100, 2)
+                        if prev > 0
+                        else 0,
+                        "updated_at": float(
+                            msg.get("observed_at") or msg.get("created_at") or 0
+                        ),
+                    }
+                )
     for row in rows:
         latest_updated_at = float(row.get("updated_at") or 0)
         row["data_time"] = latest_updated_at
@@ -922,6 +982,7 @@ def _build_stock_history_response(
         "latest_price": decorated["latest_price"],
         "earliest_price": decorated["earliest_price"],
         "delta_price": decorated["delta_price"],
+        "delta_percent": decorated.get("delta_percent", 0),
         "latest_observed_at": float((latest_row or {}).get("observed_at") or 0),
         "latest_observed_at_display": fanren_game.format_timestamp(
             (latest_row or {}).get("observed_at") or 0
@@ -1003,7 +1064,57 @@ def _build_sect_recent_reply_text(
     active_profile,
     fallback_text: str = "",
 ) -> str:
+    if not sect_chat or not profile_id:
+        return str(fallback_text or "").strip()
+    messages = storage.list_bound_messages(
+        profile_id=profile_id,
+        chat_id=int(sect_chat.chat_id) if sect_chat else None,
+        limit=60,
+    )
+    sect_texts = []
+    for msg in messages:
+        if not msg.get("is_bot"):
+            continue
+        text = str(msg.get("text") or "").strip()
+        if not text:
+            continue
+        if not _is_sect_related_message(text, current_sect_feature):
+            continue
+        sect_texts.append(text[:400])
+    if sect_texts:
+        return "\n\n---\n\n".join(sect_texts[:8])
     return str(fallback_text or "").strip()
+
+
+def _is_sect_related_message(text: str, current_sect_feature: Optional[dict]) -> bool:
+    sect_keywords = {
+        "宗门",
+        "大殿",
+        "贡献",
+        "传功",
+        "签到",
+        "俸禄",
+        "宝库",
+        "兑换",
+        "小药园",
+        "播种",
+        "采药",
+        "除草",
+        "除虫",
+        "浇水",
+        "黄枫谷",
+        "凌霄宫",
+        "登天阶",
+        "问心台",
+        "借宝阁",
+        "天罡风",
+        "阴罗宗",
+        "献祭",
+        "血洗",
+    }
+    if current_sect_feature and current_sect_feature.get("name"):
+        sect_keywords.add(current_sect_feature["name"])
+    return any(kw in text for kw in sect_keywords)
 
 
 def _format_sect_position(character: dict) -> str:
