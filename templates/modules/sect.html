@@ -354,26 +354,3 @@
     </div>
 </section>
 {% endif %}
-
-<section class="detail-grid">
-    <div class="detail-card" style="grid-column: 1 / -1;">
-        <div class="section-header compact">
-            <p>开发切换</p>
-            <h2>宗门路线模拟</h2>
-        </div>
-        <form class="form-grid" method="post" action="/runtime/sect/dev-switch">
-            <label class="full-span">
-                强制查看宗门专属页面
-                <select name="sect_name">
-                    <option value="">按角色当前宗门</option>
-                    {% for sect_name in dev_sect_options %}
-                    <option value="{{ sect_name }}" {% if sect_name == dev_sect_override %}selected{% endif %}>{{ sect_name }}</option>
-                    {% endfor %}
-                </select>
-            </label>
-            <div class="full-span action-row">
-                <button type="submit">切换展示</button>
-            </div>
-        </form>
-    </div>
-</section>

@@ -23,7 +23,7 @@
             <h2>快速指令</h2>
         </div>
         <div class="action-row" style="flex-wrap: wrap; gap: 10px;">
-            {% for command in ['.股市', '.大盘', '.我的持仓', '.股市任务'] %}
+            {% for command in ['.股市', '.大盘', '.领股息', '.我的持仓', '.股市任务'] %}
             <form method="post" action="/runtime/commands/send-raw">
                 <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
                 <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">

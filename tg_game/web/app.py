@@ -673,39 +673,62 @@ def _build_divination_batch_view(raw_batch: Optional[dict]) -> dict:
 def _list_dungeon_feed_source_messages(
     storage: Storage, chat_id: int, dungeon_key: str, profile_id: Optional[int] = None
 ) -> list[dict]:
+    # 副本信息流需要看到群内所有玩家的消息，不按 profile_id 过滤
     messages = storage.list_bound_messages(
-        profile_id=profile_id,
+        profile_id=None,
         chat_id=chat_id,
         limit=300,
     )
     dungeon_def = _get_dungeon_definition(dungeon_key)
     keywords = set(dungeon_def.get("keywords") or [])
+    prefixes = dungeon_def.get("command_prefixes") or []
 
     dungeon_command_msg_ids = set()
     dungeon_messages = []
+
+    # 第一遍：按关键词/前缀匹配，并追踪回复链
     for msg in messages:
         text = str(msg.get("text") or "").strip()
         message_id = int(msg.get("message_id") or 0)
         reply_to = int(msg.get("reply_to_msg_id") or 0)
         is_bot = bool(msg.get("is_bot"))
 
+        matched = False
+        # 关键词匹配（子串命中）
         if any(kw in text for kw in keywords):
+            matched = True
+        # 命令前缀匹配（消息以某个前缀开头）
+        if not matched and prefixes:
+            if any(text.startswith(prefix) for prefix in prefixes):
+                matched = True
+
+        if matched:
             dungeon_command_msg_ids.add(message_id)
             dungeon_messages.append(msg)
         elif is_bot and reply_to and reply_to in dungeon_command_msg_ids:
+            dungeon_command_msg_ids.add(message_id)
+            dungeon_messages.append(msg)
+        elif not is_bot and reply_to and reply_to in dungeon_command_msg_ids:
+            # 队员/队长回复到已追踪的消息 → 加入追踪链
+            dungeon_command_msg_ids.add(message_id)
             dungeon_messages.append(msg)
         elif not is_bot and reply_to:
+            # 追踪这个回复的目标（可能是 bot 消息，留待第二遍补上）
             dungeon_command_msg_ids.add(reply_to)
 
+    # 第二遍：补上第一遍中 reply_to 在 set 内但自身未匹配的消息
     for msg in messages:
+        message_id = int(msg.get("message_id") or 0)
         reply_to = int(msg.get("reply_to_msg_id") or 0)
         is_bot = bool(msg.get("is_bot"))
-        if is_bot and reply_to and reply_to in dungeon_command_msg_ids:
-            if msg not in dungeon_messages:
-                dungeon_messages.append(msg)
-        elif not is_bot and reply_to and reply_to in dungeon_command_msg_ids:
-            if msg not in dungeon_messages:
-                dungeon_messages.append(msg)
+
+        if msg in dungeon_messages:
+            continue
+        if not reply_to or reply_to not in dungeon_command_msg_ids:
+            continue
+
+        dungeon_command_msg_ids.add(message_id)
+        dungeon_messages.append(msg)
 
     return dungeon_messages
 
@@ -1781,33 +1804,6 @@ def create_app() -> FastAPI:
         "dungeon",
     }
 
-    def _dev_sect_override_key(profile_id: int) -> str:
-        return f"dev_sect_override:{int(profile_id)}"
-
-    def _get_dev_sect_override(profile_id: int) -> str:
-        return (
-            storage.get_runtime_state(_dev_sect_override_key(profile_id)) or ""
-        ).strip()
-
-    def _set_dev_sect_override(profile_id: int, sect_name: str) -> None:
-        storage.set_runtime_state(
-            _dev_sect_override_key(profile_id), (sect_name or "").strip()
-        )
-
-    def _apply_dev_sect_override(profile):
-        if not profile:
-            return None
-        dev_sect_override = _get_dev_sect_override(profile.id)
-        if not dev_sect_override:
-            return profile
-        sect_meta = SECT_METADATA.get(dev_sect_override, {})
-        return replace(
-            profile,
-            sect_name=dev_sect_override,
-            sect_description=sect_meta.get("description", profile.sect_description),
-            sect_bonus_text=sect_meta.get("bonus", profile.sect_bonus_text),
-        )
-
     def _sync_env_binding(profile_id: int, telegram_user_id: str = "") -> None:
         storage.sync_env_chat_binding(
             profile_id=profile_id,
@@ -2268,9 +2264,7 @@ def create_app() -> FastAPI:
                 "yinluo_state": None,
             }
 
-        profile = _apply_dev_sect_override(
-            storage.get_profile(active_profile.id) or active_profile
-        )
+        profile = storage.get_profile(active_profile.id) or active_profile
         external_account = storage.get_external_account(profile.id, ASC_PROVIDER)
         should_refresh = refresh_external and _should_refresh_cultivator_payload(
             profile, external_account
@@ -2280,7 +2274,7 @@ def create_app() -> FastAPI:
             if should_refresh
             else read_cached_external_payload(storage, profile.id, ASC_PROVIDER)
         )
-        profile = _apply_dev_sect_override(storage.get_profile(profile.id) or profile)
+        profile = storage.get_profile(profile.id) or profile
         external_account = storage.get_external_account(profile.id, ASC_PROVIDER)
         current_sect_feature = _resolve_current_sect_feature(profile)
         sect_chat = storage.get_primary_chat_binding(
@@ -3103,8 +3097,6 @@ def create_app() -> FastAPI:
         learned_techniques_text = "-"
         equipped_artifact_name = ""
         recipes_known_entries = []
-        dev_sect_override = ""
-        dev_sect_options = [feature["name"] for feature in SECT_FEATURES]
         if active_profile:
             storage.ensure_module_settings(
                 active_profile.id, module_registry.list_modules()
@@ -3115,7 +3107,6 @@ def create_app() -> FastAPI:
             taiyi_state = _build_taiyi_view(payload)
             other_play_state = _build_other_play_view(payload)
             dongfu_state = _build_dongfu_view(payload, game_items_dict)
-            dev_sect_override = _get_dev_sect_override(active_profile.id)
             if module_key in {"sect", "inventory"}:
                 sect_daily_state = _merge_sect_daily_view_with_session(
                     _build_sect_daily_view(payload), sect_session
@@ -3458,8 +3449,6 @@ def create_app() -> FastAPI:
                 "module_commands": MODULE_COMMANDS.get(module_key, []),
                 "sect_features": SECT_FEATURES,
                 "current_sect_feature": current_sect_feature,
-                "dev_sect_override": dev_sect_override,
-                "dev_sect_options": dev_sect_options,
                 "sect_daily_state": sect_daily_state,
                 "lingxiao_state": lingxiao_state,
                 "yinluo_state": yinluo_state,
@@ -4111,6 +4100,56 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Cultivation session not found")
         return RedirectResponse(url="/modules/cultivation", status_code=303)
 
+    @application.post("/runtime/cultivation/rift-toggle")
+    async def toggle_cultivation_rift_auto(
+        request: Request,
+        chat_id: int = Form(...),
+        enabled: str = Form(...),
+    ) -> RedirectResponse:
+        db = CompatDb(storage)
+        try:
+            fanren_game.ensure_tables(db)
+            active_profile = _get_request_profile(request)
+            if not active_profile:
+                raise HTTPException(status_code=401, detail="Profile not active")
+            fanren_game.set_auto_rift(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id,
+            )
+            session = fanren_game.get_session(db, chat_id, profile_id=active_profile.id)
+        finally:
+            db.close()
+        if not session:
+            raise HTTPException(status_code=404, detail="Cultivation session not found")
+        return RedirectResponse(url="/modules/cultivation", status_code=303)
+
+    @application.post("/runtime/cultivation/yuanying-toggle")
+    async def toggle_cultivation_yuanying_auto(
+        request: Request,
+        chat_id: int = Form(...),
+        enabled: str = Form(...),
+    ) -> RedirectResponse:
+        db = CompatDb(storage)
+        try:
+            fanren_game.ensure_tables(db)
+            active_profile = _get_request_profile(request)
+            if not active_profile:
+                raise HTTPException(status_code=401, detail="Profile not active")
+            fanren_game.set_auto_yuanying(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id,
+            )
+            session = fanren_game.get_session(db, chat_id, profile_id=active_profile.id)
+        finally:
+            db.close()
+        if not session:
+            raise HTTPException(status_code=404, detail="Cultivation session not found")
+        return RedirectResponse(url="/modules/cultivation", status_code=303)
+
     @application.post("/runtime/sect/lingxiao-toggle")
     async def toggle_lingxiao_auto(
         request: Request, chat_id: int = Form(...), enabled: str = Form(...)
@@ -4319,20 +4358,6 @@ def create_app() -> FastAPI:
             db.close()
         if not session:
             raise HTTPException(status_code=404, detail="Sect session not found")
-        return RedirectResponse(url="/modules/sect", status_code=303)
-
-    @application.post("/runtime/sect/dev-switch")
-    async def switch_dev_sect(
-        request: Request, sect_name: str = Form("")
-    ) -> RedirectResponse:
-        active_profile = _get_request_profile(request)
-        if not active_profile:
-            raise HTTPException(status_code=404, detail="Active profile not found")
-        normalized = (sect_name or "").strip()
-        allowed = {feature["name"] for feature in SECT_FEATURES}
-        if normalized and normalized not in allowed:
-            raise HTTPException(status_code=400, detail="Invalid sect override")
-        _set_dev_sect_override(active_profile.id, normalized)
         return RedirectResponse(url="/modules/sect", status_code=303)
 
     @application.post("/runtime/sect/lingxiao-gangfeng-toggle")
