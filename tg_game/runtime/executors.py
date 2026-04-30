@@ -199,6 +199,7 @@ class FanrenExecutor(BaseExecutor):
                     ".强行出关",
                     fanren_game.RIFT_EXPLORE_COMMAND,
                     fanren_game.YUANYING_OUTING_COMMAND,
+                    fanren_game.YUANYING_STATUS_COMMAND,
                 }:
                     return False
                 stored_reply_message = self._get_stored_reply_message(context, storage)
@@ -264,6 +265,7 @@ class FanrenExecutor(BaseExecutor):
             "retreat_setback",
             "rift_explore_success",
             "yuanying_outing_success",
+            "yuanying_settled",
         }:
             return
         session_setting = context.get_setting("cultivation") or context.get_setting(

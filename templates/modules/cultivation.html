@@ -145,7 +145,7 @@
                     <div class="kv-row"><span>状态</span><strong>{{ cultivation_session.yuanying_state if cultivation_session else '-' }}</strong></div>
                     <div class="kv-row"><span>下次执行</span><strong style="font-family: var(--font-mono);" id="yuanying-countdown">{{ format_timestamp(cultivation_session.yuanying_next_check_time) if cultivation_session and cultivation_session.yuanying_next_check_time else '立即执行' }}</strong></div>
                 </div>
-                <p class="muted top-gap">CD 8 小时，发送指令 .元婴出窍。成功后等 8 小时再发下一次。</p>
+                <p class="muted top-gap">先发 .元婴状态 确认倒计时，到期发送 .元婴状态 结算，结算成功后自动发送 .元婴出窍 进行下一轮。</p>
                 <div class="action-row top-gap">
                     <button type="submit">{{ '关闭自动元婴出窍' if cultivation_session and cultivation_session.auto_yuanying_enabled else '开启自动元婴出窍' }}</button>
                 </div>

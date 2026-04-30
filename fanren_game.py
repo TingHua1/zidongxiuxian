@@ -43,12 +43,21 @@ RIFT_RETRY_MAX = 1
 RIFT_SUCCESS_KEYWORD = "探寻裂缝"  # 成功回包关键词
 
 # 自动元婴出窍
+YUANYING_STATUS_COMMAND = ".元婴状态"
 YUANYING_OUTING_COMMAND = ".元婴出窍"
-YUANYING_OUTING_COOLDOWN_SECONDS = 28800  # 8 小时
+YUANYING_OUTING_COOLDOWN_SECONDS = 28800  # 8 小时（兜底值，优先从回包解析）
 YUANYING_SUCCESS_KEYWORDS = [
     "元婴化作一道流光飞出",
     "元婴出窍",
     "云游",
+]
+# 元婴状态回包中表示已归来的关键词
+YUANYING_RETURNED_KEYWORDS = [
+    "元婴已归来",
+    "已结算",
+    "元婴归来",
+    "已归来",
+    "收获",
 ]
 FANREN_AUTO_NANLONG_CHOICES = {
     "交换 法宝": ".交换 法宝",
@@ -686,7 +695,7 @@ def set_auto_yuanying(db, chat_id, enabled, *, profile_id=None):
             chat_id,
             profile_id=profile_id,
             yuanying_next_check_time=0,
-            yuanying_state="等待首次执行",
+            yuanying_state="等待首次检查",
         )
 
 
@@ -715,6 +724,30 @@ def parse_yuanying_reply(text):
     if "失败" in text or "无法" in text or "不可" in text:
         return False, cooldown
     return False, cooldown
+
+
+def parse_yuanying_status_reply(text):
+    """解析 .元婴状态 回包，返回 (is_settled, countdown_seconds)
+
+    is_settled=True: 元婴已归来，结算完成
+    is_settled=False: 元婴仍在云游，返回剩余时间
+    """
+    text = (text or "").strip()
+    if not text:
+        return False, None
+
+    # 检查是否已归来/已结算
+    for kw in YUANYING_RETURNED_KEYWORDS:
+        if kw in text:
+            return True, 0
+
+    # 未归来，解析剩余云游时间
+    cooldown = parse_cooldown_seconds(text)
+    if cooldown:
+        return False, cooldown
+
+    # 兜底：默认 8 小时
+    return False, YUANYING_OUTING_COOLDOWN_SECONDS
 
 
 async def _check_asc_rift_time_changed(storage, profile_id, chat_id, db):
@@ -801,15 +834,20 @@ async def _maybe_send_rift_explore(
 async def _maybe_send_yuanying_outing(
     client, db, chat_id, *, storage=None, profile_id=None
 ):
-    """处理自动元婴出窍发送"""
+    """处理自动元婴出窍状态机
+
+    状态流转:
+      等待首次检查 → 发送 .元婴状态 → 解析倒计时 → 等待归来: X小时
+      等待归来 (倒计时到期) → 发送 .元婴状态 (结算) → 结算完成 → 发送 .元婴出窍
+      出窍成功 → 解析CD → 等待归来: X小时 → 循环
+    """
     session = get_session(db, chat_id, profile_id=profile_id)
     if not session or not session.get("auto_yuanying_enabled"):
         return False, "disabled"
 
     now = time.time()
+    state = (session.get("yuanying_state") or "").strip()
     next_check = session.get("yuanying_next_check_time") or 0
-    if next_check and now < next_check:
-        return False, "not_due"
 
     resolved_storage = storage or getattr(client, "_tg_game_storage", None)
     if _pause_if_external_session_expired(
@@ -817,32 +855,95 @@ async def _maybe_send_yuanying_outing(
     ):
         return False, "external_expired"
 
-    update_session(
-        db,
-        chat_id,
-        profile_id=session.get("profile_id"),
-        yuanying_state="准备发送",
-    )
+    pid = session.get("profile_id")
 
-    await send_message_in_session(
-        client,
-        session,
-        chat_id,
-        YUANYING_OUTING_COMMAND,
-        storage=storage,
-        profile_id=profile_id,
-    )
-    update_session(
-        db,
-        chat_id,
-        profile_id=session.get("profile_id"),
-        last_action=YUANYING_OUTING_COMMAND,
-        last_action_time=now,
-        yuanying_next_check_time=now + YUANYING_OUTING_COOLDOWN_SECONDS,
-        yuanying_state="已发送，等待回包",
-    )
-    logger.info("Yuanying outing command sent to chat %s", chat_id)
-    return True, "sent"
+    # Phase 1: 首次启动，先发 .元婴状态 确认倒计时
+    if state == "等待首次检查":
+        update_session(db, chat_id, profile_id=pid, yuanying_state="状态检查中")
+        await send_message_in_session(
+            client,
+            session,
+            chat_id,
+            YUANYING_STATUS_COMMAND,
+            storage=storage,
+            profile_id=profile_id,
+        )
+        update_session(
+            db,
+            chat_id,
+            profile_id=pid,
+            last_action=YUANYING_STATUS_COMMAND,
+            last_action_time=now,
+            yuanying_state="状态检查中",
+        )
+        logger.info("Yuanying status check sent to chat %s (initial)", chat_id)
+        return True, "checking"
+
+    # Phase 2: 倒计时到期，发 .元婴状态 结算
+    if (
+        (state.startswith("等待归来") or state == "状态检查中")
+        and next_check
+        and now >= next_check
+    ):
+        update_session(db, chat_id, profile_id=pid, yuanying_state="结算指令已发送")
+        await send_message_in_session(
+            client,
+            session,
+            chat_id,
+            YUANYING_STATUS_COMMAND,
+            storage=storage,
+            profile_id=profile_id,
+        )
+        update_session(
+            db,
+            chat_id,
+            profile_id=pid,
+            last_action=YUANYING_STATUS_COMMAND,
+            last_action_time=now,
+            yuanying_state="结算指令已发送",
+        )
+        logger.info("Yuanying settlement check sent to chat %s", chat_id)
+        return True, "settling"
+
+    # Phase 3: 结算完成，发 .元婴出窍
+    if state == "结算完成":
+        update_session(db, chat_id, profile_id=pid, yuanying_state="出窍指令已发送")
+        await send_message_in_session(
+            client,
+            session,
+            chat_id,
+            YUANYING_OUTING_COMMAND,
+            storage=storage,
+            profile_id=profile_id,
+        )
+        update_session(
+            db,
+            chat_id,
+            profile_id=pid,
+            last_action=YUANYING_OUTING_COMMAND,
+            last_action_time=now,
+            yuanying_next_check_time=now + YUANYING_OUTING_COOLDOWN_SECONDS,
+            yuanying_state="出窍指令已发送",
+        )
+        logger.info("Yuanying outing command sent to chat %s", chat_id)
+        return True, "outing"
+
+    # 等待状态且未到期：不做任何事
+    if state.startswith("等待归来") and next_check and now < next_check:
+        return False, "not_due"
+
+    # 异常/未知状态：回退到状态检查
+    if state in ("已关闭", "", "回包异常，将重试", "结算指令已发送", "出窍指令已发送"):
+        update_session(
+            db,
+            chat_id,
+            profile_id=pid,
+            yuanying_state="等待首次检查",
+            yuanying_next_check_time=0,
+        )
+        return False, "reset_to_initial"
+
+    return False, "unknown_state"
 
 
 async def maybe_handle_special_auto_event(
@@ -1318,47 +1419,101 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 )
             return FanrenParseResult("rift_explore_retry", "探寻裂缝回包异常")
 
-    # 处理自动元婴出窍回包
-    if last_action == YUANYING_OUTING_COMMAND and session.get("auto_yuanying_enabled"):
-        yy_success, yy_cd = parse_yuanying_reply(raw_text)
-        now = time.time()
-        update_session(
-            db,
-            event.chat_id,
-            profile_id=session.get("profile_id"),
-            last_bot_text=raw_text[:1000],
-            last_bot_msg_id=event.id,
-        )
-        if yy_success:
+    # 处理自动元婴出窍 / 元婴状态 回包
+    if session.get("auto_yuanying_enabled") and last_action in {
+        YUANYING_STATUS_COMMAND,
+        YUANYING_OUTING_COMMAND,
+    }:
+        yy_state = (session.get("yuanying_state") or "").strip()
+        now_yy = time.time()
+
+        # ---- .元婴状态 回包处理 ----
+        if last_action == YUANYING_STATUS_COMMAND:
+            is_settled, yy_cd = parse_yuanying_status_reply(raw_text)
             update_session(
                 db,
                 event.chat_id,
                 profile_id=session.get("profile_id"),
-                yuanying_next_check_time=now
-                + (yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS),
-                yuanying_state=f"元婴已出窍，{format_duration(yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS)}后再次出窍",
-                last_summary=f"自动元婴出窍成功，下次在 {format_duration(yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS)} 后",
-                last_event="yuanying_outing_success",
+                last_bot_text=raw_text[:1000],
+                last_bot_msg_id=event.id,
             )
-            logger.info("Yuanying outing succeeded in chat %s", event.chat_id)
-            return FanrenParseResult(
-                "yuanying_outing_success",
-                f"元婴出窍成功，{format_duration(yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS)}后再次出窍",
-                yy_cd,
-            )
-        else:
+            if is_settled:
+                # 元婴已归来，结算完成 → 立即出窍
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    yuanying_state="结算完成",
+                    yuanying_next_check_time=0,
+                    last_summary="元婴已归来，结算完成，即将发送元婴出窍",
+                    last_event="yuanying_settled",
+                )
+                logger.info(
+                    "Yuanying settlement done in chat %s, will send outing",
+                    event.chat_id,
+                )
+                return FanrenParseResult(
+                    "yuanying_settled", "元婴已归来，结算完成，即将出窍"
+                )
+            else:
+                # 元婴仍在云游，设置倒计时
+                cd = yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    yuanying_next_check_time=now_yy + cd,
+                    yuanying_state=f"等待归来: {format_duration(cd)}",
+                    last_summary=f"元婴云游中，预计 {format_duration(cd)} 后归来",
+                    last_event="yuanying_waiting",
+                )
+                return FanrenParseResult(
+                    "yuanying_waiting", f"元婴云游中，{format_duration(cd)}后归来", cd
+                )
+
+        # ---- .元婴出窍 回包处理 ----
+        if last_action == YUANYING_OUTING_COMMAND:
+            yy_success, yy_cd = parse_yuanying_reply(raw_text)
             update_session(
                 db,
                 event.chat_id,
                 profile_id=session.get("profile_id"),
-                yuanying_next_check_time=now + YUANYING_OUTING_COOLDOWN_SECONDS,
-                yuanying_state="回包异常，将重试",
-                last_summary=f"元婴出窍回包异常，将在 {format_duration(YUANYING_OUTING_COOLDOWN_SECONDS)} 后重试",
-                last_event="yuanying_outing_retry",
+                last_bot_text=raw_text[:1000],
+                last_bot_msg_id=event.id,
             )
-            return FanrenParseResult(
-                "yuanying_outing_retry", "元婴出窍回包异常，将重试"
-            )
+            if yy_success:
+                cd = yy_cd or YUANYING_OUTING_COOLDOWN_SECONDS
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    yuanying_next_check_time=now_yy + cd,
+                    yuanying_state=f"等待归来: {format_duration(cd)}",
+                    last_summary=f"元婴已出窍，{format_duration(cd)}后发送元婴状态结算",
+                    last_event="yuanying_outing_success",
+                )
+                logger.info(
+                    "Yuanying outing succeeded in chat %s, CD=%s", event.chat_id, cd
+                )
+                return FanrenParseResult(
+                    "yuanying_outing_success",
+                    f"元婴出窍成功，{format_duration(cd)}后结算",
+                    cd,
+                )
+            else:
+                # 出窍失败，等待后重试
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    yuanying_next_check_time=now_yy + YUANYING_OUTING_COOLDOWN_SECONDS,
+                    yuanying_state=f"等待归来: {format_duration(YUANYING_OUTING_COOLDOWN_SECONDS)}",
+                    last_summary=f"元婴出窍回包异常，将在 {format_duration(YUANYING_OUTING_COOLDOWN_SECONDS)} 后重试",
+                    last_event="yuanying_outing_retry",
+                )
+                return FanrenParseResult(
+                    "yuanying_outing_retry", "元婴出窍回包异常，将重试"
+                )
 
     parsed = parse_message(raw_text)
     if parsed.event == "ignored":
