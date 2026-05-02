@@ -259,18 +259,31 @@ class FanrenExecutor(BaseExecutor):
     def _record_result(
         self, context: EventContext, storage: Storage, event_name: str
     ) -> None:
-        if not event_name or (
-            event_name
-            not in {
-                "retreat_complete",
-                "deep_retreat_summary",
-                "retreat_setback",
-                "rift_explore_success",
-                "yuanying_outing_success",
-                "yuanying_settled",
-            }
-            and not event_name.endswith("_edited")
-        ):
+        if not event_name:
+            return
+        # 记录所有闭关/元婴/裂缝相关事件，不只是里程碑
+        if event_name in {"empty", "ignored", "blocked", "resource_blocked", "unknown"}:
+            return
+        if event_name.endswith("_edited"):
+            pass  # 编辑事件总是记录
+        elif not any(
+            event_name.startswith(prefix)
+            for prefix in (
+                "retreat_",
+                "deep_",
+                "cultivat",
+                "cooldown",
+                "rift_",
+                "yuanying_",
+                "soul_",
+                "meditation",
+            )
+        ) and event_name not in {
+            "cultivation_full",
+            "soul_returning",
+            "jie_dan",
+            "jie_dan_complete",
+        }:
             return
         session_setting = context.get_setting("cultivation") or context.get_setting(
             "basic"
