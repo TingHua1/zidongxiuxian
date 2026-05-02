@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import Optional
 
@@ -1026,7 +1027,21 @@ class GeneralGameExecutor(BaseExecutor):
         if not batch:
             return
 
+        now = time.time()
         pending_command_msg_id = int(batch.get("pending_command_msg_id") or 0)
+        batch_updated_at = float(batch.get("updated_at") or 0)
+
+        # 超时兜底: pending 超过 120 秒未推进则清理重试
+        if (
+            pending_command_msg_id
+            and batch_updated_at
+            and (now - batch_updated_at) > 120
+        ):
+            storage.update_divination_batch(
+                int(batch["id"]),
+                pending_command_msg_id=0,
+            )
+            pending_command_msg_id = 0
         planned_rounds = max(
             int(batch.get("target_count") or 0) - int(batch.get("initial_count") or 0),
             0,
