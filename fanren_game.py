@@ -1227,17 +1227,10 @@ def resolve_cycle_command(session):
 
 
 def compute_cycle_next_check(now, session, *, is_status_check=False):
-    if is_status_check:
-        return now + (session.get("interval_seconds") or FANREN_DEFAULT_INTERVAL)
-    mode = (session.get("retreat_mode") or FANREN_DEFAULT_MODE).lower()
-    if mode == "deep":
-        return now + (session.get("interval_seconds") or FANREN_DEFAULT_INTERVAL)
-    return now + max(
-        int(session.get("interval_seconds") or FANREN_DEFAULT_INTERVAL),
-        FANREN_COMMAND_COOLDOWN,
-        FANREN_MIN_INTERVAL,
-        FANREN_REPLY_SYNC_GRACE_SECONDS,
-    )
+    base_interval = int(session.get("interval_seconds") or FANREN_DEFAULT_INTERVAL)
+    # 所有路径都强制最小间隔，避免深度/状态检查路径因 interval 过小导致连续发送
+    min_interval = max(base_interval, FANREN_COMMAND_COOLDOWN, FANREN_MIN_INTERVAL)
+    return now + min_interval
 
 
 def normal_retry_seconds(cooldown_seconds, fallback_seconds):
