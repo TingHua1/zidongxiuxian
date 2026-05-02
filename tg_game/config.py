@@ -56,7 +56,7 @@ class Settings(BaseModel):
         os.getenv("TG_GAME_EXTERNAL_KEEPALIVE_SECONDS", "900")
     )
     external_keepalive_poll_seconds: int = int(
-        os.getenv("TG_GAME_EXTERNAL_KEEPALIVE_POLL_SECONDS", "30")
+        os.getenv("TG_GAME_EXTERNAL_KEEPALIVE_POLL_SECONDS", "600")
     )
     telegram_log_messages: bool = os.getenv("TG_GAME_LOG_MESSAGES", "0") in {
         "1",
