@@ -30,6 +30,25 @@ logger = logging.getLogger(__name__)
 DIVINATION_COMMAND = ".卜筮问天"
 
 
+def _register_client_background_task(
+    client: object, task: asyncio.Task
+) -> asyncio.Task:
+    tasks = getattr(client, "_tg_game_background_tasks", None)
+    if tasks is None:
+        tasks = set()
+        setattr(client, "_tg_game_background_tasks", tasks)
+
+    tasks.add(task)
+
+    def _discard_done(done_task: asyncio.Task) -> None:
+        current_tasks = getattr(client, "_tg_game_background_tasks", None)
+        if current_tasks is not None:
+            current_tasks.discard(done_task)
+
+    task.add_done_callback(_discard_done)
+    return task
+
+
 SECT_FEATURE_REPLY_WHITELISTS = {
     "huangfeng": {
         ".小药园",
@@ -157,12 +176,15 @@ class FanrenExecutor(BaseExecutor):
         db = SQLiteCompatDb(storage)
         fanren_game.ensure_tables(db)
         db.close()
-        asyncio.create_task(
-            fanren_game.runner(
-                client,
-                storage,
-                profile_id=getattr(client, "_tg_game_profile_id", None),
-            )
+        _register_client_background_task(
+            client,
+            asyncio.create_task(
+                fanren_game.runner(
+                    client,
+                    storage,
+                    profile_id=getattr(client, "_tg_game_profile_id", None),
+                )
+            ),
         )
         logger.info("Fanren executor runner started")
 
@@ -569,12 +591,15 @@ class SectExecutor(BaseExecutor):
         db = SQLiteCompatDb(storage)
         sect_game.ensure_tables(db)
         db.close()
-        asyncio.create_task(
-            sect_game.runner(
-                client,
-                storage,
-                profile_id=getattr(client, "_tg_game_profile_id", None),
-            )
+        _register_client_background_task(
+            client,
+            asyncio.create_task(
+                sect_game.runner(
+                    client,
+                    storage,
+                    profile_id=getattr(client, "_tg_game_profile_id", None),
+                )
+            ),
         )
         logger.info("Sect executor runner started")
 

@@ -1,3 +1,5 @@
+import asyncio
+
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 
@@ -43,6 +45,16 @@ def build_client(session_name: str = "", save_entities: bool = True) -> Telegram
     return client
 
 
+async def _graceful_disconnect(client: TelegramClient) -> None:
+    if client.is_connected():
+        await asyncio.shield(client.disconnect())
+    try:
+        await asyncio.shield(asyncio.wait_for(client.disconnected, timeout=5))
+    except asyncio.TimeoutError:
+        pass
+    await asyncio.sleep(0.05)
+
+
 async def get_authorized_account_info(
     session_name: str = "", allow_fallback: bool = True
 ) -> dict:
@@ -62,7 +74,7 @@ async def get_authorized_account_info(
                 "session_name": candidate,
             }
         finally:
-            await client.disconnect()
+            await _graceful_disconnect(client)
     raise RuntimeError("Telegram session is not authorized")
 
 
@@ -76,13 +88,15 @@ async def has_authorized_session(
             if await client.is_user_authorized():
                 return True
         finally:
-            await client.disconnect()
+            await _graceful_disconnect(client)
     return False
 
 
 async def resolve_authorized_session_name(
     session_name: str = "", allow_fallback: bool = True
 ) -> str:
+    if session_name and not allow_fallback:
+        return _session_name(session_name)
     for candidate in _session_candidates(session_name, allow_fallback=allow_fallback):
         client = build_client(candidate, save_entities=False)
         await client.connect()
@@ -90,7 +104,7 @@ async def resolve_authorized_session_name(
             if await client.is_user_authorized():
                 return candidate
         finally:
-            await client.disconnect()
+            await _graceful_disconnect(client)
     return _session_name(session_name)
 
 
@@ -105,7 +119,7 @@ async def send_login_code(phone: str, session_name: str = "") -> dict:
             "session_name": _session_name(session_name),
         }
     finally:
-        await client.disconnect()
+        await _graceful_disconnect(client)
 
 
 async def verify_login_code(
@@ -137,7 +151,7 @@ async def verify_login_code(
             },
         }
     finally:
-        await client.disconnect()
+        await _graceful_disconnect(client)
 
 
 async def verify_login_password(password: str, session_name: str = "") -> dict:
@@ -154,7 +168,7 @@ async def verify_login_password(password: str, session_name: str = "") -> dict:
             "session_name": _session_name(session_name),
         }
     finally:
-        await client.disconnect()
+        await _graceful_disconnect(client)
 
 
 async def logout_account(session_name: str = "") -> None:
@@ -164,4 +178,4 @@ async def logout_account(session_name: str = "") -> None:
         if await client.is_user_authorized():
             await client.log_out()
     finally:
-        await client.disconnect()
+        await _graceful_disconnect(client)

@@ -16,7 +16,6 @@ from tg_game.services.external_sync import (
     sync_external_account,
 )
 from tg_game.storage import Storage
-from tg_game.telegram.account import resolve_authorized_session_name
 from tg_game.telegram.send_utils import send_message_with_thread_fallback
 
 
@@ -223,25 +222,44 @@ async def _register_handlers(
     )
 
 
+async def _cancel_client_background_tasks(client: TelegramClient) -> None:
+    background_tasks = list(
+        getattr(client, "_tg_game_background_tasks", set()) or set()
+    )
+    alive_tasks = [task for task in background_tasks if task and not task.done()]
+    for task in alive_tasks:
+        task.cancel()
+    if alive_tasks:
+        results = await asyncio.gather(*alive_tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                logger.warning(
+                    "Background task exited with error during shutdown: %r", result
+                )
+    setattr(client, "_tg_game_background_tasks", set())
+
+
 async def _shutdown_client(client: TelegramClient) -> None:
+    await _cancel_client_background_tasks(client)
     outgoing_task = getattr(client, "_tg_game_outgoing_task", None)
     if outgoing_task:
         outgoing_task.cancel()
         with suppress(asyncio.CancelledError):
             await outgoing_task
-    # 先停 Telethon 内部的 sender，取消底层 send/recv 循环
-    sender = getattr(client, "_sender", None)
-    if sender is not None:
-        with suppress(Exception):
-            sender.cancel_all()
-        with suppress(Exception):
-            await asyncio.sleep(0.1)
     if client.is_connected():
-        with suppress(Exception):
-            await client.disconnect()
-    # 给事件循环一点时间处理待取消的内部协程
-    with suppress(Exception):
-        await asyncio.sleep(0.15)
+        try:
+            await asyncio.shield(client.disconnect())
+        except Exception:
+            logger.exception("Telegram client disconnect failed")
+    try:
+        await asyncio.shield(asyncio.wait_for(client.disconnected, timeout=8))
+    except asyncio.TimeoutError:
+        logger.warning("Timed out waiting for Telegram client.disconnected")
+    except Exception:
+        logger.exception("Waiting for Telegram client.disconnected failed")
+    await asyncio.sleep(0.1)
 
 
 async def _run_profile_worker(profile_id: int) -> None:
@@ -258,10 +276,7 @@ async def _run_profile_worker(profile_id: int) -> None:
             if not preferred_session_name:
                 await asyncio.sleep(WORKER_RECONCILE_SECONDS)
                 continue
-            resolved_session_name = await resolve_authorized_session_name(
-                preferred_session_name,
-                allow_fallback=False,
-            )
+            resolved_session_name = preferred_session_name
             client = _build_client(resolved_session_name)
             await client.connect()
             if not await client.is_user_authorized():
@@ -305,8 +320,12 @@ async def _run_profile_worker(profile_id: int) -> None:
             await asyncio.sleep(2)
         finally:
             if client is not None:
-                with suppress(Exception):
-                    await _shutdown_client(client)
+                try:
+                    await asyncio.shield(_shutdown_client(client))
+                except Exception:
+                    logger.exception(
+                        "Telegram worker shutdown failed for profile=%s", profile_id
+                    )
 
 
 async def _resolve_worker_targets(storage: Storage) -> dict[int, str]:
@@ -317,14 +336,7 @@ async def _resolve_worker_targets(storage: Storage) -> dict[int, str]:
         preferred_session_name = (profile.telegram_session_name or "").strip()
         if not preferred_session_name:
             continue
-        try:
-            resolved_session_name = await resolve_authorized_session_name(
-                preferred_session_name,
-                allow_fallback=False,
-            )
-        except Exception:
-            resolved_session_name = preferred_session_name
-        targets[int(profile.id)] = resolved_session_name
+        targets[int(profile.id)] = preferred_session_name
     return targets
 
 
@@ -387,14 +399,14 @@ async def _main() -> None:
         keepalive_task.cancel()
         with suppress(asyncio.CancelledError):
             await keepalive_task
-        for task in worker_tasks.values():
+        worker_task_list = list(worker_tasks.values())
+        for task in worker_task_list:
             task.cancel()
-        for task in worker_tasks.values():
-            with suppress(asyncio.CancelledError):
-                await task
-        # 给 Telethon 底层连接循环一点时间完成取消
-        with suppress(Exception):
-            await asyncio.sleep(0.2)
+        if worker_task_list:
+            await asyncio.gather(*worker_task_list, return_exceptions=True)
+        worker_tasks.clear()
+        worker_sessions.clear()
+        await asyncio.sleep(0.3)
 
 
 def run_telegram_runtime() -> None:

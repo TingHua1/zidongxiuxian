@@ -2920,6 +2920,8 @@ async def runner(client, storage, profile_id=None):
                     )
             db.close()
             await asyncio.sleep(SECT_RUNNER_POLL_SECONDS)
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             logger.exception("Sect runner error: %s", exc)
             await asyncio.sleep(10)
