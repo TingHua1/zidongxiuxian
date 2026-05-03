@@ -769,6 +769,39 @@ def parse_yuanying_status_reply(text):
     return "unknown", None
 
 
+def get_rift_failure_lock_reason(payload: dict) -> str:
+    status = str((payload or {}).get("status") or "").strip().upper()
+    if status == "ESCAPED_SOUL":
+        return "元婴遁逃·虚弱（残魂状态），已停止全部自动任务"
+    return ""
+
+
+def stop_all_automation_for_rift_failure(
+    db, chat_id, payload: dict, *, profile_id=None
+):
+    reason = get_rift_failure_lock_reason(payload)
+    if not reason:
+        return False
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        enabled=0,
+        next_check_time=0,
+        next_check_source=reason,
+        stopped_reason=reason,
+        auto_jiyin_enabled=0,
+        auto_nanlong_enabled=0,
+        auto_rift_enabled=0,
+        auto_yuanying_enabled=0,
+        rift_state=reason,
+        yuanying_state=reason,
+        last_event="rift_escaped_soul",
+        last_summary=reason,
+    )
+    return True
+
+
 async def _check_asc_rift_time_changed(storage, profile_id, chat_id, db):
     """通过天机阁 API 检查 last_rift_explore_time 是否已刷新"""
     try:
@@ -801,10 +834,14 @@ async def _check_asc_rift_time_changed(storage, profile_id, chat_id, db):
             short_time = clean
         except Exception:
             short_time = new_rift_time[:16]
-        return changed, f"新: {short_time}" if changed else f"未变: {short_time}"
+        return (
+            changed,
+            f"新: {short_time}" if changed else f"未变: {short_time}",
+            cultivator if isinstance(cultivator, dict) else {},
+        )
     except Exception as exc:
         logger.warning("ASC rift time check failed: %s", exc)
-        return False, f"天机阁查询失败: {exc}"
+        return False, f"天机阁查询失败: {exc}", {}
 
 
 async def _maybe_send_rift_explore(
@@ -1350,9 +1387,37 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 else None
             )
             if storage and profile_id:
-                changed, check_msg = await _check_asc_rift_time_changed(
+                (
+                    changed,
+                    check_msg,
+                    cultivator_payload,
+                ) = await _check_asc_rift_time_changed(
                     storage, profile_id, event.chat_id, db
                 )
+                if stop_all_automation_for_rift_failure(
+                    db,
+                    event.chat_id,
+                    cultivator_payload,
+                    profile_id=session.get("profile_id"),
+                ):
+                    try:
+                        import sect_game
+
+                        sect_game.stop_all_automation(
+                            db,
+                            event.chat_id,
+                            get_rift_failure_lock_reason(cultivator_payload),
+                            profile_id=session.get("profile_id"),
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Stopping sect automation for rift failure failed",
+                            exc_info=True,
+                        )
+                    return FanrenParseResult(
+                        "rift_escaped_soul",
+                        get_rift_failure_lock_reason(cultivator_payload),
+                    )
                 if changed:
                     update_session(
                         db,

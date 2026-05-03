@@ -1913,6 +1913,37 @@ def set_enabled(db, chat_id, enabled, profile_id=None):
     )
 
 
+def stop_all_automation(db, chat_id, reason="", profile_id=None):
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        enabled=0,
+        next_check_time=0,
+        next_check_source=reason or None,
+        auto_lingxiao_enabled=0,
+        auto_lingxiao_gangfeng_enabled=0,
+        auto_lingxiao_borrow_enabled=0,
+        auto_lingxiao_question_enabled=0,
+        auto_sect_checkin_enabled=0,
+        auto_sect_teach_enabled=0,
+        auto_yinluo_sacrifice_enabled=0,
+        auto_yinluo_blood_wash_enabled=0,
+        auto_huangfeng_enabled=0,
+        auto_huangfeng_exchange_enabled=0,
+        lingxiao_next_check_time=0,
+        lingxiao_gangfeng_next_check_time=0,
+        lingxiao_borrow_next_check_time=0,
+        lingxiao_question_next_check_time=0,
+        sect_checkin_next_check_time=0,
+        sect_teach_next_check_time=0,
+        yinluo_sacrifice_next_check_time=0,
+        yinluo_blood_wash_next_check_time=0,
+        huangfeng_next_check_time=0,
+        last_summary=reason or None,
+    )
+
+
 def set_dry_run(db, chat_id, enabled, profile_id=None):
     update_session(db, chat_id, profile_id=profile_id, dry_run=_normalize_bool(enabled))
 
