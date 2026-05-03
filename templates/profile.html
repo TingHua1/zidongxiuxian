@@ -64,6 +64,20 @@
                     <div><span>造下杀孽</span><strong>{{ active_profile.kill_count_text or '清白' }}</strong></div>
                     <div class="full-profile-span"><span>仙门贡献</span><strong class="contribution-action">{{ active_profile.sect_contribution_text or '0' }}<button type="button" class="inline-button small-btn" onclick="openSectExchangeModal()" {% if not command_chat_ready or not (sect_treasury_items or []) %}disabled{% endif %}>宝库兑换</button></strong></div>
                 </div>
+                {% if rift_failure_state %}
+                <div class="detail-card top-gap" style="margin-top: 16px; border-color: var(--error); background: rgba(164, 42, 42, 0.08);">
+                    <div class="section-header compact">
+                        <p>异常状态</p>
+                        <h2 style="color: var(--error);">{{ rift_failure_state.title }}</h2>
+                    </div>
+                    <div class="stack-list compact-stack">
+                        <div class="kv-row"><span>当前名号</span><strong>{{ rift_failure_state.dao_name or '一缕残魂' }}</strong></div>
+                        <div class="kv-row"><span>当前境界</span><strong>{{ rift_failure_state.stage_name or '-' }}</strong></div>
+                        <div class="kv-row"><span>状态码</span><strong style="font-family: var(--font-mono);">{{ rift_failure_state.status }}</strong></div>
+                    </div>
+                    <p class="muted top-gap" style="color: var(--error);">{{ rift_failure_state.summary }}</p>
+                </div>
+                {% endif %}
                 <div class="action-row top-gap">
                     {% if is_admin_profile %}
                     <a class="button" href="/messages">翻阅传音卷宗</a>

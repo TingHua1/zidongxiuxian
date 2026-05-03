@@ -1848,6 +1848,22 @@ def _sync_profile_from_cultivator(
         )
 
 
+def _build_rift_failure_profile_state(
+    payload: dict, cultivation_session: Optional[dict]
+) -> Optional[dict]:
+    status = str((payload or {}).get("status") or "").strip().upper()
+    if status != "ESCAPED_SOUL":
+        return None
+    reason = str((cultivation_session or {}).get("stopped_reason") or "").strip()
+    return {
+        "title": "元婴遁逃·虚弱",
+        "summary": reason or "当前为残魂状态，探寻裂缝已触发自动任务熔断。",
+        "status": status,
+        "dao_name": str((payload or {}).get("dao_name") or "").strip(),
+        "stage_name": str((payload or {}).get("cultivation_level") or "").strip(),
+    }
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
     storage = Storage(settings.database_path)
@@ -2318,6 +2334,8 @@ def create_app() -> FastAPI:
                 "active_profile": None,
                 "external_account": None,
                 "payload": {},
+                "cultivation_session": None,
+                "rift_failure_state": None,
                 "current_sect_feature": None,
                 "sect_chat": None,
                 "sect_session": None,
@@ -2337,6 +2355,19 @@ def create_app() -> FastAPI:
         )
         profile = storage.get_profile(profile.id) or profile
         external_account = storage.get_external_account(profile.id, ASC_PROVIDER)
+        cultivation_chat = _get_primary_command_chat(
+            profile.id, fanren_game.FANREN_BOT_USERNAME
+        )
+        cultivation_session = (
+            storage.get_cultivation_session(
+                cultivation_chat.chat_id, profile_id=profile.id
+            )
+            if cultivation_chat
+            else None
+        )
+        rift_failure_state = _build_rift_failure_profile_state(
+            payload, cultivation_session
+        )
         current_sect_feature = _resolve_current_sect_feature(profile)
         sect_chat = storage.get_primary_chat_binding(
             profile.id, bot_username=sect_game.SECT_BOT_USERNAME
@@ -2422,6 +2453,8 @@ def create_app() -> FastAPI:
             "active_profile": profile,
             "external_account": external_account,
             "payload": payload,
+            "cultivation_session": cultivation_session,
+            "rift_failure_state": rift_failure_state,
             "current_sect_feature": current_sect_feature,
             "sect_chat": sect_chat,
             "sect_session": sect_session,
@@ -2962,6 +2995,7 @@ def create_app() -> FastAPI:
         external_account = page_state["external_account"]
         profile_state = page_state["profile_state"]
         character_state = _build_character_view(profile_state.get("payload") or {})
+        rift_failure_state = profile_state.get("rift_failure_state")
         external_session_notice = _build_external_session_notice(external_account)
         shared_template_context = _build_shared_template_context(active_profile)
         return templates.TemplateResponse(
@@ -2976,6 +3010,7 @@ def create_app() -> FastAPI:
                 "now_ts": fanren_game.time.time(),
                 "external_account": external_account,
                 "character_state": character_state,
+                "rift_failure_state": rift_failure_state,
                 "external_session_notice": external_session_notice,
                 **shared_template_context,
             },
@@ -3849,7 +3884,7 @@ def create_app() -> FastAPI:
             )
             storage.update_divination_batch(
                 batch_id,
-                last_dispatch_at=time.time(),
+                last_dispatch_at=fanren_game.time.time(),
             )
         except Exception as exc:
             storage.finish_divination_batch(
