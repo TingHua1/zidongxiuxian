@@ -3742,7 +3742,11 @@ def create_app() -> FastAPI:
                 thread_id=int(thread_id) if thread_id and thread_id.isdigit() else None,
                 chat_type=chat_type,
                 bot_username=bot_username,
-                delay_seconds=5,
+                delay_seconds=0,
+            )
+            storage.update_divination_batch(
+                batch_id,
+                last_dispatch_at=time.time(),
             )
         except Exception as exc:
             storage.finish_divination_batch(

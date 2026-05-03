@@ -21,6 +21,7 @@ import inventory_feature_game
 
 from tg_game.runtime.context import EventContext
 from tg_game.services.cultivation_sync import sync_cultivation_session
+from tg_game.services.external_sync import read_cached_external_payload
 from tg_game.storage import CompatDb as SQLiteCompatDb, Storage
 from tg_game.telegram.send_utils import send_message_with_thread_fallback
 
@@ -28,6 +29,8 @@ from tg_game.telegram.send_utils import send_message_with_thread_fallback
 logger = logging.getLogger(__name__)
 
 DIVINATION_COMMAND = ".卜筮问天"
+DIVINATION_BATCH_COMMAND_INTERVAL_SECONDS = 60
+DIVINATION_BATCH_POLL_SECONDS = 5
 
 
 def _register_client_background_task(
@@ -47,6 +50,125 @@ def _register_client_background_task(
 
     task.add_done_callback(_discard_done)
     return task
+
+
+def _get_divination_today_count_from_payload(payload: dict) -> int:
+    last_divination_text = str(payload.get("last_divination_date") or "").strip()
+    last_divination_ts = sect_game._parse_iso_timestamp(last_divination_text)
+    last_divination_day = ""
+    if last_divination_ts:
+        last_divination_day = time.strftime(
+            "%Y-%m-%d", time.localtime(last_divination_ts)
+        )
+    elif last_divination_text:
+        last_divination_day = last_divination_text[:10]
+    today_text = time.strftime("%Y-%m-%d", time.localtime(time.time()))
+    raw_today_count = max(int(payload.get("divination_count_today") or 0), 0)
+    return raw_today_count if last_divination_day == today_text else 0
+
+
+def _get_cached_divination_today_count(storage: Storage, profile_id: int) -> int:
+    payload = read_cached_external_payload(storage, profile_id)
+    return _get_divination_today_count_from_payload(payload)
+
+
+async def _run_divination_batch_scheduler(client: object, storage: Storage) -> None:
+    profile_id = getattr(client, "_tg_game_profile_id", None)
+    if not profile_id:
+        return
+
+    while True:
+        try:
+            batch = storage.get_active_divination_batch(int(profile_id))
+            if not batch:
+                await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
+                continue
+
+            batch_id = int(batch["id"])
+            chat_id = int(batch.get("chat_id") or 0)
+            thread_id = int(batch.get("thread_id")) if batch.get("thread_id") else None
+            target_count = max(int(batch.get("target_count") or 0), 0)
+            initial_count = max(int(batch.get("initial_count") or 0), 0)
+            planned_rounds = max(target_count - initial_count, 0)
+            sent_count = max(int(batch.get("sent_count") or 0), 0)
+            last_dispatch_at = float(batch.get("last_dispatch_at") or 0)
+
+            current_count = _get_cached_divination_today_count(storage, int(profile_id))
+            completed_count = max(current_count - initial_count, 0)
+            stored_completed = max(int(batch.get("completed_count") or 0), 0)
+            if completed_count != stored_completed:
+                batch = (
+                    storage.update_divination_batch(
+                        batch_id,
+                        completed_count=completed_count,
+                        pending_command_msg_id=0,
+                        last_error="",
+                    )
+                    or batch
+                )
+
+            if current_count >= target_count:
+                storage.cancel_pending_outgoing_commands(
+                    int(profile_id), chat_id, text=DIVINATION_COMMAND
+                )
+                storage.finish_divination_batch(batch_id, status="completed")
+                await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
+                continue
+
+            latest_command = storage.get_latest_outgoing_command(
+                chat_id,
+                profile_id=int(profile_id),
+                text=DIVINATION_COMMAND,
+                thread_id=thread_id,
+            )
+            if latest_command:
+                latest_status = str(latest_command.get("status") or "").strip()
+                if latest_status in {"pending", "sending"}:
+                    await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
+                    continue
+
+            now = time.time()
+            effective_last_dispatch_at = last_dispatch_at
+            if not effective_last_dispatch_at and latest_command:
+                effective_last_dispatch_at = float(
+                    latest_command.get("created_at") or 0
+                )
+
+            if effective_last_dispatch_at and (
+                now - effective_last_dispatch_at
+                < DIVINATION_BATCH_COMMAND_INTERVAL_SECONDS
+            ):
+                await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
+                continue
+
+            # 计划次数已发完后，不再按 reply 推进；每分钟检查一次计数，不足则补发
+            needs_makeup = current_count < target_count
+            if sent_count >= planned_rounds and not needs_makeup:
+                await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
+                continue
+
+            storage.enqueue_outgoing_command(
+                profile_id=int(profile_id),
+                chat_id=chat_id,
+                text=DIVINATION_COMMAND,
+                thread_id=thread_id,
+                chat_type=str(batch.get("chat_type") or "group"),
+                bot_username=str(batch.get("bot_username") or ""),
+            )
+            storage.update_divination_batch(
+                batch_id,
+                pending_command_msg_id=0,
+                last_dispatch_at=now,
+                last_error="",
+            )
+            await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Divination batch scheduler error for profile=%s: %s", profile_id, exc
+            )
+            await asyncio.sleep(10)
 
 
 SECT_FEATURE_REPLY_WHITELISTS = {
@@ -949,6 +1071,10 @@ class GeneralGameExecutor(BaseExecutor):
         if self._runner_started:
             return
         self._runner_started = True
+        _register_client_background_task(
+            client,
+            asyncio.create_task(_run_divination_batch_scheduler(client, storage)),
+        )
         return
 
     async def handle(self, context: EventContext, storage: Storage) -> bool:
@@ -1052,84 +1178,16 @@ class GeneralGameExecutor(BaseExecutor):
         if not batch:
             return
 
-        now = time.time()
-        pending_command_msg_id = int(batch.get("pending_command_msg_id") or 0)
-        batch_updated_at = float(batch.get("updated_at") or 0)
-
-        # 超时兜底: pending 超过 120 秒未推进则清理重试
-        if (
-            pending_command_msg_id
-            and batch_updated_at
-            and (now - batch_updated_at) > 120
-        ):
-            storage.update_divination_batch(
-                int(batch["id"]),
-                pending_command_msg_id=0,
-            )
-            pending_command_msg_id = 0
-        planned_rounds = max(
-            int(batch.get("target_count") or 0) - int(batch.get("initial_count") or 0),
-            0,
-        )
-        if await self._maybe_resume_idle_divination_batch(
-            context, storage, batch, planned_rounds
-        ):
-            return
-
         if context.is_outgoing:
             if context.text.strip() != DIVINATION_COMMAND or not context.message_id:
                 return
-            if pending_command_msg_id:
-                return
-            sent_count = min(int(batch.get("sent_count") or 0) + 1, planned_rounds)
             storage.update_divination_batch(
                 int(batch["id"]),
                 thread_id=context.thread_id or batch.get("thread_id"),
-                sent_count=sent_count,
-                pending_command_msg_id=int(context.message_id),
-            )
-            return
-
-        if not context.is_bot_sender:
-            return
-        binding_bot = (context.chat_binding.bot_username or "").lower().lstrip("@")
-        effective_bot_username = context.bot_username
-        if (
-            binding_bot
-            and effective_bot_username
-            and effective_bot_username != binding_bot
-        ):
-            return
-        reply_to_msg_id = int(context.reply_to_msg_id or 0)
-        if not pending_command_msg_id or reply_to_msg_id != pending_command_msg_id:
-            return
-
-        completed_count = min(
-            int(batch.get("completed_count") or 0) + 1, planned_rounds
-        )
-        if completed_count >= planned_rounds:
-            storage.update_divination_batch(
-                int(batch["id"]),
-                completed_count=completed_count,
+                sent_count=max(int(batch.get("sent_count") or 0), 0) + 1,
                 pending_command_msg_id=0,
             )
-            storage.finish_divination_batch(int(batch["id"]), status="completed")
-            return
-
-        storage.update_divination_batch(
-            int(batch["id"]),
-            completed_count=completed_count,
-            pending_command_msg_id=0,
-        )
-        storage.enqueue_outgoing_command(
-            profile_id=context.profile.id,
-            chat_id=int(batch.get("chat_id") or context.chat_id),
-            text=DIVINATION_COMMAND,
-            thread_id=int(batch.get("thread_id")) if batch.get("thread_id") else None,
-            chat_type=str(batch.get("chat_type") or "group"),
-            bot_username=str(batch.get("bot_username") or ""),
-            delay_seconds=15,
-        )
+        return
 
     async def _maybe_resume_idle_divination_batch(
         self,
