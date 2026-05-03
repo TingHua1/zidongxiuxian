@@ -184,6 +184,11 @@ def get_shop_items(cookie_text: str) -> Tuple[dict, int]:
     return payload, status
 
 
+def get_bootstrap(cookie_text: str) -> Tuple[dict, int]:
+    payload, status, _cookie = _perform_json_get("/api/bootstrap", cookie_text)
+    return payload, status
+
+
 def get_marketplace_listings_page(
     cookie_text: str, page: int = 1, search: str = ""
 ) -> Tuple[dict, int]:

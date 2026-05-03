@@ -1590,11 +1590,14 @@ SECT_METADATA = {
 }
 
 
-def _format_cultivation_progress(stage_name: str, cultivation_points) -> str:
+def _format_cultivation_progress(
+    stage_name: str, cultivation_points, stage_caps: Optional[dict] = None
+) -> str:
     points_text = str(cultivation_points or "").strip()
     if not points_text:
         return ""
-    cap = CULTIVATION_STAGE_CAPS.get((stage_name or "").strip())
+    caps = stage_caps or CULTIVATION_STAGE_CAPS
+    cap = caps.get((stage_name or "").strip())
     if not cap:
         return points_text
     return f"({points_text} / {cap})"
@@ -1704,6 +1707,43 @@ def _sync_all_items_if_needed(storage: Storage, cookie_text: str):
             pass
 
 
+def _sync_bootstrap_if_needed(storage: Storage, cookie_text: str):
+    last_sync = float(storage.get_runtime_state("last_bootstrap_sync") or 0)
+    now = fanren_game.time.time()
+    if now - last_sync <= 86400:
+        return
+    from tg_game.clients.asc_client import get_bootstrap
+
+    try:
+        payload, _status = get_bootstrap(cookie_text)
+        if not isinstance(payload, dict):
+            return
+
+        wrote_items = False
+        wrote_thresholds = False
+
+        game_items_payload = payload.get("game_items") or {}
+        if isinstance(game_items_payload, dict):
+            items = []
+            for item_id, meta in game_items_payload.items():
+                if not isinstance(meta, dict):
+                    continue
+                items.append({"id": item_id, **meta})
+            if items:
+                storage.upsert_game_items_partial(items)
+                wrote_items = True
+
+        level_thresholds = payload.get("level_thresholds") or {}
+        if isinstance(level_thresholds, dict) and level_thresholds:
+            storage.replace_level_thresholds(level_thresholds)
+            wrote_thresholds = True
+
+        if wrote_thresholds and (wrote_items or isinstance(game_items_payload, dict)):
+            storage.set_runtime_state("last_bootstrap_sync", str(now))
+    except Exception:
+        pass
+
+
 def _sync_shop_items_if_needed(storage: Storage, cookie_text: str):
     last_sync = float(storage.get_runtime_state("last_shop_items_sync") or 0)
     now = fanren_game.time.time()
@@ -1766,6 +1806,7 @@ def _sync_profile_from_cultivator(
     ).strip()
     sect_name = (cultivator_payload.get("sect_name") or "").strip()
     sect_meta = SECT_METADATA.get(sect_name, {})
+    stage_caps = {**CULTIVATION_STAGE_CAPS, **(storage.get_level_thresholds() or {})}
     storage.update_profile_game_info(
         profile_id=profile_id,
         display_name=(cultivator_payload.get("dao_name") or "").strip(),
@@ -1780,6 +1821,7 @@ def _sync_profile_from_cultivator(
         cultivation_text=_format_cultivation_progress(
             (cultivator_payload.get("cultivation_level") or "").strip(),
             cultivator_payload.get("cultivation_points"),
+            stage_caps,
         ),
         poison_text=str(cultivator_payload.get("drug_poison_points") or "").strip(),
         kill_count_text=str(cultivator_payload.get("kill_count") or "").strip(),
@@ -1855,6 +1897,7 @@ def create_app() -> FastAPI:
         cookie_text = _get_global_market_cookie()
         if not cookie_text:
             return
+        _sync_bootstrap_if_needed(storage, cookie_text)
         _sync_all_items_if_needed(storage, cookie_text)
         _sync_shop_items_if_needed(storage, cookie_text)
         _sync_marketplace_listings_if_needed(storage, cookie_text)

@@ -232,6 +232,12 @@ class Storage:
                     updated_at REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS level_thresholds (
+                    stage_name TEXT PRIMARY KEY,
+                    threshold INTEGER NOT NULL DEFAULT 0,
+                    updated_at REAL NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS marketplace_listings (
                     id INTEGER PRIMARY KEY,
                     item_id TEXT NOT NULL DEFAULT '',
@@ -1194,12 +1200,74 @@ class Storage:
                 values,
             )
 
+    def upsert_game_items_partial(self, items: list[dict]) -> None:
+        now = time.time()
+        values = []
+        for item in items:
+            item_id = str(item.get("id") or item.get("item_id") or "").strip()
+            if not item_id:
+                continue
+            values.append(
+                (
+                    item_id,
+                    str(item.get("name") or ""),
+                    str(item.get("description") or ""),
+                    str(item.get("type") or ""),
+                    int(item.get("rarity") or 0),
+                    int(item.get("value") or 0),
+                    now,
+                )
+            )
+        if not values:
+            return
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO game_items (id, name, description, type, rarity, value, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=CASE WHEN excluded.name != '' THEN excluded.name ELSE game_items.name END,
+                    description=CASE WHEN excluded.description != '' THEN excluded.description ELSE game_items.description END,
+                    type=CASE WHEN excluded.type != '' THEN excluded.type ELSE game_items.type END,
+                    rarity=CASE WHEN excluded.rarity != 0 THEN excluded.rarity ELSE game_items.rarity END,
+                    value=CASE WHEN excluded.value != 0 THEN excluded.value ELSE game_items.value END,
+                    updated_at=excluded.updated_at
+                """,
+                values,
+            )
+
     def get_shop_items(self) -> list[dict]:
         with self.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM shop_items ORDER BY shop_price ASC, item_id ASC"
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def get_level_thresholds(self) -> dict[str, int]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT stage_name, threshold FROM level_thresholds"
+            ).fetchall()
+        return {str(row["stage_name"]): int(row["threshold"] or 0) for row in rows}
+
+    def replace_level_thresholds(self, mappings: dict[str, int]) -> None:
+        now = time.time()
+        values = []
+        for stage_name, threshold in (mappings or {}).items():
+            name = str(stage_name or "").strip()
+            if not name:
+                continue
+            values.append((name, int(threshold or 0), now))
+        with self.connect() as conn:
+            conn.execute("DELETE FROM level_thresholds")
+            if values:
+                conn.executemany(
+                    """
+                    INSERT INTO level_thresholds (stage_name, threshold, updated_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    values,
+                )
 
     def replace_shop_items(self, items: list[dict]) -> None:
         now = time.time()
