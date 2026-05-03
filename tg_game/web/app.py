@@ -207,6 +207,63 @@ def _collect_display_names(value, game_items_dict: Optional[dict] = None) -> lis
     return names
 
 
+SCENERY_CODE_NAME_MAP = {
+    "scenery_001": "一柄青竹蜂云剑的剑影",
+    "scenery_002": "嗜血妖蝠的头骨",
+    "scenery_003": "天道金榜的拓印",
+    "scenery_004": "风希的一缕残念",
+    "scenery_005": "琉璃塔顶的刻痕",
+    "scenery_006": "异界商人的信物",
+    "scenery_007": "伏诛妖兽的精魄",
+    "scenery_008": "虚天殿的残垣",
+    "scenery_009": "通天仙门",
+    "scenery_010": "坠魔谷封魔碑",
+}
+
+
+def _resolve_scenery_display_name(
+    raw_value, game_items_dict: Optional[dict] = None
+) -> str:
+    text = str(raw_value or "").strip()
+    if not text:
+        return ""
+    normalized = text.lower()
+    mapped = SCENERY_CODE_NAME_MAP.get(normalized)
+    if mapped:
+        return mapped
+    return _resolve_payload_display_name(text, game_items_dict or {})
+
+
+def _build_scenery_entries(value, game_items_dict: Optional[dict] = None) -> list[dict]:
+    entries = []
+    seen = set()
+    for item in _coerce_json_list(value):
+        if isinstance(item, dict):
+            raw_id = str(
+                item.get("item_id")
+                or item.get("id")
+                or item.get("name")
+                or item.get("item_name")
+                or ""
+            ).strip()
+            name = str(item.get("name") or item.get("item_name") or "").strip()
+            if raw_id and not name:
+                name = _resolve_scenery_display_name(raw_id, game_items_dict)
+            elif name:
+                name = _resolve_scenery_display_name(name, game_items_dict)
+            if name and name not in seen:
+                seen.add(name)
+                entries.append({"id": raw_id or name, "name": name})
+            continue
+
+        raw_id = str(item or "").strip()
+        name = _resolve_scenery_display_name(raw_id, game_items_dict)
+        if name and name not in seen:
+            seen.add(name)
+            entries.append({"id": raw_id or name, "name": name})
+    return entries
+
+
 def _build_dongfu_view(payload: dict, game_items_dict: Optional[dict] = None) -> dict:
     dongfu = _coerce_json_dict(payload.get("dongfu"))
     inventory = _coerce_json_dict(payload.get("inventory"))
@@ -224,13 +281,16 @@ def _build_dongfu_view(payload: dict, game_items_dict: Optional[dict] = None) ->
         ]
         if name
     ]
+    unlocked_scenery_entries = _build_scenery_entries(
+        dongfu.get("unlocked_scenery"), game_items_dict
+    )
+    scenery_slot_entries = _build_scenery_entries(
+        dongfu.get("scenery_slots"), game_items_dict
+    )
     scenery_options = [
-        name
-        for name in [
-            *_collect_display_names(dongfu.get("unlocked_scenery"), game_items_dict),
-            *_collect_display_names(dongfu.get("scenery_slots"), game_items_dict),
-        ]
-        if name
+        entry.get("name")
+        for entry in [*unlocked_scenery_entries, *scenery_slot_entries]
+        if entry.get("name")
     ]
     return {
         "raw": dongfu,
@@ -246,10 +306,10 @@ def _build_dongfu_view(payload: dict, game_items_dict: Optional[dict] = None) ->
         "pavilion_slots": _build_dongfu_pavilion_slots_view(
             dongfu.get("pavilion_slots"), game_items_dict
         ),
-        "scenery_slots": _coerce_json_list(dongfu.get("scenery_slots")),
-        "unlocked_scenery": _coerce_json_list(dongfu.get("unlocked_scenery")),
+        "scenery_slots": scenery_slot_entries,
+        "unlocked_scenery": unlocked_scenery_entries,
         "storage_bag_options": sorted(set(storage_bag_options)),
-        "scenery_options": sorted(set(scenery_options)),
+        "scenery_options": scenery_options,
         "messages": _coerce_json_list(dongfu.get("messages")),
         "last_update_time": str(dongfu.get("last_update_time") or "").strip(),
     }
