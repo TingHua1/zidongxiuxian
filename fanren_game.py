@@ -29,6 +29,13 @@ FANREN_MIN_INTERVAL = 30
 FANREN_RUNNER_POLL_SECONDS = 5
 FANREN_REPLY_SYNC_GRACE_SECONDS = 300
 FANREN_AUTO_JIYIN_KEYWORD = "神念直入脑海，一个苍老的声音"
+FANREN_AUTO_JIYIN_KEYWORDS = [
+    FANREN_AUTO_JIYIN_KEYWORD,
+    "极阴祖师",
+    "无尽魔海的恐怖神识扫过天地",
+    "他的目光，似乎在修士",
+    "乱星海霸主【极阴祖师】",
+]
 FANREN_AUTO_NANLONG_KEYWORD = "你感到一股无法抗拒的意志锁定了你的神魂"
 FANREN_AUTO_JIYIN_CHOICES = {
     "献上魂魄": ".献上魂魄",
@@ -1015,7 +1022,8 @@ async def maybe_handle_special_auto_event(
         return False
     auto_command = ""
     auto_label = ""
-    if FANREN_AUTO_JIYIN_KEYWORD in raw_text and session.get("auto_jiyin_enabled"):
+    is_jiyin_event = any(keyword in raw_text for keyword in FANREN_AUTO_JIYIN_KEYWORDS)
+    if is_jiyin_event and session.get("auto_jiyin_enabled"):
         choice = _normalize_special_choice(session.get("auto_jiyin_choice") or "")
         auto_command = FANREN_AUTO_JIYIN_CHOICES.get(choice, "")
         auto_label = f"极阴祖师 → {choice}" if auto_command else ""
