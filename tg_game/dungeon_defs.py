@@ -1,6 +1,4 @@
-"""副本定义 — 供 web 和 runtime 共享的关键词匹配"""
-
-import re
+"""副本定义 — 供 web 和 runtime 共享的副本命令白名单"""
 
 DUNGEON_DEFINITIONS = [
     {
@@ -138,24 +136,16 @@ DUNGEON_DEFINITIONS = [
     },
 ]
 
-# 扁平化所有副本关键词/前缀，供 runtime 快速匹配
-_ALL_DUNGEON_KEYWORDS: set[str] = set()
 _ALL_DUNGEON_PREFIXES: list[str] = []
 for entry in DUNGEON_DEFINITIONS:
-    for kw in entry.get("keywords") or []:
-        _ALL_DUNGEON_KEYWORDS.add(kw.strip().lower())
     for prefix in entry.get("command_prefixes") or []:
         _ALL_DUNGEON_PREFIXES.append(prefix.strip().lower())
 
 
-def is_dungeon_related(text: str) -> bool:
-    """判断消息文本是否与任何副本相关"""
+def is_dungeon_command_text(text: str) -> bool:
+    """判断消息文本是否是任意副本的白名单指令"""
     t = (text or "").strip()
     if not t:
         return False
     t_lower = t.lower()
-    if any(kw in t_lower for kw in _ALL_DUNGEON_KEYWORDS):
-        return True
-    if any(t_lower.startswith(prefix) for prefix in _ALL_DUNGEON_PREFIXES):
-        return True
-    return False
+    return any(t_lower.startswith(prefix) for prefix in _ALL_DUNGEON_PREFIXES)

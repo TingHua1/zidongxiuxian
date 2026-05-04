@@ -13,11 +13,28 @@ from tg_game.services import module_registry
 from tg_game.services.external_sync import is_authorized_profile
 from tg_game.services.stock_sync import sync_stock_market_message
 from tg_game.storage import Storage
-from tg_game.dungeon_defs import is_dungeon_related
+from tg_game.dungeon_defs import is_dungeon_command_text
 from tg_game.services.stock_sync import sync_stock_market_message, is_stock_related
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_dungeon_reply_chain(
+    storage: Storage, chat_id: int, reply_to_msg_id: Optional[int]
+) -> bool:
+    current_id = int(reply_to_msg_id or 0)
+    depth = 0
+    while current_id and depth < 8:
+        parent = storage.get_bound_message(chat_id, current_id)
+        if not parent:
+            return False
+        parent_text = str(parent.get("text") or "").strip()
+        if not bool(parent.get("is_bot")) and is_dungeon_command_text(parent_text):
+            return True
+        current_id = int(parent.get("reply_to_msg_id") or 0)
+        depth += 1
+    return False
 
 
 class Router:
@@ -60,9 +77,16 @@ class Router:
                     should_store_message = await context.bot_message_targets_profile()
                 else:
                     should_store_message = context.is_profile_owner()
-            # 副本消息无条件存储（不限用户），以保证副本信息流完整
+            # 副本消息白名单存储：只收副本指令，以及 bot 对这些指令/回复链的回复
             if not should_store_message and context.text:
-                should_store_message = is_dungeon_related(context.text)
+                if not context.is_bot_sender:
+                    should_store_message = is_dungeon_command_text(context.text)
+                else:
+                    should_store_message = _is_dungeon_reply_chain(
+                        self.storage,
+                        context.chat_id or 0,
+                        context.reply_to_msg_id,
+                    )
             # 股市 bot 消息无条件存储（不限用户），以保证各用户都能看到股票数据
             if not should_store_message and context.text:
                 should_store_message = is_stock_related(context.text)

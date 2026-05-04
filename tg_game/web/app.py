@@ -166,7 +166,7 @@ OTHER_PLAY_DEFINITIONS = [
 ]
 
 
-from tg_game.dungeon_defs import DUNGEON_DEFINITIONS, is_dungeon_related
+from tg_game.dungeon_defs import DUNGEON_DEFINITIONS
 
 
 def _get_dungeon_definition(dungeon_key: str) -> dict:
@@ -606,56 +606,52 @@ def _list_dungeon_feed_source_messages(
         limit=300,
     )
     dungeon_def = _get_dungeon_definition(dungeon_key)
-    keywords = set(dungeon_def.get("keywords") or [])
     prefixes = dungeon_def.get("command_prefixes") or []
+    prefixes = [
+        str(prefix or "").strip() for prefix in prefixes if str(prefix or "").strip()
+    ]
+    messages_by_id = {
+        int(msg.get("message_id") or 0): msg
+        for msg in messages
+        if int(msg.get("message_id") or 0)
+    }
+    allowed_command_ids = {
+        int(msg.get("message_id") or 0)
+        for msg in messages
+        if not bool(msg.get("is_bot"))
+        and any(
+            str(msg.get("text") or "").strip().startswith(prefix) for prefix in prefixes
+        )
+    }
 
-    dungeon_command_msg_ids = set()
-    dungeon_messages = []
-
-    # 第一遍：按关键词/前缀匹配，并追踪回复链
-    for msg in messages:
-        text = str(msg.get("text") or "").strip()
+    def _has_allowed_ancestor(msg: dict) -> bool:
         message_id = int(msg.get("message_id") or 0)
+        if message_id in allowed_command_ids:
+            return True
+        if not bool(msg.get("is_bot")):
+            return False
         reply_to = int(msg.get("reply_to_msg_id") or 0)
-        is_bot = bool(msg.get("is_bot"))
+        depth = 0
+        while reply_to and depth < 8:
+            parent = messages_by_id.get(reply_to) or storage.get_bound_message(
+                chat_id, reply_to
+            )
+            if not parent:
+                return False
+            parent_id = int(parent.get("message_id") or 0)
+            parent_text = str(parent.get("text") or "").strip()
+            if parent_id in allowed_command_ids:
+                return True
+            if not bool(parent.get("is_bot")):
+                return any(parent_text.startswith(prefix) for prefix in prefixes)
+            reply_to = int(parent.get("reply_to_msg_id") or 0)
+            depth += 1
+        return False
 
-        matched = False
-        # 关键词匹配（子串命中）
-        if any(kw in text for kw in keywords):
-            matched = True
-        # 命令前缀匹配（消息以某个前缀开头）
-        if not matched and prefixes:
-            if any(text.startswith(prefix) for prefix in prefixes):
-                matched = True
-
-        if matched:
-            dungeon_command_msg_ids.add(message_id)
-            dungeon_messages.append(msg)
-        elif is_bot and reply_to and reply_to in dungeon_command_msg_ids:
-            dungeon_command_msg_ids.add(message_id)
-            dungeon_messages.append(msg)
-        elif not is_bot and reply_to and reply_to in dungeon_command_msg_ids:
-            # 队员/队长回复到已追踪的消息 → 加入追踪链
-            dungeon_command_msg_ids.add(message_id)
-            dungeon_messages.append(msg)
-        elif not is_bot and reply_to:
-            # 追踪这个回复的目标（可能是 bot 消息，留待第二遍补上）
-            dungeon_command_msg_ids.add(reply_to)
-
-    # 第二遍：补上第一遍中 reply_to 在 set 内但自身未匹配的消息
-    for msg in messages:
-        message_id = int(msg.get("message_id") or 0)
-        reply_to = int(msg.get("reply_to_msg_id") or 0)
-        is_bot = bool(msg.get("is_bot"))
-
-        if msg in dungeon_messages:
-            continue
-        if not reply_to or reply_to not in dungeon_command_msg_ids:
-            continue
-
-        dungeon_command_msg_ids.add(message_id)
-        dungeon_messages.append(msg)
-
+    dungeon_messages = [msg for msg in messages if _has_allowed_ancestor(msg)]
+    dungeon_messages.sort(
+        key=lambda msg: float(msg.get("created_at") or 0), reverse=True
+    )
     return dungeon_messages
 
 
