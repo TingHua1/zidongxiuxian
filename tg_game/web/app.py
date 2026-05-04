@@ -4100,10 +4100,24 @@ def create_app() -> FastAPI:
         try:
             fanren_game.ensure_tables(db)
             active_profile = _get_request_profile(request)
+            current_session = fanren_game.get_session(
+                db, chat_id, profile_id=active_profile.id if active_profile else None
+            )
+            preserve_next_check_time = 0
+            if (
+                (mode or "").strip().lower() == "deep"
+                and current_session
+                and float(current_session.get("next_check_time") or 0)
+                > fanren_game.time.time()
+            ):
+                preserve_next_check_time = float(
+                    current_session.get("next_check_time") or 0
+                )
             fanren_game.set_mode(
                 db,
                 chat_id,
                 mode,
+                preserve_next_check_time=preserve_next_check_time,
                 profile_id=active_profile.id if active_profile else None,
             )
             if active_profile:

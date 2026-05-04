@@ -57,6 +57,27 @@ def sync_cultivation_session(
     try:
         fanren_game.ensure_tables(runtime_db)
         session = fanren_game.get_session(runtime_db, chat_id, profile_id=profile_id)
+        preserve_deep_next_check_time = 0.0
+        preserve_deep_next_check_source = None
+        if session:
+            existing_next_check_time = float(session.get("next_check_time") or 0)
+            existing_next_check_source = str(
+                session.get("next_check_source") or ""
+            ).strip()
+            retreat_mode = str(session.get("retreat_mode") or "").strip().lower()
+            if (
+                retreat_mode == "deep"
+                and existing_next_check_time > now
+                and (
+                    existing_next_check_source == "deep_seclusion_end_time"
+                    or (session.get("last_event") or "")
+                    in fanren_game.FANREN_DEEP_PENDING_EVENTS
+                )
+            ):
+                preserve_deep_next_check_time = existing_next_check_time
+                preserve_deep_next_check_source = (
+                    existing_next_check_source or "deep_seclusion_end_time"
+                )
         if (
             deep_start
             and deep_end
@@ -83,6 +104,15 @@ def sync_cultivation_session(
                     if meditation_end >= cooldown_until
                     else "cultivation_cooldown_until"
                 )
+        if preserve_deep_next_check_time and (
+            next_check_time == 0
+            or next_check_source
+            in {"cultivation_cooldown_until", "meditation_end_time"}
+        ):
+            next_check_time = preserve_deep_next_check_time
+            next_check_source = preserve_deep_next_check_source
+            status_event = "deep_cultivating"
+            status_summary = "深度闭关中"
         fanren_game.update_session(
             runtime_db,
             chat_id,
