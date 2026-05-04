@@ -1805,17 +1805,13 @@ def _sync_profile_from_cultivator(
         cultivator_payload.get("username") or profile.telegram_username or ""
     ).strip()
     sect_name = (cultivator_payload.get("sect_name") or "").strip()
+    sect_position = _format_sect_position(cultivator_payload)
     sect_meta = SECT_METADATA.get(sect_name, {})
     stage_caps = {**CULTIVATION_STAGE_CAPS, **(storage.get_level_thresholds() or {})}
     storage.update_profile_game_info(
         profile_id=profile_id,
         display_name=(cultivator_payload.get("dao_name") or "").strip(),
         artifact_text=_format_external_artifacts(cultivator_payload),
-        sect_name=sect_name,
-        sect_contribution_text=str(
-            cultivator_payload.get("sect_contribution") or ""
-        ).strip(),
-        sect_position=_format_sect_position(cultivator_payload),
         spirit_root=(cultivator_payload.get("spirit_root") or "").strip(),
         stage_name=(cultivator_payload.get("cultivation_level") or "").strip(),
         cultivation_text=_format_cultivation_progress(
@@ -1832,6 +1828,7 @@ def _sync_profile_from_cultivator(
         profile_id=profile_id,
         sect_name=sect_name,
         sect_leader="",
+        sect_position=sect_position,
         sect_description=sect_meta.get("description", ""),
         sect_bonus_text=sect_meta.get("bonus", ""),
         sect_contribution_text=str(
