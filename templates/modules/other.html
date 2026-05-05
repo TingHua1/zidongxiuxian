@@ -1,22 +1,4 @@
 <section class="detail-grid three-column-grid">
-    <div class="detail-card other-overview-card">
-        <p>今日卜筮</p>
-        <strong class="overview-stat-value">{{ other_play_state.divination_count_today }}</strong>
-        <span class="muted">当前气运推演次数</span>
-    </div>
-    <div class="detail-card other-overview-card">
-        <p>仙界声望</p>
-        <strong class="overview-stat-value">{{ other_play_state.gambling_karma }}</strong>
-        <span class="muted">游历玩法共用声望值</span>
-    </div>
-    <div class="detail-card other-overview-card">
-        <p>古塔层数</p>
-        <strong class="overview-stat-value">{{ other_play_state.pagoda.highest_floor or 0 }}</strong>
-        <span class="muted">{{ other_play_state.pagoda.highest_floor_text }}</span>
-    </div>
-</section>
-
-<section class="detail-grid three-column-grid">
     <div class="detail-card">
         <div class="section-header compact">
             <p>卜筮问天</p>
@@ -24,7 +6,7 @@
         </div>
         <div class="stack-list compact-stack">
             <div class="kv-row"><span>今日进度</span><strong>{{ other_play_state.divination_count_today }} 次</strong></div>
-            <div class="kv-row"><span>最近卜筮</span><strong>{{ other_play_state.divination.last_divination_display or '-' }}</strong></div>
+            <div class="kv-row"><span>最近卜筮日期</span><strong>{{ other_play_state.divination.last_divination_display or '-' }}</strong></div>
         </div>
         <div class="action-row top-gap">
             <form method="post" action="/runtime/commands/send-raw">
@@ -74,6 +56,7 @@
         </div>
         <div class="stack-list compact-stack">
             <div class="kv-row"><span>最高层</span><strong>{{ other_play_state.pagoda.highest_floor_text }}</strong></div>
+            <div class="kv-row"><span>今日闯塔</span><strong>{{ '是' if other_play_state.pagoda.attempted_today else '否' }}</strong></div>
             <div class="kv-row"><span>今日重置</span><strong>{{ other_play_state.pagoda.resets_today }} 次</strong></div>
             <div class="kv-row"><span>失败层数</span><strong>{{ other_play_state.pagoda.failed_floor or '-' }}</strong></div>
             <div class="kv-row"><span>是否塔内</span><strong>{{ '是' if other_play_state.pagoda.is_in_pagoda else '否' }}</strong></div>

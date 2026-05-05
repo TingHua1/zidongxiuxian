@@ -180,11 +180,16 @@ def _get_dungeon_definition(dungeon_key: str) -> dict:
 def _build_pagoda_view(payload: dict) -> dict:
     raw_progress = _coerce_json_dict(payload.get("pagoda_progress"))
     highest_floor = int(raw_progress.get("highest_floor") or 0)
+    last_attempt_date = str(raw_progress.get("last_attempt_date") or "").strip()
+    today_text = fanren_game.time.strftime(
+        "%Y-%m-%d", fanren_game.time.localtime(fanren_game.time.time())
+    )
     return {
         "highest_floor": highest_floor,
         "highest_floor_text": f"第 {highest_floor} 层" if highest_floor else "-",
         "is_in_pagoda": bool(raw_progress.get("is_in_pagoda")),
-        "last_attempt_date": str(raw_progress.get("last_attempt_date") or "").strip(),
+        "last_attempt_date": last_attempt_date,
+        "attempted_today": bool(last_attempt_date[:10] == today_text),
         "failed_floor": int(payload.get("pagoda_failed_floor") or 0),
         "resets_today": int(payload.get("pagoda_resets_today") or 0),
         "claimed_floors": _coerce_json_list(payload.get("pagoda_claimed_floors")),
@@ -519,7 +524,7 @@ def _build_divination_view(payload: dict) -> dict:
     return {
         "last_divination_date": last_divination_text,
         "last_divination_ts": last_divination_ts,
-        "last_divination_display": fanren_game.format_timestamp(last_divination_ts),
+        "last_divination_display": last_divination_day,
         "today_count": raw_today_count if last_divination_day == today_text else 0,
     }
 
