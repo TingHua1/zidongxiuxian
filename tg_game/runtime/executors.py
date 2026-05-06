@@ -89,6 +89,19 @@ def _get_cached_divination_today_count(storage: Storage, profile_id: int) -> int
     return _get_divination_today_count_from_payload(payload)
 
 
+def _refresh_divination_payload(storage: Storage, profile_id: int):
+    from tg_game.services.external_sync import sync_external_account, ASC_PROVIDER
+
+    external_account = storage.get_external_account(profile_id, ASC_PROVIDER) or {}
+    cookie_text = (external_account.get("cookie_text") or "").strip()
+    if not cookie_text:
+        return None
+    try:
+        return sync_external_account(storage, profile_id, cookie_text=cookie_text)
+    except Exception:
+        return None
+
+
 def _parse_iso_to_ts(raw_value: object) -> float:
     text = str(raw_value or "").strip()
     if not text:
@@ -309,8 +322,58 @@ async def _run_divination_batch_scheduler(client: object, storage: Storage) -> N
                 await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
                 continue
 
-            # 计划次数已发完后，不再按 reply 推进；每分钟检查一次计数，不足则补发
+            # 计划次数已发完后，主动刷新天机阁缓存再决定补发与否
             needs_makeup = current_count < target_count
+            if sent_count >= planned_rounds and needs_makeup:
+                try:
+                    fresh_payload = await asyncio.to_thread(
+                        _refresh_divination_payload, storage, int(profile_id)
+                    )
+                    if fresh_payload and isinstance(fresh_payload, dict):
+                        fresh_count = _get_divination_today_count_from_payload(
+                            fresh_payload
+                        )
+                        fresh_completed = max(fresh_count - initial_count, 0)
+                        storage.update_divination_batch(
+                            batch_id,
+                            completed_count=fresh_completed,
+                            last_error="",
+                        )
+                        if fresh_count >= target_count:
+                            storage.cancel_pending_outgoing_commands(
+                                int(profile_id), chat_id, text=DIVINATION_COMMAND
+                            )
+                            storage.finish_divination_batch(
+                                batch_id, status="completed"
+                            )
+                            await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
+                            continue
+                        current_count = fresh_count
+                        completed_count = fresh_completed
+                        needs_makeup = current_count < target_count
+                    else:
+                        # 接口返回None或非dict，终止补发
+                        storage.cancel_pending_outgoing_commands(
+                            int(profile_id), chat_id, text=DIVINATION_COMMAND
+                        )
+                        storage.finish_divination_batch(
+                            batch_id,
+                            status="failed",
+                            last_error="天机阁接口刷新失败，终止补发",
+                        )
+                        await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
+                        continue
+                except Exception:
+                    storage.cancel_pending_outgoing_commands(
+                        int(profile_id), chat_id, text=DIVINATION_COMMAND
+                    )
+                    storage.finish_divination_batch(
+                        batch_id,
+                        status="failed",
+                        last_error="天机阁接口刷新异常，终止补发",
+                    )
+                    await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
+                    continue
             if sent_count >= planned_rounds and not needs_makeup:
                 await asyncio.sleep(DIVINATION_BATCH_POLL_SECONDS)
                 continue
