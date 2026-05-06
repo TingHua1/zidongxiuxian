@@ -1,7 +1,9 @@
 import asyncio
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import artifact_game
@@ -31,6 +33,20 @@ logger = logging.getLogger(__name__)
 DIVINATION_COMMAND = ".卜筮问天"
 DIVINATION_BATCH_COMMAND_INTERVAL_SECONDS = 60
 DIVINATION_BATCH_POLL_SECONDS = 5
+COMPANION_AUTO_POLL_SECONDS = 5
+COMPANION_AUTO_POST_SEND_GRACE_SECONDS = 1800
+COMPANION_AUTO_FEATURES = {
+    "dream_seek": {
+        "command": ".入梦寻图",
+        "payload_field": "last_dream_map_seek_time",
+        "cooldown_hours": 8,
+    },
+    "divination_chain": {
+        "command": ".天机代卜",
+        "payload_field": "last_divination_chain_time",
+        "cooldown_hours": 12,
+    },
+}
 
 
 def _register_client_background_task(
@@ -70,6 +86,148 @@ def _get_divination_today_count_from_payload(payload: dict) -> int:
 def _get_cached_divination_today_count(storage: Storage, profile_id: int) -> int:
     payload = read_cached_external_payload(storage, profile_id)
     return _get_divination_today_count_from_payload(payload)
+
+
+def _parse_iso_to_ts(raw_value: object) -> float:
+    text = str(raw_value or "").strip()
+    if not text:
+        return 0.0
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return 0.0
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).timestamp()
+
+
+def _resolve_companion_next_run_at(payload: dict, feature_key: str) -> Optional[float]:
+    feature = COMPANION_AUTO_FEATURES.get(feature_key) or {}
+    payload_field = str(feature.get("payload_field") or "").strip()
+    cooldown_hours = int(feature.get("cooldown_hours") or 0)
+    dongfu = payload.get("dongfu") or {}
+    if isinstance(dongfu, str):
+        try:
+            dongfu = json.loads(dongfu)
+        except Exception:
+            dongfu = {}
+    if isinstance(dongfu, dict):
+        companion_residence = dongfu.get("companion_residence") or {}
+        if isinstance(companion_residence, str):
+            try:
+                companion_residence = json.loads(companion_residence)
+            except Exception:
+                companion_residence = {}
+        if not isinstance(companion_residence, dict):
+            companion_residence = {}
+    if cooldown_hours <= 0 or not payload_field:
+        return None
+    if payload_field not in companion_residence:
+        return None
+    last_ts = _parse_iso_to_ts(companion_residence.get(payload_field))
+    if last_ts <= 0:
+        return None
+    return last_ts + cooldown_hours * 3600
+
+
+async def _run_companion_auto_scheduler(client: object, storage: Storage) -> None:
+    profile_id = getattr(client, "_tg_game_profile_id", None)
+    if not profile_id:
+        return
+
+    while True:
+        try:
+            tasks = storage.list_active_companion_auto_tasks(int(profile_id))
+            if not tasks:
+                await asyncio.sleep(COMPANION_AUTO_POLL_SECONDS)
+                continue
+
+            payload = read_cached_external_payload(storage, int(profile_id))
+            now = time.time()
+            for task in tasks:
+                task_id = int(task.get("id") or 0)
+                feature_key = str(task.get("feature_key") or "").strip()
+                feature = COMPANION_AUTO_FEATURES.get(feature_key)
+                if not feature or not task_id:
+                    continue
+
+                resolved_next_run_at = _resolve_companion_next_run_at(
+                    payload, feature_key
+                )
+                if resolved_next_run_at is None:
+                    storage.cancel_pending_outgoing_commands(
+                        int(profile_id),
+                        int(task.get("chat_id") or 0),
+                        text=str(feature.get("command") or ""),
+                    )
+                    storage.update_companion_auto_task(
+                        task_id,
+                        enabled=0,
+                        next_run_at=0,
+                        last_error=f"最新 payload 缺少{feature.get('command') or feature_key}冷却字段，已停止自动。",
+                    )
+                    continue
+                if resolved_next_run_at > now:
+                    storage.update_companion_auto_task(
+                        task_id,
+                        next_run_at=resolved_next_run_at,
+                        last_error="",
+                    )
+                    continue
+
+                chat_id = int(task.get("chat_id") or 0)
+                if not chat_id:
+                    storage.update_companion_auto_task(
+                        task_id,
+                        enabled=0,
+                        last_error="Chat ID missing",
+                    )
+                    continue
+
+                thread_id = (
+                    int(task.get("thread_id")) if task.get("thread_id") else None
+                )
+                latest_command = storage.get_latest_outgoing_command(
+                    chat_id,
+                    profile_id=int(profile_id),
+                    text=str(feature.get("command") or ""),
+                    thread_id=thread_id,
+                )
+                if latest_command and str(
+                    latest_command.get("status") or ""
+                ).strip() in {"pending", "sending"}:
+                    continue
+
+                last_run_at = float(task.get("last_run_at") or 0)
+                if (
+                    last_run_at
+                    and (now - last_run_at) < COMPANION_AUTO_POST_SEND_GRACE_SECONDS
+                ):
+                    continue
+
+                storage.enqueue_outgoing_command(
+                    profile_id=int(profile_id),
+                    chat_id=chat_id,
+                    text=str(feature.get("command") or "").strip(),
+                    thread_id=thread_id,
+                    chat_type=str(task.get("chat_type") or "group"),
+                    bot_username=str(task.get("bot_username") or ""),
+                )
+                storage.update_companion_auto_task(
+                    task_id,
+                    last_run_at=now,
+                    next_run_at=now + COMPANION_AUTO_POST_SEND_GRACE_SECONDS,
+                    last_error="",
+                )
+            await asyncio.sleep(COMPANION_AUTO_POLL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Companion auto scheduler error for profile=%s: %s", profile_id, exc
+            )
+            await asyncio.sleep(10)
 
 
 async def _run_divination_batch_scheduler(client: object, storage: Storage) -> None:
@@ -1074,6 +1232,10 @@ class GeneralGameExecutor(BaseExecutor):
         _register_client_background_task(
             client,
             asyncio.create_task(_run_divination_batch_scheduler(client, storage)),
+        )
+        _register_client_background_task(
+            client,
+            asyncio.create_task(_run_companion_auto_scheduler(client, storage)),
         )
         return
 

@@ -1,8 +1,10 @@
 import asyncio
+import math
 import json
 import logging
 import re
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote_plus
@@ -55,6 +57,22 @@ EXTERNAL_REFRESH_LOOP_SECONDS = get_external_keepalive_poll_seconds()
 
 
 logger = logging.getLogger(__name__)
+SHANGHAI_TZ = timezone(timedelta(hours=8))
+COMPANION_AUTO_FEATURES = {
+    "dream_seek": {
+        "label": "入梦寻图",
+        "command": ".入梦寻图",
+        "cooldown_hours": 8,
+        "payload_field": "last_dream_map_seek_time",
+    },
+    "divination_chain": {
+        "label": "天机代卜",
+        "command": ".天机代卜",
+        "cooldown_hours": 12,
+        "payload_field": "last_divination_chain_time",
+    },
+}
+COMPANION_AUTO_MANUAL_DELAY_SECONDS = 1800
 
 
 def _coerce_json_list(value) -> list:
@@ -79,6 +97,224 @@ def _coerce_json_dict(value) -> dict:
             return {}
         return parsed if isinstance(parsed, dict) else {}
     return {}
+
+
+def _parse_iso_datetime(raw_value) -> Optional[datetime]:
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _format_datetime_display(raw_value) -> str:
+    parsed = _parse_iso_datetime(raw_value)
+    if not parsed:
+        return "-"
+    return parsed.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M")
+
+
+def _format_remaining_delta(end_time: Optional[datetime]) -> str:
+    if not end_time:
+        return "可施展"
+    now = datetime.now(timezone.utc)
+    remaining_seconds = int((end_time.astimezone(timezone.utc) - now).total_seconds())
+    if remaining_seconds <= 0:
+        return "可施展"
+    total_minutes = math.ceil(remaining_seconds / 60)
+    hours, minutes = divmod(total_minutes, 60)
+    if hours <= 0:
+        return f"{minutes}分钟"
+    if minutes == 0:
+        return f"{hours}小时"
+    return f"{hours}小时{minutes}分钟"
+
+
+def _format_cooldown_from_last(raw_value, cooldown_hours: int) -> str:
+    parsed = _parse_iso_datetime(raw_value)
+    if not parsed:
+        return "可施展"
+    end_time = parsed + timedelta(hours=max(int(cooldown_hours or 0), 0))
+    return _format_remaining_delta(end_time)
+
+
+def _cooldown_target_timestamp(raw_value, cooldown_hours: int) -> float:
+    parsed = _parse_iso_datetime(raw_value)
+    if not parsed:
+        return 0.0
+    end_time = parsed + timedelta(hours=max(int(cooldown_hours or 0), 0))
+    return end_time.astimezone(timezone.utc).timestamp()
+
+
+def _resolve_latest_companion_payload(payload: dict) -> dict:
+    dongfu = _coerce_json_dict(payload.get("dongfu"))
+    companion_residence = _coerce_json_dict(dongfu.get("companion_residence"))
+    return companion_residence if companion_residence else {}
+
+
+def _resolve_latest_companion_cooldown_target(
+    companion_payload: dict,
+    field_name: str,
+    cooldown_hours: int,
+) -> Optional[float]:
+    normalized_field_name = str(field_name or "").strip()
+    if not normalized_field_name or normalized_field_name not in companion_payload:
+        return None
+    raw_value = companion_payload.get(normalized_field_name)
+    parsed = _parse_iso_datetime(raw_value)
+    if not parsed:
+        return None
+    end_time = parsed + timedelta(hours=max(int(cooldown_hours or 0), 0))
+    return end_time.astimezone(timezone.utc).timestamp()
+
+
+def _format_companion_cooldown_display(target: Optional[float]) -> str:
+    if target is None:
+        return "接口未提供"
+    now_ts = fanren_game.time.time()
+    if target <= now_ts:
+        return "可施展"
+    return _format_remaining_delta(datetime.fromtimestamp(target, tz=timezone.utc))
+
+
+def _extract_reply_field(reply_text: str, label: str) -> str:
+    if not reply_text:
+        return ""
+    pattern = rf"-\s*{re.escape(label)}:\s*([^\n]+)"
+    match = re.search(pattern, reply_text)
+    return match.group(1).strip() if match else ""
+
+
+def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict:
+    companion_payload = _resolve_latest_companion_payload(payload)
+    heart_vow = _coerce_json_dict(companion_payload.get("heart_vow"))
+    fragment_bag = _coerce_json_dict(companion_payload.get("xutian_fragment_bag"))
+
+    fragment_entries = [
+        ("xutian_chart_east", "东"),
+        ("xutian_chart_south", "南"),
+        ("xutian_chart_west", "西"),
+        ("xutian_chart_north", "北"),
+    ]
+    fragment_count = sum(
+        1 for key, _label in fragment_entries if int(fragment_bag.get(key) or 0) > 0
+    )
+    fragment_detail = " / ".join(
+        f"{label}{int(fragment_bag.get(key) or 0)}" for key, label in fragment_entries
+    )
+
+    reply_divination_chain = _extract_reply_field(companion_reply_text, "天机代卜链")
+    reply_abyss_guard = _extract_reply_field(companion_reply_text, "坠魔谷护持")
+
+    divination_chain_text = str(companion_payload.get("divination_chain") or "").strip()
+    abyss_guard_text = str(companion_payload.get("abyss_guard") or "").strip()
+
+    if not divination_chain_text:
+        divination_chain_text = reply_divination_chain or "接口未提供"
+    if not abyss_guard_text:
+        abyss_guard_text = reply_abyss_guard or "接口未提供"
+
+    current_vow_text = str(heart_vow.get("type") or "").strip() or "无"
+    relation_title = "侍妾同行"
+    companion_name = str(companion_payload.get("name") or "-").strip() or "-"
+    status_text = "-"
+    affection_value = int(companion_payload.get("affection") or 0)
+    heart_demon_value = payload.get("companion_heart_demon_value")
+    dream_seek_target = _resolve_latest_companion_cooldown_target(
+        companion_payload,
+        "last_dream_map_seek_time",
+        8,
+    )
+    heart_tribulation_target = _resolve_latest_companion_cooldown_target(
+        companion_payload,
+        "last_companion_heart_tribulation_time",
+        10,
+    )
+    divination_chain_target = _resolve_latest_companion_cooldown_target(
+        companion_payload,
+        "last_divination_chain_time",
+        12,
+    )
+    now_ts = fanren_game.time.time()
+
+    return {
+        "available": bool(companion_payload),
+        "relation_title": relation_title,
+        "name": companion_name,
+        "status": status_text,
+        "affection": affection_value,
+        "heart_demon_value": (
+            "-" if heart_demon_value is None else str(heart_demon_value).strip() or "-"
+        ),
+        "current_vow": current_vow_text,
+        "sworn_at_display": _format_datetime_display(heart_vow.get("sworn_at")),
+        "divination_chain": divination_chain_text,
+        "abyss_guard": abyss_guard_text,
+        "dream_seek_display": _format_companion_cooldown_display(dream_seek_target),
+        "dream_seek_cooldown_target": float(dream_seek_target or 0),
+        "heart_tribulation_display": _format_companion_cooldown_display(
+            heart_tribulation_target
+        ),
+        "heart_tribulation_cooldown_target": float(heart_tribulation_target or 0),
+        "divination_chain_display": _format_companion_cooldown_display(
+            divination_chain_target
+        ),
+        "divination_chain_cooldown_target": float(divination_chain_target or 0),
+        "fragment_progress": f"{fragment_count}/4",
+        "fragment_detail": fragment_detail,
+        "heart_tribulation_command": ".共历心劫",
+    }
+
+
+def _build_companion_auto_view(raw_task: Optional[dict], feature_key: str) -> dict:
+    feature = COMPANION_AUTO_FEATURES.get(feature_key) or {}
+    task = raw_task or {}
+    next_run_at = float(task.get("next_run_at") or 0)
+    return {
+        "feature_key": feature_key,
+        "label": str(feature.get("label") or feature_key),
+        "command": str(feature.get("command") or "").strip(),
+        "enabled": bool(task) and bool(task.get("enabled")),
+        "active": bool(task) and bool(task.get("enabled")),
+        "next_run_at": next_run_at,
+        "next_run_display": (
+            _format_remaining_delta(
+                datetime.fromtimestamp(next_run_at, tz=timezone.utc)
+            )
+            if next_run_at > 0
+            else "待命"
+        ),
+        "status_display": (
+            _format_remaining_delta(
+                datetime.fromtimestamp(next_run_at, tz=timezone.utc)
+            )
+            if next_run_at > 0 and bool(task) and bool(task.get("enabled"))
+            else ("已停止" if str(task.get("last_error") or "").strip() else "未开启")
+        ),
+        "last_error": str(task.get("last_error") or "").strip(),
+    }
+
+
+def _resolve_companion_auto_next_run_at(
+    payload: dict, feature_key: str
+) -> Optional[float]:
+    feature = COMPANION_AUTO_FEATURES.get(feature_key) or {}
+    companion_payload = _resolve_latest_companion_payload(payload)
+    cooldown_hours = int(feature.get("cooldown_hours") or 0)
+    payload_field = str(feature.get("payload_field") or "").strip()
+    if not payload_field or cooldown_hours <= 0:
+        return None
+    return _resolve_latest_companion_cooldown_target(
+        companion_payload,
+        payload_field,
+        cooldown_hours,
+    )
 
 
 OTHER_PLAY_DEFINITIONS = [
@@ -539,6 +775,108 @@ def _build_taiyi_view(payload: dict) -> dict:
     return {
         "taiyi_shenshi_points": int(payload.get("taiyi_shenshi_points") or 0),
     }
+
+
+def _build_tianji_encounter_state(
+    storage: Storage,
+    profile_id: int,
+    chat_id: Optional[int],
+) -> dict:
+    state = {
+        "strategy": "未知",
+        "today_count": "0/2",
+        "last_encounter": "暂无",
+        "records": [],
+    }
+    if not chat_id:
+        return state
+
+    # 1. 提取状态：仅认天机遭遇战面板/策略变更回包，必要时回退到最近的 outgoing 策略指令
+    status_messages = storage.list_bound_messages(
+        profile_id=profile_id,
+        chat_id=chat_id,
+        search_query="天机遭遇战",
+        limit=80,
+    )
+
+    latest_strategy = ""
+    for msg in status_messages:
+        text = str(msg.get("text") or "").strip()
+        is_bot = bool(msg.get("is_bot"))
+
+        if (
+            is_bot
+            and text.startswith("【天机遭遇战】")
+            and "当前策略:" in text
+            and "今日遭遇:" in text
+        ):
+            strategy_match = re.search(r"当前策略:\s*([^\n]+)", text)
+            panel_strategy = strategy_match.group(1).strip() if strategy_match else ""
+            if panel_strategy and not latest_strategy:
+                latest_strategy = panel_strategy
+            count_match = re.search(r"今日遭遇:\s*([^\n]+)", text)
+            if count_match:
+                state["today_count"] = count_match.group(1).strip()
+            last_match = re.search(r"上次遭遇:\s*([^\n]+)", text)
+            if last_match:
+                state["last_encounter"] = last_match.group(1).strip()
+            if state["today_count"] != "0/2" or state["last_encounter"] != "暂无":
+                break
+        elif (
+            is_bot
+            and text.startswith("【天机遭遇战】")
+            and "策略已改为" in text
+            and not latest_strategy
+        ):
+            strategy_match = re.search(r"策略已改为：([^\n。]+)", text)
+            if strategy_match:
+                latest_strategy = strategy_match.group(1).strip()
+        elif not is_bot and text.startswith(".天机遭遇战 ") and not latest_strategy:
+            parts = text.split()
+            if len(parts) >= 2 and parts[1] in ("谨慎", "均衡", "夺宝", "关闭"):
+                latest_strategy = parts[1]
+
+    if latest_strategy:
+        state["strategy"] = latest_strategy
+
+    # 2. 提取记录：只认【天机遭遇战记录】回包；这是 PVP 随机遭遇玩家玩法的唯一卷宗来源
+    record_messages = storage.list_bound_messages(
+        profile_id=profile_id,
+        chat_id=chat_id,
+        search_query="天机遭遇战记录",
+        limit=20,
+    )
+
+    records = []
+    for msg in record_messages:
+        if not msg.get("is_bot"):
+            continue
+        text = str(msg.get("text") or "").strip()
+        if not text.startswith("【天机遭遇战记录】"):
+            continue
+        time_display = fanren_game.format_timestamp(msg.get("created_at") or 0)
+
+        lines = text.split("\n")[1:]  # 去掉标题
+        for line in lines:
+            line = line.strip()
+            if line and line != "暂未留下遭遇因果。":
+                records.append(
+                    {
+                        "text": line,
+                        "time": time_display,
+                    }
+                )
+
+    # 去重并限制数量
+    unique_records = []
+    seen_texts = set()
+    for r in records:
+        if r["text"] not in seen_texts:
+            seen_texts.add(r["text"])
+            unique_records.append(r)
+
+    state["records"] = unique_records[:5]
+    return state
 
 
 def _build_other_play_view(payload: dict) -> dict:
@@ -3191,6 +3529,37 @@ def create_app() -> FastAPI:
         learned_techniques_text = "-"
         equipped_artifact_name = ""
         recipes_known_entries = []
+        tianji_encounter_state = {
+            "strategy": "未知",
+            "today_count": "0/2",
+            "last_encounter": "暂无",
+            "records": [],
+        }
+        companion_state = {
+            "available": False,
+            "relation_title": "侍妾同行",
+            "name": "-",
+            "status": "-",
+            "affection": 0,
+            "heart_demon_value": "-",
+            "current_vow": "无",
+            "sworn_at_display": "-",
+            "divination_chain": "-",
+            "abyss_guard": "-",
+            "dream_seek_display": "接口未提供",
+            "dream_seek_cooldown_target": 0.0,
+            "heart_tribulation_display": "接口未提供",
+            "heart_tribulation_cooldown_target": 0.0,
+            "divination_chain_display": "接口未提供",
+            "divination_chain_cooldown_target": 0.0,
+            "fragment_progress": "0/4",
+            "fragment_detail": "东0 / 南0 / 西0 / 北0",
+            "heart_tribulation_command": ".共历心劫",
+        }
+        companion_auto_state = {
+            "dream_seek": _build_companion_auto_view(None, "dream_seek"),
+            "divination_chain": _build_companion_auto_view(None, "divination_chain"),
+        }
         if active_profile:
             storage.ensure_module_settings(
                 active_profile.id, module_registry.list_modules()
@@ -3291,6 +3660,45 @@ def create_app() -> FastAPI:
                             getattr(active_profile, "telegram_username", "")
                         ],
                     )
+                    tianji_encounter_state = _build_tianji_encounter_state(
+                        storage,
+                        active_profile.id,
+                        command_chat.chat_id if command_chat else None,
+                    )
+                    command_sender_text = str(
+                        getattr(command_chat, "telegram_user_id", "")
+                        or getattr(active_profile, "telegram_user_id", "")
+                        or ""
+                    ).strip()
+                    companion_reply = storage.get_latest_bot_reply_for_command(
+                        command_chat.chat_id if command_chat else 0,
+                        ".我的侍妾",
+                        profile_id=active_profile.id,
+                        thread_id=command_chat.thread_id if command_chat else None,
+                        sender_id=(
+                            int(command_sender_text)
+                            if command_sender_text.isdigit()
+                            else None
+                        ),
+                        sender_username=(
+                            getattr(active_profile, "telegram_username", "") or ""
+                        ),
+                    )
+                    companion_state = _build_companion_view(
+                        payload,
+                        str((companion_reply or {}).get("text") or "").strip(),
+                    )
+                    companion_auto_state = {
+                        feature_key: _build_companion_auto_view(
+                            storage.get_companion_auto_task(
+                                active_profile.id,
+                                command_chat.chat_id if command_chat else 0,
+                                feature_key,
+                            ),
+                            feature_key,
+                        )
+                        for feature_key in COMPANION_AUTO_FEATURES
+                    }
                 if module_key == "estate":
                     command_sender_text = str(
                         getattr(command_chat, "telegram_user_id", "")
@@ -3553,6 +3961,9 @@ def create_app() -> FastAPI:
                 "other_play_state": other_play_state,
                 "other_opponent_options": other_opponent_options,
                 "divination_batch_state": divination_batch_state,
+                "tianji_encounter_state": tianji_encounter_state,
+                "companion_state": companion_state,
+                "companion_auto_state": companion_auto_state,
                 "dongfu_state": dongfu_state,
                 "stock_state": stock_state,
                 "dungeon_definitions": DUNGEON_DEFINITIONS,
@@ -3917,6 +4328,106 @@ def create_app() -> FastAPI:
             resolved_chat_id,
             text=".卜筮问天",
         )
+        return RedirectResponse(url=redirect_to, status_code=303)
+
+    @application.post("/runtime/commands/companion-auto")
+    async def runtime_toggle_companion_auto(
+        request: Request,
+        chat_id: str = Form(...),
+        feature_key: str = Form(...),
+        thread_id: Optional[str] = Form(None),
+        chat_type: str = Form("group"),
+        bot_username: str = Form("fanrenxiuxian_bot"),
+        redirect_to: str = Form("/modules/other"),
+    ) -> RedirectResponse:
+        profile = _get_request_profile(request)
+        if not profile:
+            raise HTTPException(status_code=401, detail="Profile not active")
+        expired_redirect = _ensure_external_session_active(profile)
+        if expired_redirect:
+            return expired_redirect
+
+        normalized_chat_id = str(chat_id or "").strip()
+        normalized_feature_key = str(feature_key or "").strip()
+        feature = COMPANION_AUTO_FEATURES.get(normalized_feature_key)
+        if not normalized_chat_id:
+            raise HTTPException(status_code=400, detail="Chat ID not configured")
+        if not feature:
+            raise HTTPException(
+                status_code=400, detail="Invalid companion auto feature"
+            )
+
+        resolved_chat_id = int(normalized_chat_id)
+        existing_task = storage.get_companion_auto_task(
+            profile.id, resolved_chat_id, normalized_feature_key
+        )
+        if existing_task and bool(existing_task.get("enabled")):
+            storage.disable_companion_auto_task(
+                profile.id, resolved_chat_id, normalized_feature_key
+            )
+            storage.cancel_pending_outgoing_commands(
+                profile.id,
+                resolved_chat_id,
+                text=str(feature.get("command") or ""),
+            )
+            return RedirectResponse(url=redirect_to, status_code=303)
+
+        payload = read_cached_external_payload(storage, profile.id)
+        next_run_at = _resolve_companion_auto_next_run_at(
+            payload, normalized_feature_key
+        )
+        if next_run_at is None:
+            storage.upsert_companion_auto_task(
+                profile_id=profile.id,
+                chat_id=resolved_chat_id,
+                feature_key=normalized_feature_key,
+                enabled=False,
+                thread_id=int(thread_id) if thread_id and thread_id.isdigit() else None,
+                chat_type=chat_type,
+                bot_username=bot_username,
+                next_run_at=0,
+                last_error=f"最新 payload 缺少{feature.get('label') or normalized_feature_key}冷却字段，已停止自动。",
+            )
+            storage.cancel_pending_outgoing_commands(
+                profile.id,
+                resolved_chat_id,
+                text=str(feature.get("command") or ""),
+            )
+            return RedirectResponse(url=redirect_to, status_code=303)
+        storage.upsert_companion_auto_task(
+            profile_id=profile.id,
+            chat_id=resolved_chat_id,
+            feature_key=normalized_feature_key,
+            enabled=True,
+            thread_id=int(thread_id) if thread_id and thread_id.isdigit() else None,
+            chat_type=chat_type,
+            bot_username=bot_username,
+            next_run_at=next_run_at,
+            last_error="",
+        )
+        if next_run_at <= fanren_game.time.time():
+            now_ts = fanren_game.time.time()
+            storage.enqueue_outgoing_command(
+                profile_id=profile.id,
+                chat_id=resolved_chat_id,
+                text=str(feature.get("command") or "").strip(),
+                thread_id=int(thread_id) if thread_id and thread_id.isdigit() else None,
+                chat_type=chat_type,
+                bot_username=bot_username,
+                delay_seconds=0,
+            )
+            storage.upsert_companion_auto_task(
+                profile_id=profile.id,
+                chat_id=resolved_chat_id,
+                feature_key=normalized_feature_key,
+                enabled=True,
+                thread_id=int(thread_id) if thread_id and thread_id.isdigit() else None,
+                chat_type=chat_type,
+                bot_username=bot_username,
+                next_run_at=now_ts + COMPANION_AUTO_MANUAL_DELAY_SECONDS,
+                last_run_at=now_ts,
+                last_error="",
+            )
         return RedirectResponse(url=redirect_to, status_code=303)
 
     @application.post("/runtime/sect/action")

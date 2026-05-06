@@ -299,6 +299,24 @@ class Storage:
                     FOREIGN KEY (profile_id) REFERENCES profiles(id)
                 );
 
+                CREATE TABLE IF NOT EXISTS companion_auto_tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    thread_id INTEGER,
+                    chat_type TEXT NOT NULL DEFAULT 'group',
+                    bot_username TEXT NOT NULL DEFAULT '',
+                    feature_key TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    next_run_at REAL NOT NULL DEFAULT 0,
+                    last_run_at REAL NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(profile_id, chat_id, bot_username, feature_key),
+                    FOREIGN KEY (profile_id) REFERENCES profiles(id)
+                );
+
                 CREATE TABLE IF NOT EXISTS stock_market_info (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile_id INTEGER NOT NULL,
@@ -393,6 +411,8 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_outgoing_commands_status_created ON outgoing_commands(status, created_at ASC);
                 CREATE INDEX IF NOT EXISTS idx_divination_batches_profile_status ON divination_batches(profile_id, status, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_divination_batches_chat_status ON divination_batches(chat_id, status, created_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_companion_auto_tasks_profile_enabled ON companion_auto_tasks(profile_id, enabled, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_companion_auto_tasks_chat_feature ON companion_auto_tasks(chat_id, feature_key, enabled);
                 CREATE INDEX IF NOT EXISTS idx_stock_market_info_profile_updated ON stock_market_info(profile_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_stock_market_history_code_observed ON stock_market_history(stock_code, observed_at DESC, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_stock_player_replies_profile_updated ON stock_player_replies(profile_id, updated_at DESC);
@@ -477,6 +497,24 @@ class Storage:
                     "pending_command_msg_id": "INTEGER NOT NULL DEFAULT 0",
                     "last_dispatch_at": "REAL NOT NULL DEFAULT 0",
                     "status": "TEXT NOT NULL DEFAULT 'active'",
+                    "last_error": "TEXT NOT NULL DEFAULT ''",
+                    "created_at": "REAL NOT NULL DEFAULT 0",
+                    "updated_at": "REAL NOT NULL DEFAULT 0",
+                },
+            )
+            self._ensure_columns(
+                conn,
+                "companion_auto_tasks",
+                {
+                    "profile_id": "INTEGER NOT NULL DEFAULT 0",
+                    "chat_id": "INTEGER NOT NULL DEFAULT 0",
+                    "thread_id": "INTEGER",
+                    "chat_type": "TEXT NOT NULL DEFAULT 'group'",
+                    "bot_username": "TEXT NOT NULL DEFAULT ''",
+                    "feature_key": "TEXT NOT NULL DEFAULT ''",
+                    "enabled": "INTEGER NOT NULL DEFAULT 1",
+                    "next_run_at": "REAL NOT NULL DEFAULT 0",
+                    "last_run_at": "REAL NOT NULL DEFAULT 0",
                     "last_error": "TEXT NOT NULL DEFAULT ''",
                     "created_at": "REAL NOT NULL DEFAULT 0",
                     "updated_at": "REAL NOT NULL DEFAULT 0",
@@ -1961,6 +1999,127 @@ class Storage:
             batch_id,
             status=(status or "completed").strip() or "completed",
             pending_command_msg_id=0,
+            last_error=(last_error or "")[:1000],
+        )
+
+    def get_companion_auto_task(
+        self, profile_id: int, chat_id: int, feature_key: str
+    ) -> Optional[dict]:
+        normalized_feature_key = str(feature_key or "").strip()
+        if not normalized_feature_key:
+            return None
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM companion_auto_tasks
+                WHERE profile_id=? AND chat_id=? AND feature_key=?
+                ORDER BY updated_at DESC, id DESC LIMIT 1
+                """,
+                (int(profile_id), int(chat_id), normalized_feature_key),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_active_companion_auto_tasks(self, profile_id: int) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM companion_auto_tasks
+                WHERE profile_id=? AND enabled=1
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (int(profile_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_companion_auto_task(
+        self,
+        *,
+        profile_id: int,
+        chat_id: int,
+        feature_key: str,
+        enabled: bool,
+        thread_id: Optional[int] = None,
+        chat_type: str = "group",
+        bot_username: str = "",
+        next_run_at: float = 0,
+        last_run_at: float = 0,
+        last_error: str = "",
+    ) -> dict:
+        now = time.time()
+        normalized_feature_key = str(feature_key or "").strip()
+        if not normalized_feature_key:
+            raise ValueError("Feature key is required")
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO companion_auto_tasks (
+                    profile_id, chat_id, thread_id, chat_type, bot_username,
+                    feature_key, enabled, next_run_at, last_run_at, last_error,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_id, chat_id, bot_username, feature_key) DO UPDATE SET
+                    thread_id=excluded.thread_id,
+                    chat_type=excluded.chat_type,
+                    enabled=excluded.enabled,
+                    next_run_at=excluded.next_run_at,
+                    last_run_at=excluded.last_run_at,
+                    last_error=excluded.last_error,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    int(profile_id),
+                    int(chat_id),
+                    thread_id,
+                    chat_type or "group",
+                    bot_username or "",
+                    normalized_feature_key,
+                    1 if enabled else 0,
+                    float(next_run_at or 0),
+                    float(last_run_at or 0),
+                    str(last_error or "")[:1000],
+                    now,
+                    now,
+                ),
+            )
+        return (
+            self.get_companion_auto_task(
+                int(profile_id), int(chat_id), normalized_feature_key
+            )
+            or {}
+        )
+
+    def update_companion_auto_task(self, task_id: int, **fields) -> Optional[dict]:
+        if not fields:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM companion_auto_tasks WHERE id=?",
+                    (int(task_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        updates = {**fields, "updated_at": time.time()}
+        assignments = ", ".join(f"{key}=?" for key in updates)
+        values = list(updates.values()) + [int(task_id)]
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE companion_auto_tasks SET {assignments} WHERE id=?",
+                values,
+            )
+            row = conn.execute(
+                "SELECT * FROM companion_auto_tasks WHERE id=?",
+                (int(task_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def disable_companion_auto_task(
+        self, profile_id: int, chat_id: int, feature_key: str, *, last_error: str = ""
+    ) -> Optional[dict]:
+        task = self.get_companion_auto_task(profile_id, chat_id, feature_key)
+        if not task:
+            return None
+        return self.update_companion_auto_task(
+            int(task["id"]),
+            enabled=0,
+            next_run_at=0,
             last_error=(last_error or "")[:1000],
         )
 
