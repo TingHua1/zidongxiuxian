@@ -152,15 +152,20 @@ def _cooldown_target_timestamp(raw_value, cooldown_hours: int) -> float:
     return end_time.astimezone(timezone.utc).timestamp()
 
 
-def _resolve_latest_companion_payload(payload: dict) -> dict:
+def _resolve_active_companion_payload_and_status(payload: dict) -> tuple[dict, str]:
     companion = _coerce_json_dict(payload.get("companion"))
     dongfu = _coerce_json_dict(payload.get("dongfu"))
     companion_residence = _coerce_json_dict(dongfu.get("companion_residence"))
-    if companion_residence:
-        return companion_residence
-    if companion:
-        return companion
-    return {}
+    if companion and not companion_residence:
+        return companion, "随行"
+    if companion_residence and not companion:
+        return companion_residence, "洞府"
+    return {}, "-"
+
+
+def _resolve_latest_companion_payload(payload: dict) -> dict:
+    companion_payload, _status = _resolve_active_companion_payload_and_status(payload)
+    return companion_payload
 
 
 def _resolve_latest_companion_cooldown_target(
@@ -197,10 +202,10 @@ def _extract_reply_field(reply_text: str, label: str) -> str:
 
 
 def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict:
-    companion_payload = _resolve_latest_companion_payload(payload)
-    top_level_companion = _coerce_json_dict(payload.get("companion"))
-    dongfu = _coerce_json_dict(payload.get("dongfu"))
-    companion_residence = _coerce_json_dict(dongfu.get("companion_residence"))
+    companion_payload, status_text = _resolve_active_companion_payload_and_status(
+        payload
+    )
+    behavior_metrics = _coerce_json_dict(payload.get("behavior_metrics"))
     heart_vow = _coerce_json_dict(companion_payload.get("heart_vow"))
     fragment_bag = _coerce_json_dict(companion_payload.get("xutian_fragment_bag"))
 
@@ -231,13 +236,12 @@ def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict
     current_vow_text = str(heart_vow.get("type") or "").strip() or "无"
     relation_title = "侍妾同行"
     companion_name = str(companion_payload.get("name") or "-").strip() or "-"
-    status_text = (
-        "随行"
-        if top_level_companion and not companion_residence
-        else ("洞府" if not top_level_companion and companion_residence else "-")
-    )
     affection_value = int(companion_payload.get("affection") or 0)
-    heart_demon_value = payload.get("companion_heart_demon_value")
+    heart_demon_value = companion_payload.get("companion_heart_demon_value")
+    if heart_demon_value is None:
+        heart_demon_value = companion_payload.get("heart_demon_value")
+    if heart_demon_value is None:
+        heart_demon_value = behavior_metrics.get("companion_heart_demon_value")
     dream_seek_target = _resolve_latest_companion_cooldown_target(
         companion_payload,
         "last_dream_map_seek_time",

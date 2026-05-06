@@ -126,7 +126,12 @@ def _resolve_companion_next_run_at(payload: dict, feature_key: str) -> Optional[
             companion_residence = {}
     if cooldown_hours <= 0 or not payload_field:
         return None
-    companion_payload = companion_residence if companion_residence else companion
+    if companion and not companion_residence:
+        companion_payload = companion
+    elif companion_residence and not companion:
+        companion_payload = companion_residence
+    else:
+        return None
     if payload_field not in companion_payload:
         return None
     last_ts = _parse_iso_to_ts(companion_payload.get(payload_field))
