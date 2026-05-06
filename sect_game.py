@@ -21,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 SECT_BOT_USERNAME = "fanrenxiuxian_bot"
+SECT_BOT_IDS = {8388633812, 7900199668}
 SECT_CHECK_COMMAND = ".我的宗门"
 SECT_DEFAULT_INTERVAL = 1800
 SECT_COMMAND_COOLDOWN = 15
@@ -2492,8 +2493,8 @@ async def maybe_run_yinluo_batch(client, db, session, *, storage=None, profile_i
 
 async def handle_bot_message(event, db, client=None, profile_id=None):
     sender = await event.get_sender()
-    username = (getattr(sender, "username", "") or "").lower()
-    if username != SECT_BOT_USERNAME:
+    sender_id = getattr(sender, "id", None)
+    if sender_id not in SECT_BOT_IDS:
         return None
 
     session = get_session(db, event.chat_id, profile_id=profile_id)

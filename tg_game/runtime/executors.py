@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 DIVINATION_COMMAND = ".卜筮问天"
 DIVINATION_BATCH_COMMAND_INTERVAL_SECONDS = 60
 DIVINATION_BATCH_POLL_SECONDS = 5
+FANREN_RECENT_REPLY_WINDOW_SECONDS = 30
 COMPANION_AUTO_POLL_SECONDS = 5
 COMPANION_AUTO_POST_SEND_GRACE_SECONDS = 1800
 COMPANION_AUTO_FEATURES = {
@@ -477,6 +478,51 @@ class FanrenExecutor(BaseExecutor):
         )
         logger.info("Fanren executor runner started")
 
+    async def _bot_message_targets_profile(
+        self, context: EventContext, storage: Storage
+    ) -> bool:
+        if await super()._bot_message_targets_profile(context, storage):
+            return True
+        if not context.profile or context.chat_id is None:
+            return False
+        db = SQLiteCompatDb(storage)
+        try:
+            session = fanren_game.get_session(
+                db, context.chat_id, profile_id=context.profile.id
+            )
+        finally:
+            db.close()
+        if not session:
+            return False
+        if session.get("thread_id") and context.thread_id:
+            if int(session.get("thread_id") or 0) != int(context.thread_id or 0):
+                return False
+        last_action = str(session.get("last_action") or "").strip()
+        if not last_action:
+            return False
+        if last_action not in {
+            fanren_game.YUANYING_OUTING_COMMAND,
+            fanren_game.YUANYING_STATUS_COMMAND,
+        }:
+            return False
+        last_action_time = float(session.get("last_action_time") or 0)
+        if not last_action_time:
+            return False
+        if (time.time() - last_action_time) > FANREN_RECENT_REPLY_WINDOW_SECONDS:
+            return False
+        raw_text = context.text
+        has_yuanying_anchor = any(
+            keyword in raw_text
+            for keyword in ("元婴", "本命元婴", "元神归窍", "窍中温养")
+        )
+        if not has_yuanying_anchor:
+            return False
+        if last_action == fanren_game.YUANYING_STATUS_COMMAND:
+            yy_status, _yy_cd = fanren_game.parse_yuanying_status_reply(raw_text)
+            return yy_status != "unknown"
+        yy_success, yy_cd = fanren_game.parse_yuanying_reply(raw_text)
+        return yy_success or yy_cd is not None
+
     async def handle(self, context: EventContext, storage: Storage) -> bool:
         if not context.chat_binding:
             return False
@@ -496,15 +542,18 @@ class FanrenExecutor(BaseExecutor):
                     )
                 return await self._handle_command(context, db)
 
-            binding_bot = (context.chat_binding.bot_username or "").lower().lstrip("@")
             if (
                 context.is_bot_sender
-                and binding_bot
-                and context.bot_username == binding_bot
+                and context.sender_id in fanren_game.FANREN_BOT_IDS
                 and await self._bot_message_targets_profile(context, storage)
             ):
+                session = fanren_game.get_session(
+                    db,
+                    context.chat_id,
+                    profile_id=context.profile.id if context.profile else None,
+                )
                 reply_text = await self._get_reply_message_text(context, storage)
-                if reply_text and reply_text not in {
+                allowed_reply_commands = {
                     fanren_game.FANREN_CHECK_COMMAND,
                     fanren_game.FANREN_NORMAL_COMMAND,
                     fanren_game.FANREN_DEEP_COMMAND,
@@ -512,7 +561,10 @@ class FanrenExecutor(BaseExecutor):
                     fanren_game.RIFT_EXPLORE_COMMAND,
                     fanren_game.YUANYING_OUTING_COMMAND,
                     fanren_game.YUANYING_STATUS_COMMAND,
-                }:
+                }
+                if session:
+                    allowed_reply_commands.add(fanren_game.build_check_command(session))
+                if reply_text and reply_text not in allowed_reply_commands:
                     return False
                 stored_reply_message = self._get_stored_reply_message(context, storage)
                 reply_message_id = context.reply_to_msg_id or int(
@@ -552,8 +604,7 @@ class FanrenExecutor(BaseExecutor):
                 return parsed is not None
             if (
                 context.is_bot_sender
-                and binding_bot
-                and context.bot_username == binding_bot
+                and context.sender_id in fanren_game.FANREN_BOT_IDS
                 and await context.bot_message_targets_profile()
             ):
                 parsed = await fanren_game.handle_bot_message(
@@ -563,6 +614,17 @@ class FanrenExecutor(BaseExecutor):
                     profile_id=context.profile.id if context.profile else None,
                 )
                 if parsed is not None:
+                    if context.profile and context.chat_id is not None:
+                        try:
+                            sync_cultivation_session(
+                                storage, context.profile.id, context.chat_id, db
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Cultivation API sync failed in chat %s: %s",
+                                context.chat_id,
+                                exc,
+                            )
                     return True
             return False
         finally:
@@ -911,11 +973,9 @@ class SectExecutor(BaseExecutor):
                     )
                 return await self._handle_command(context, db)
 
-            binding_bot = (context.chat_binding.bot_username or "").lower().lstrip("@")
             if (
                 context.is_bot_sender
-                and binding_bot
-                and context.bot_username == binding_bot
+                and context.sender_id in sect_game.SECT_BOT_IDS
                 and await self._bot_message_targets_profile(context, storage)
             ):
                 preview_parsed = sect_game.parse_message(context.text)

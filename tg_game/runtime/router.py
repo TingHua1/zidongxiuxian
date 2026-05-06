@@ -60,7 +60,7 @@ class Router:
                 chat_id=settings.bound_chat_id,
                 thread_id=settings.bound_thread_id,
                 chat_type=settings.bound_chat_type,
-                bot_username=settings.bound_bot_username,
+                bot_username="",
                 bot_id=settings.bound_bot_id,
                 telegram_user_id=profile.telegram_user_id,
             )

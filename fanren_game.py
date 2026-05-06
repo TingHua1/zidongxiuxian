@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 FANREN_BOT_USERNAME = "fanrenxiuxian_bot"
+FANREN_BOT_IDS = {8388633812, 7900199668}
 FANREN_CHECK_COMMAND = ".查看闭关"
 FANREN_NORMAL_COMMAND = ".闭关修炼"
 FANREN_DEEP_COMMAND = ".深度闭关"
@@ -763,13 +764,14 @@ def parse_yuanying_status_reply(text):
         if kw in text:
             return "ready", 0
 
+    cooldown = parse_cooldown_seconds(text)
+
     # 元婴仍在外
     for kw in YUANYING_STILL_OUT_KEYWORDS:
         if kw in text:
-            return "out", None
+            return "out", cooldown
 
     # 兜底：尝试解析倒计时
-    cooldown = parse_cooldown_seconds(text)
     if cooldown:
         return "out", cooldown
 
@@ -1350,12 +1352,18 @@ async def send_retreat_command(
 
 async def handle_bot_message(event, db, client=None, profile_id=None):
     sender = await event.get_sender()
-    username = (getattr(sender, "username", "") or "").lower()
-    if username != FANREN_BOT_USERNAME:
+    sender_id = getattr(sender, "id", None)
+    if sender_id not in FANREN_BOT_IDS:
         return None
 
     session = get_session(db, event.chat_id, profile_id=profile_id)
-    if not session or not session["enabled"]:
+    if not session:
+        return None
+    last_action = (session.get("last_action") or "").strip()
+    allow_yuanying_reply_when_main_disabled = bool(
+        session.get("auto_yuanying_enabled")
+    ) and last_action in {YUANYING_STATUS_COMMAND, YUANYING_OUTING_COMMAND}
+    if not session["enabled"] and not allow_yuanying_reply_when_main_disabled:
         return None
     raw_text = (event.raw_text or "").strip()
     last_bot_text = (session.get("last_bot_text") or "").strip()
@@ -1383,7 +1391,6 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
         return None
 
     # 处理自动探寻裂缝回包
-    last_action = (session.get("last_action") or "").strip()
     if last_action == RIFT_EXPLORE_COMMAND and session.get("auto_rift_enabled"):
         rift_success, rift_cd = parse_rift_reply(raw_text)
         now = time.time()
@@ -1567,17 +1574,17 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 )
                 return FanrenParseResult("yuanying_settled", f"元婴{label}，即将出窍")
             elif yy_status == "out":
-                # 元婴仍在外，沿用已有倒计时
+                # 元婴仍在外，优先采用本次回包里的新倒计时
+                next_yy_check_time = float(session.get("yuanying_next_check_time") or 0)
                 if yy_cd:
+                    next_yy_check_time = now_yy + yy_cd
                     update_session(
                         db,
                         event.chat_id,
                         profile_id=session.get("profile_id"),
-                        yuanying_next_check_time=now_yy + yy_cd,
+                        yuanying_next_check_time=next_yy_check_time,
                     )
-                cd_remain = max(
-                    (session.get("yuanying_next_check_time") or 0) - now_yy, 0
-                )
+                cd_remain = max(next_yy_check_time - now_yy, 0)
                 cd_text = format_duration(cd_remain)
                 update_session(
                     db,
