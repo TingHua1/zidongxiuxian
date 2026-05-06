@@ -72,9 +72,151 @@
         </form>
     </div>
 
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>天机遭遇战</p>
+            <h2>策略与记录</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>当前策略</span><strong>{{ tianji_encounter_state.strategy }}</strong></div>
+            <div class="kv-row"><span>今日遭遇</span><strong>{{ tianji_encounter_state.today_count }}</strong></div>
+            <div class="kv-row"><span>上次遭遇</span><strong>{{ tianji_encounter_state.last_encounter }}</strong></div>
+        </div>
+        
+        <form class="form-grid top-gap" method="post" action="/runtime/commands/send-raw" id="tianji-encounter-form">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/other">
+            <input type="hidden" name="text" id="tianji-encounter-command" value=".天机遭遇战">
+            
+            <div class="full-span action-row" style="flex-wrap: wrap; gap: 8px;">
+                <button type="button" class="inline-button {% if tianji_encounter_state.strategy == '谨慎' %}active{% endif %}" onclick="submitEncounterStrategy('谨慎')">谨慎</button>
+                <button type="button" class="inline-button {% if tianji_encounter_state.strategy == '均衡' %}active{% endif %}" onclick="submitEncounterStrategy('均衡')">均衡</button>
+                <button type="button" class="inline-button {% if tianji_encounter_state.strategy == '夺宝' %}active{% endif %}" onclick="submitEncounterStrategy('夺宝')">夺宝</button>
+                <button type="button" class="inline-button {% if tianji_encounter_state.strategy == '关闭' %}active{% endif %}" onclick="submitEncounterStrategy('关闭')">关闭</button>
+                <button type="submit" class="inline-button" onclick="document.getElementById('tianji-encounter-command').value='.天机遭遇战'">刷新状态</button>
+            </div>
+        </form>
+
+        <div class="top-gap">
+            <details class="compact-details">
+                <summary>查看遭遇记录</summary>
+                <div class="details-content">
+                    {% if tianji_encounter_state.records %}
+                        <div class="stack-list compact-stack" style="margin-top: 8px;">
+                        {% for record in tianji_encounter_state.records %}
+                            <div style="font-size: 0.9em; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.03);">
+                                <div class="muted" style="font-size: 0.85em; margin-bottom: 2px;">{{ record.time }}</div>
+                                <div style="color: var(--text-primary);">{{ record.text }}</div>
+                            </div>
+                        {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="muted" style="padding: 8px 0;">暂无遭遇记录，可先点击下方按钮拉取最新回包。</div>
+                    {% endif %}
+                    <form method="post" action="/runtime/commands/send-raw" style="margin-top: 12px;">
+                        <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                        <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+                        <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+                        <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+                        <input type="hidden" name="redirect_to" value="/modules/other">
+                        <input type="hidden" name="text" value=".遭遇记录">
+                        <button type="submit" class="inline-button" style="width: 100%;">获取最新记录</button>
+                    </form>
+                </div>
+            </details>
+        </div>
+    </div>
+
 </section>
 
 <section class="detail-grid three-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>{{ companion_state.relation_title }}</p>
+            <h2>侍妾机缘</h2>
+        </div>
+        <div class="companion-info-grid">
+            <div class="kv-row"><span>侍妾</span><strong>{{ companion_state.name }}</strong></div>
+            <div class="kv-row"><span>状态</span><strong>{{ companion_state.status }}</strong></div>
+            <div class="kv-row"><span>情缘值</span><strong>{{ companion_state.affection }}</strong></div>
+            <div class="kv-row"><span>心魔值</span><strong>{{ companion_state.heart_demon_value }}</strong></div>
+            <div class="kv-row"><span>当前誓约</span><strong>{{ companion_state.current_vow }}</strong></div>
+            <div class="kv-row"><span>立誓时间</span><strong>{{ companion_state.sworn_at_display }}</strong></div>
+            <div class="kv-row"><span>天机代卜链</span><strong>{{ companion_state.divination_chain }}</strong></div>
+            <div class="kv-row"><span>坠魔谷护持</span><strong>{{ companion_state.abyss_guard }}</strong></div>
+            <div class="kv-row"><span>入梦寻图</span><strong {% if companion_state.dream_seek_cooldown_target %}class="countdown-text" data-countdown-target="{{ companion_state.dream_seek_cooldown_target }}"{% endif %}>{{ companion_state.dream_seek_display }}</strong></div>
+            <div class="kv-row"><span>共历心劫</span><strong {% if companion_state.heart_tribulation_cooldown_target %}class="countdown-text" data-countdown-target="{{ companion_state.heart_tribulation_cooldown_target }}"{% endif %}>{{ companion_state.heart_tribulation_display }}</strong></div>
+            <div class="kv-row"><span>天机代卜</span><strong {% if companion_state.divination_chain_cooldown_target %}class="countdown-text" data-countdown-target="{{ companion_state.divination_chain_cooldown_target }}"{% endif %}>{{ companion_state.divination_chain_display }}</strong></div>
+            <div class="kv-row"><span>残图进展</span><strong>{{ companion_state.fragment_progress }}</strong></div>
+        </div>
+        <p class="muted top-gap">碎片袋：{{ companion_state.fragment_detail }}</p>
+
+        <form class="top-gap" method="post" action="/runtime/commands/send-raw" id="companion-command-form">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/other">
+            <input type="hidden" name="text" id="companion-command-input" value=".我的侍妾">
+            <div class="action-row companion-command-row">
+                <button type="button" class="inline-button" onclick="submitCompanionCommand('.我的侍妾')" {% if not command_chat_ready %}disabled{% endif %}>刷新侍妾</button>
+                <button type="button" class="inline-button" onclick="submitCompanionCommand('.残图')" {% if not command_chat_ready %}disabled{% endif %}>残图</button>
+                <button type="button" class="inline-button" onclick="submitCompanionCommand('.拼图')" {% if not command_chat_ready %}disabled{% endif %}>拼图</button>
+                <button type="button" class="inline-button" onclick="submitCompanionCommand('.安置侍妾')" {% if not command_chat_ready %}disabled{% endif %}>安置侍妾</button>
+            </div>
+            <div class="action-row top-gap companion-command-row">
+                <button type="button" class="inline-button {% if companion_auto_state.dream_seek.active %}active{% endif %}" onclick="document.getElementById('companion-auto-feature').value='dream_seek'; document.getElementById('companion-auto-form').submit();" {% if not command_chat_ready %}disabled{% endif %}>{{ '自动中·入梦' if companion_auto_state.dream_seek.active else '自动入梦' }}</button>
+                <button type="button" class="inline-button {% if companion_auto_state.divination_chain.active %}active{% endif %}" onclick="document.getElementById('companion-auto-feature').value='divination_chain'; document.getElementById('companion-auto-form').submit();" {% if not command_chat_ready %}disabled{% endif %}>{{ '自动中·代卜' if companion_auto_state.divination_chain.active else '自动代卜' }}</button>
+            </div>
+            <div class="action-row top-gap companion-command-row">
+                <label class="companion-vow-picker">
+                    <span>誓约</span>
+                    <select id="companion-vow-select">
+                        <option value="护道">护道</option>
+                        <option value="守秘" {% if '守秘' in companion_state.current_vow %}selected{% endif %}>守秘</option>
+                        <option value="共修" {% if '共修' in companion_state.current_vow %}selected{% endif %}>共修</option>
+                    </select>
+                </label>
+                <button type="button" class="inline-button" onclick="submitCompanionCommand('.立誓 ' + document.getElementById('companion-vow-select').value)" {% if not command_chat_ready %}disabled{% endif %}>立誓</button>
+                <button type="button" class="inline-button" onclick="submitCompanionCommand('.毁誓')" {% if not command_chat_ready %}disabled{% endif %}>毁誓</button>
+                <button type="button" class="inline-button" onclick="showCompanionHeartTribulationHelp()">共历心劫（需回复）</button>
+            </div>
+        </form>
+
+        <form method="post" action="/runtime/commands/companion-auto" id="companion-auto-form">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/other">
+            <input type="hidden" name="feature_key" id="companion-auto-feature" value="dream_seek">
+        </form>
+
+        <div class="stack-list compact-stack top-gap">
+            <div class="kv-row"><span>自动入梦</span><strong {% if companion_auto_state.dream_seek.active and companion_auto_state.dream_seek.next_run_at %}class="countdown-text" data-countdown-target="{{ companion_auto_state.dream_seek.next_run_at }}"{% endif %}>{{ companion_auto_state.dream_seek.next_run_display if companion_auto_state.dream_seek.active else companion_auto_state.dream_seek.status_display }}</strong></div>
+            <div class="kv-row"><span>自动代卜</span><strong {% if companion_auto_state.divination_chain.active and companion_auto_state.divination_chain.next_run_at %}class="countdown-text" data-countdown-target="{{ companion_auto_state.divination_chain.next_run_at }}"{% endif %}>{{ companion_auto_state.divination_chain.next_run_display if companion_auto_state.divination_chain.active else companion_auto_state.divination_chain.status_display }}</strong></div>
+        </div>
+        {% if companion_auto_state.dream_seek.last_error %}
+            <p class="muted top-gap">自动入梦：{{ companion_auto_state.dream_seek.last_error }}</p>
+        {% endif %}
+        {% if companion_auto_state.divination_chain.last_error %}
+            <p class="muted">自动代卜：{{ companion_auto_state.divination_chain.last_error }}</p>
+        {% endif %}
+
+        <div class="top-gap">
+            <details class="compact-details" id="companion-heart-tribulation-help">
+                <summary>共历心劫交互要求</summary>
+                <div class="details-content">
+                    <p class="muted">请先在 Telegram 中回复一条包含侍妾/道侣内容的消息，再手动发送 <strong>{{ companion_state.heart_tribulation_command }}</strong>。当前 Web 发指令通道不支持指定 reply_to，所以这里不做一键直发。</p>
+                    <div class="message-text top-gap">推荐顺序：先点“刷新侍妾”确认最新状态 → 在 Telegram 里回复侍妾消息 → 手动发送 <code>{{ companion_state.heart_tribulation_command }}</code>。</div>
+                </div>
+            </details>
+        </div>
+    </div>
+
     <div class="detail-card">
         <div class="section-header compact">
             <p>六道轮回盘</p>
@@ -241,6 +383,32 @@
 
 <script>
 const TIANJI_DICE_ODDS = {4:'1:50',5:'1:25',6:'1:15',7:'1:10',8:'1:8',9:'1:6',10:'1:6',11:'1:6',12:'1:6',13:'1:8',14:'1:10',15:'1:15',16:'1:25',17:'1:50'};
+
+function submitCompanionCommand(commandText) {
+    const form = document.getElementById('companion-command-form');
+    const commandInput = document.getElementById('companion-command-input');
+    if (form && commandInput) {
+        commandInput.value = commandText;
+        form.submit();
+    }
+}
+
+function showCompanionHeartTribulationHelp() {
+    const details = document.getElementById('companion-heart-tribulation-help');
+    if (details) {
+        details.open = true;
+        details.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+}
+
+function submitEncounterStrategy(strategy) {
+    const form = document.getElementById('tianji-encounter-form');
+    const commandInput = document.getElementById('tianji-encounter-command');
+    if (form && commandInput) {
+        commandInput.value = `.天机遭遇战 ${strategy}`;
+        form.submit();
+    }
+}
 
 function fillOtherCommand(commandText, inputId) {
     const input = document.getElementById(inputId || 'mind-duel-command');

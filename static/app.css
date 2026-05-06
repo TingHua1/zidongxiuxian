@@ -604,7 +604,71 @@ p.muted {
 .top-gap { margin-top: 16px; }
 .action-row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 .inline-link { color: var(--accent-gold); text-decoration: none; border-bottom: 1px solid rgba(212,175,55,0.3); padding-bottom: 2px; }
-.inline-link:hover { border-bottom-color: var(--accent-gold); }
+.inline-button.active {
+    background: var(--accent-gold);
+    color: var(--bg-base);
+    border-color: var(--accent-gold);
+}
+
+.compact-details {
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+}
+
+.compact-details summary {
+    padding: 8px 12px;
+    background: var(--bg-surface-elevated);
+    cursor: pointer;
+    font-weight: 500;
+    user-select: none;
+    outline: none;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.compact-details summary:hover {
+    background: rgba(212, 175, 55, 0.05);
+}
+
+.compact-details .details-content {
+    padding: 8px 12px;
+    background: var(--bg-base);
+    border-top: 1px solid var(--border-color);
+}
+
+.companion-info-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 16px;
+}
+
+.companion-command-row {
+    gap: 8px;
+}
+
+.companion-vow-picker {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    background: var(--bg-base);
+}
+
+.companion-vow-picker span {
+    color: var(--text-muted);
+    font-size: 12px;
+}
+
+.companion-vow-picker select {
+    min-width: 88px;
+    border: none;
+    background: transparent;
+    color: var(--text-primary);
+    padding: 0;
+}
 
 /* Statuses */
 .status-card { border-left: 2px solid var(--accent-gold); }
