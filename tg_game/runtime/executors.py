@@ -106,6 +106,9 @@ def _resolve_companion_next_run_at(payload: dict, feature_key: str) -> Optional[
     feature = COMPANION_AUTO_FEATURES.get(feature_key) or {}
     payload_field = str(feature.get("payload_field") or "").strip()
     cooldown_hours = int(feature.get("cooldown_hours") or 0)
+    companion = payload.get("companion") or {}
+    if not isinstance(companion, dict):
+        companion = {}
     dongfu = payload.get("dongfu") or {}
     if isinstance(dongfu, str):
         try:
@@ -123,9 +126,10 @@ def _resolve_companion_next_run_at(payload: dict, feature_key: str) -> Optional[
             companion_residence = {}
     if cooldown_hours <= 0 or not payload_field:
         return None
-    if payload_field not in companion_residence:
+    companion_payload = companion_residence if companion_residence else companion
+    if payload_field not in companion_payload:
         return None
-    last_ts = _parse_iso_to_ts(companion_residence.get(payload_field))
+    last_ts = _parse_iso_to_ts(companion_payload.get(payload_field))
     if last_ts <= 0:
         return None
     return last_ts + cooldown_hours * 3600
