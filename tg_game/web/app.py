@@ -153,9 +153,14 @@ def _cooldown_target_timestamp(raw_value, cooldown_hours: int) -> float:
 
 
 def _resolve_latest_companion_payload(payload: dict) -> dict:
+    companion = _coerce_json_dict(payload.get("companion"))
     dongfu = _coerce_json_dict(payload.get("dongfu"))
     companion_residence = _coerce_json_dict(dongfu.get("companion_residence"))
-    return companion_residence if companion_residence else {}
+    if companion_residence:
+        return companion_residence
+    if companion:
+        return companion
+    return {}
 
 
 def _resolve_latest_companion_cooldown_target(
@@ -193,6 +198,9 @@ def _extract_reply_field(reply_text: str, label: str) -> str:
 
 def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict:
     companion_payload = _resolve_latest_companion_payload(payload)
+    top_level_companion = _coerce_json_dict(payload.get("companion"))
+    dongfu = _coerce_json_dict(payload.get("dongfu"))
+    companion_residence = _coerce_json_dict(dongfu.get("companion_residence"))
     heart_vow = _coerce_json_dict(companion_payload.get("heart_vow"))
     fragment_bag = _coerce_json_dict(companion_payload.get("xutian_fragment_bag"))
 
@@ -223,7 +231,11 @@ def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict
     current_vow_text = str(heart_vow.get("type") or "").strip() or "无"
     relation_title = "侍妾同行"
     companion_name = str(companion_payload.get("name") or "-").strip() or "-"
-    status_text = "-"
+    status_text = (
+        "随行"
+        if top_level_companion and not companion_residence
+        else ("洞府" if not top_level_companion and companion_residence else "-")
+    )
     affection_value = int(companion_payload.get("affection") or 0)
     heart_demon_value = payload.get("companion_heart_demon_value")
     dream_seek_target = _resolve_latest_companion_cooldown_target(

@@ -164,8 +164,8 @@
             <div class="action-row companion-command-row">
                 <button type="button" class="inline-button" onclick="submitCompanionCommand('.我的侍妾')" {% if not command_chat_ready %}disabled{% endif %}>刷新侍妾</button>
                 <button type="button" class="inline-button" onclick="submitCompanionCommand('.残图')" {% if not command_chat_ready %}disabled{% endif %}>残图</button>
-                <button type="button" class="inline-button" onclick="submitCompanionCommand('.拼图')" {% if not command_chat_ready %}disabled{% endif %}>拼图</button>
                 <button type="button" class="inline-button" onclick="submitCompanionCommand('.安置侍妾')" {% if not command_chat_ready %}disabled{% endif %}>安置侍妾</button>
+                <button type="button" class="inline-button" onclick="submitCompanionCommand('.召回侍妾')" {% if not command_chat_ready %}disabled{% endif %}>召回侍妾</button>
             </div>
             <div class="action-row top-gap companion-command-row">
                 <button type="button" class="inline-button {% if companion_auto_state.dream_seek.active %}active{% endif %}" onclick="document.getElementById('companion-auto-feature').value='dream_seek'; document.getElementById('companion-auto-form').submit();" {% if not command_chat_ready %}disabled{% endif %}>{{ '自动中·入梦' if companion_auto_state.dream_seek.active else '自动入梦' }}</button>
