@@ -24,7 +24,11 @@ def _parse_iso_timestamp(value: str) -> float:
 
 
 def sync_cultivation_session(
-    storage: Storage, profile_id: int, chat_id: int, db=None
+    storage: Storage,
+    profile_id: int,
+    chat_id: int,
+    db=None,
+    cultivator_payload: Optional[dict] = None,
 ) -> Optional[dict]:
     profile = storage.get_profile(profile_id)
     if not profile:
@@ -36,7 +40,9 @@ def sync_cultivation_session(
     if not cookie_text or not identifiers:
         return None
     try:
-        cultivator = sync_external_account(storage, profile_id, cookie_text=cookie_text)
+        cultivator = cultivator_payload or sync_external_account(
+            storage, profile_id, cookie_text=cookie_text
+        )
     except AscAuthError as exc:
         mark_external_account_failure(storage, profile_id, exc, cookie_text=cookie_text)
         raise
@@ -44,7 +50,6 @@ def sync_cultivation_session(
     cooldown_until = _parse_iso_timestamp(
         cultivator.get("cultivation_cooldown_until") or ""
     )
-    meditation_end = _parse_iso_timestamp(cultivator.get("meditation_end_time") or "")
     deep_start = _parse_iso_timestamp(cultivator.get("deep_seclusion_start_time") or "")
     deep_end = _parse_iso_timestamp(cultivator.get("deep_seclusion_end_time") or "")
 
@@ -94,20 +99,14 @@ def sync_cultivation_session(
             next_check_time = deep_end
             next_check_source = "deep_seclusion_end_time"
         else:
-            normal_unlock = max(cooldown_until, meditation_end)
+            normal_unlock = cooldown_until
             if normal_unlock > now:
                 status_event = "cultivating"
                 status_summary = "闭关修炼中"
                 next_check_time = normal_unlock
-                next_check_source = (
-                    "meditation_end_time"
-                    if meditation_end >= cooldown_until
-                    else "cultivation_cooldown_until"
-                )
+                next_check_source = "cultivation_cooldown_until"
         if preserve_deep_next_check_time and (
-            next_check_time == 0
-            or next_check_source
-            in {"cultivation_cooldown_until", "meditation_end_time"}
+            next_check_time == 0 or next_check_source == "cultivation_cooldown_until"
         ):
             next_check_time = preserve_deep_next_check_time
             next_check_source = preserve_deep_next_check_source

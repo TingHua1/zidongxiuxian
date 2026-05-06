@@ -2238,7 +2238,7 @@ def create_app() -> FastAPI:
             chat_id=settings.bound_chat_id,
             thread_id=settings.bound_thread_id,
             chat_type=settings.bound_chat_type,
-            bot_username=settings.bound_bot_username,
+            bot_username="",
             bot_id=settings.bound_bot_id,
             telegram_user_id=telegram_user_id,
         )
@@ -2287,8 +2287,8 @@ def create_app() -> FastAPI:
             if command_chat
             else settings.bound_chat_type,
             "bound_bot_username": command_chat.bot_username
-            if command_chat
-            else settings.bound_bot_username,
+            if command_chat and command_chat.bot_username
+            else "",
             "bound_bot_id": command_chat.bot_id
             if command_chat and command_chat.bot_id is not None
             else settings.bound_bot_id,
@@ -2629,6 +2629,23 @@ def create_app() -> FastAPI:
             if _is_admin_profile(profile):
                 _sync_global_reference_data_if_needed()
             _sync_profile_from_cultivator(storage, profile_id, payload)
+            for binding in storage.list_chat_bindings(profile_id):
+                if not binding.is_active:
+                    continue
+                try:
+                    sync_cultivation_session(
+                        storage,
+                        profile_id,
+                        binding.chat_id,
+                        cultivator_payload=payload,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Cultivation session sync failed after payload refresh profile=%s chat=%s: %s",
+                        profile_id,
+                        binding.chat_id,
+                        exc,
+                    )
             return payload if isinstance(payload, dict) else {}
         except Exception as exc:
             mark_external_account_failure(
@@ -4634,6 +4651,12 @@ def create_app() -> FastAPI:
                 and current_session
                 and float(current_session.get("next_check_time") or 0)
                 > fanren_game.time.time()
+                and (
+                    str(current_session.get("next_check_source") or "").strip()
+                    == "deep_seclusion_end_time"
+                    or (current_session.get("last_event") or "")
+                    in fanren_game.FANREN_DEEP_PENDING_EVENTS
+                )
             ):
                 preserve_next_check_time = float(
                     current_session.get("next_check_time") or 0
