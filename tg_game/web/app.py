@@ -958,9 +958,9 @@ def _build_divination_batch_view(raw_batch: Optional[dict]) -> dict:
 def _list_dungeon_feed_source_messages(
     storage: Storage, chat_id: int, dungeon_key: str, profile_id: Optional[int] = None
 ) -> list[dict]:
-    # 每个用户只看自己 worker 捕获的副本消息（profile 隔离）
+    # 副本消息流按 chat 聚合（不限 profile），同一群聊内所有角色的副本消息互通
     messages = storage.list_bound_messages(
-        profile_id=profile_id,
+        profile_id=None,
         chat_id=chat_id,
         limit=300,
     )
@@ -968,6 +968,10 @@ def _list_dungeon_feed_source_messages(
     prefixes = dungeon_def.get("command_prefixes") or []
     prefixes = [
         str(prefix or "").strip() for prefix in prefixes if str(prefix or "").strip()
+    ]
+    reply_prefixes = dungeon_def.get("reply_prefixes") or []
+    reply_prefixes = [
+        str(p or "").strip() for p in reply_prefixes if str(p or "").strip()
     ]
     messages_by_id = {
         int(msg.get("message_id") or 0): msg
@@ -989,6 +993,10 @@ def _list_dungeon_feed_source_messages(
             return True
         if not bool(msg.get("is_bot")):
             return False
+        # bot 回包文本自身匹配副本前缀（如 血色试炼· 虚天殿· 等）
+        bot_text = str(msg.get("text") or "").strip()
+        if any(bot_text.startswith(p) for p in reply_prefixes):
+            return True
         reply_to = int(msg.get("reply_to_msg_id") or 0)
         depth = 0
         while reply_to and depth < 8:

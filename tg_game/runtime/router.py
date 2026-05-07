@@ -13,7 +13,7 @@ from tg_game.services import module_registry
 from tg_game.services.external_sync import is_authorized_profile
 from tg_game.services.stock_sync import sync_stock_market_message
 from tg_game.storage import Storage
-from tg_game.dungeon_defs import is_dungeon_command_text
+from tg_game.dungeon_defs import is_dungeon_command_text, is_dungeon_reply_text
 from tg_game.services.stock_sync import sync_stock_market_message, is_stock_related
 
 
@@ -69,15 +69,14 @@ class Router:
 
     async def dispatch(self, client: object, event: object) -> bool:
         context = self._build_context(client, event)
-        should_persist_message = is_authorized_profile(self.storage, context.profile)
-        if context.chat_binding and context.message_id and should_persist_message:
+        if context.chat_binding and context.message_id:
             should_store_message = bool(context.is_outgoing)
             if not should_store_message:
                 if context.is_bot_sender:
                     should_store_message = await context.bot_message_targets_profile()
                 else:
                     should_store_message = context.is_profile_owner()
-            # 副本消息白名单存储：只收副本指令，以及 bot 对这些指令/回复链的回复
+            # 副本消息白名单存储：不限用户，所有 profile 的副本指令和 bot 回复链都存
             if not should_store_message and context.text:
                 if not context.is_bot_sender:
                     should_store_message = is_dungeon_command_text(context.text)
@@ -86,10 +85,15 @@ class Router:
                         self.storage,
                         context.chat_id or 0,
                         context.reply_to_msg_id,
-                    )
-            # 股市 bot 消息无条件存储（不限用户），以保证各用户都能看到股票数据
+                    ) or is_dungeon_reply_text(context.text)
+            # 股市 bot 消息无条件存储（不限用户）
             if not should_store_message and context.text:
                 should_store_message = is_stock_related(context.text)
+            # 非副本/非股市消息仅管理员 profile 存储
+            if not should_store_message:
+                should_store_message = is_authorized_profile(
+                    self.storage, context.profile
+                )
             if should_store_message:
                 existing_message = self.storage.get_bound_message(
                     context.chat_id or 0, context.message_id

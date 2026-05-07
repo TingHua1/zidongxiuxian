@@ -22,6 +22,9 @@ DUNGEON_DEFINITIONS = [
             ".虚天殿奖励",
             ".解散副本",
         ],
+        "reply_prefixes": [
+            "虚天殿·",
+        ],
         "keywords": [
             "虚天殿",
             "开启虚天殿",
@@ -54,6 +57,9 @@ DUNGEON_DEFINITIONS = [
             ".选择 静待时机",
             ".昆吾山奖励",
             ".解散昆吾山",
+        ],
+        "reply_prefixes": [
+            "昆吾山·",
         ],
         "keywords": [
             "昆吾山",
@@ -89,6 +95,9 @@ DUNGEON_DEFINITIONS = [
             ".坠魔谷奖励",
             ".解散坠魔谷",
         ],
+        "reply_prefixes": [
+            "坠魔谷·",
+        ],
         "keywords": [
             "坠魔谷",
             "开启坠魔谷",
@@ -121,6 +130,9 @@ DUNGEON_DEFINITIONS = [
             ".血色试炼奖励",
             ".解散血色试炼",
         ],
+        "reply_prefixes": [
+            "血色试炼·",
+        ],
         "keywords": [
             "血色试炼",
             "开启血色试炼",
@@ -141,6 +153,11 @@ for entry in DUNGEON_DEFINITIONS:
     for prefix in entry.get("command_prefixes") or []:
         _ALL_DUNGEON_PREFIXES.append(prefix.strip().lower())
 
+_ALL_DUNGEON_REPLY_PREFIXES: list[str] = []
+for entry in DUNGEON_DEFINITIONS:
+    for prefix in entry.get("reply_prefixes") or []:
+        _ALL_DUNGEON_REPLY_PREFIXES.append(prefix.strip())
+
 
 def is_dungeon_command_text(text: str) -> bool:
     """判断消息文本是否是任意副本的白名单指令"""
@@ -149,3 +166,23 @@ def is_dungeon_command_text(text: str) -> bool:
         return False
     t_lower = t.lower()
     return any(t_lower.startswith(prefix) for prefix in _ALL_DUNGEON_PREFIXES)
+
+
+def is_dungeon_reply_text(text: str) -> bool:
+    """判断bot消息文本是否是副本回包（以副本名前缀开头）"""
+    t = (text or "").strip()
+    if not t:
+        return False
+    return any(t.startswith(prefix) for prefix in _ALL_DUNGEON_REPLY_PREFIXES)
+
+
+def get_dungeon_reply_prefixes(dungeon_key: str) -> list[str]:
+    """获取指定副本的 bot 回包前缀列表"""
+    for entry in DUNGEON_DEFINITIONS:
+        if entry.get("key") == str(dungeon_key or "").strip():
+            return [
+                str(p or "").strip()
+                for p in (entry.get("reply_prefixes") or [])
+                if str(p or "").strip()
+            ]
+    return []
