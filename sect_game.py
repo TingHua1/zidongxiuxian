@@ -2765,11 +2765,11 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 update_fields["huangfeng_pending_index"] = 0
                 update_fields["huangfeng_pending_msg_id"] = 0
                 update_fields["huangfeng_pending_retry"] = 0
-                update_fields["huangfeng_next_check_time"] = (
-                    now + HUANGFENG_AUTO_CHECK_SECONDS
-                )
+                update_fields["huangfeng_payload_refresh_retry"] = 0
+                update_fields["huangfeng_last_garden_state"] = None
+                update_fields["huangfeng_next_check_time"] = 0
                 update_fields["huangfeng_next_check_source"] = (
-                    "黄枫谷批次已完成，30 分钟后复查药园"
+                    "黄枫谷批次已完成，即将刷新药园状态"
                 )
                 update_fields["last_summary"] = update_fields[
                     "huangfeng_next_check_source"
