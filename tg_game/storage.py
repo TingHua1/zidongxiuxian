@@ -164,6 +164,7 @@ class Storage:
                     telegram_username TEXT NOT NULL DEFAULT '',
                     status TEXT NOT NULL DEFAULT 'connected',
                     cookie_text TEXT NOT NULL DEFAULT '',
+                    api_token TEXT NOT NULL DEFAULT '',
                     me_json TEXT NOT NULL DEFAULT '{}',
                     last_verified_at REAL NOT NULL DEFAULT 0,
                     last_error TEXT NOT NULL DEFAULT '',
@@ -419,6 +420,11 @@ class Storage:
                 """
             )
 
+            self._ensure_columns(
+                conn,
+                "external_accounts",
+                {"api_token": "TEXT NOT NULL DEFAULT ''"},
+            )
             self._ensure_columns(
                 conn,
                 "profiles",
@@ -1596,6 +1602,7 @@ class Storage:
         status: str,
         cookie_text: str,
         me_payload: dict,
+        api_token: str,
     ) -> dict:
         now = time.time()
         me_json = json.dumps(me_payload or {}, ensure_ascii=False)
@@ -1604,14 +1611,15 @@ class Storage:
                 """
                 INSERT INTO external_accounts (
                     profile_id, provider, telegram_user_id, telegram_username,
-                    status, cookie_text, me_json,
+                    status, cookie_text, api_token, me_json,
                     last_verified_at, last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
                 ON CONFLICT(profile_id, provider) DO UPDATE SET
                     telegram_user_id=excluded.telegram_user_id,
                     telegram_username=excluded.telegram_username,
                     status=excluded.status,
                     cookie_text=excluded.cookie_text,
+                    api_token=excluded.api_token,
                     me_json=excluded.me_json,
                     last_verified_at=excluded.last_verified_at,
                     last_error='',
@@ -1624,6 +1632,7 @@ class Storage:
                     telegram_username or "",
                     status or "connected",
                     cookie_text or "",
+                    api_token or "",
                     me_json,
                     now,
                     now,

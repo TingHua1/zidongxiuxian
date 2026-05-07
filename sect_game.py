@@ -5,6 +5,7 @@ import re
 import time
 from datetime import datetime, timedelta
 
+from tg_game.clients.asc_client import AscAuthError
 from tg_game.services.external_sync import (
     ASC_PROVIDER,
     get_cultivator_lookup_candidates,
@@ -593,6 +594,18 @@ def sync_huangfeng_state(storage, db, profile_id, chat_id, payload=None, now=Non
                     profile_id,
                     exc,
                 )
+                if isinstance(exc, AscAuthError):
+                    account = storage.get_external_account(profile_id, ASC_PROVIDER) or {}
+                    storage.upsert_external_account(
+                        profile_id=profile_id,
+                        provider=ASC_PROVIDER,
+                        telegram_user_id=account.get("telegram_user_id", ""),
+                        telegram_username=account.get("telegram_username", ""),
+                        status=account.get("status", ""),
+                        cookie_text=account.get("cookie_text", ""),
+                        me_payload=json.loads(account.get("me_json", "{}")),
+                        api_token="",  # 清除 api_token 强制重刷
+                    )
                 mark_external_account_failure(storage, profile_id, exc)
                 fresh_payload = None
             if fresh_payload and isinstance(fresh_payload, dict):

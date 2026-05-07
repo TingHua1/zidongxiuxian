@@ -134,8 +134,13 @@ def _api_headers(cookie_text: str, api_token: str = "") -> dict:
     return headers
 
 
-def _perform_json_get(path: str, cookie_text: str) -> Tuple[dict, int, str]:
-    boot_cookie, api_token = _bootstrap_dashboard_auth(cookie_text)
+def _perform_json_get(
+    path: str, cookie_text: str, api_token: str = ""
+) -> Tuple[dict, int, str, str]:
+    if api_token:
+        boot_cookie = cookie_text
+    else:
+        boot_cookie, api_token = _bootstrap_dashboard_auth(cookie_text)
     request = urllib.request.Request(
         f"{ASC_BASE_URL}{path}",
         headers=_api_headers(boot_cookie, api_token),
@@ -152,6 +157,7 @@ def _perform_json_get(path: str, cookie_text: str) -> Tuple[dict, int, str]:
                 payload,
                 int(status),
                 _resolve_session_cookie(refreshed_cookie, boot_cookie),
+                api_token,
             )
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
@@ -166,31 +172,40 @@ def _perform_json_get(path: str, cookie_text: str) -> Tuple[dict, int, str]:
         raise RuntimeError(payload.get("error") or f"HTTP {exc.code}") from exc
 
 
-def get_cultivator(username: str, cookie_text: str) -> Tuple[dict, int, str]:
+def get_cultivator(
+    username: str, cookie_text: str, api_token: str = ""
+) -> Tuple[dict, int, str, str]:
     encoded_identifier = urllib.parse.quote((username or "").strip(), safe="")
     return _perform_json_get(
         f"/api/cultivator/{encoded_identifier}",
         cookie_text,
+        api_token=api_token,
     )
 
 
-def get_all_items(cookie_text: str) -> Tuple[dict, int]:
-    payload, status, _cookie = _perform_json_get("/api/all_items", cookie_text)
+def get_all_items(cookie_text: str, api_token: str = "") -> Tuple[dict, int]:
+    payload, status, _cookie, _token = _perform_json_get(
+        "/api/all_items", cookie_text, api_token=api_token
+    )
     return payload, status
 
 
-def get_shop_items(cookie_text: str) -> Tuple[dict, int]:
-    payload, status, _cookie = _perform_json_get("/api/shop_items", cookie_text)
+def get_shop_items(cookie_text: str, api_token: str = "") -> Tuple[dict, int]:
+    payload, status, _cookie, _token = _perform_json_get(
+        "/api/shop_items", cookie_text, api_token=api_token
+    )
     return payload, status
 
 
-def get_bootstrap(cookie_text: str) -> Tuple[dict, int]:
-    payload, status, _cookie = _perform_json_get("/api/bootstrap", cookie_text)
+def get_bootstrap(cookie_text: str, api_token: str = "") -> Tuple[dict, int]:
+    payload, status, _cookie, _token = _perform_json_get(
+        "/api/bootstrap", cookie_text, api_token=api_token
+    )
     return payload, status
 
 
 def get_marketplace_listings_page(
-    cookie_text: str, page: int = 1, search: str = ""
+    cookie_text: str, page: int = 1, search: str = "", api_token: str = ""
 ) -> Tuple[dict, int]:
     query = urllib.parse.urlencode(
         {
@@ -198,8 +213,8 @@ def get_marketplace_listings_page(
             "search": str(search or ""),
         }
     )
-    payload, status, _cookie = _perform_json_get(
-        f"/api/marketplace_listings?{query}", cookie_text
+    payload, status, _cookie, _token = _perform_json_get(
+        f"/api/marketplace?{query}", cookie_text, api_token=api_token
     )
     return payload, status
 

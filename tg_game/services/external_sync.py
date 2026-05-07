@@ -171,7 +171,9 @@ def get_cultivator_lookup_candidates(profile) -> list[str]:
     return candidates
 
 
-def fetch_cultivator_payload(cookie_text: str, profile) -> tuple[dict, str, str]:
+def fetch_cultivator_payload(
+    cookie_text: str, profile, api_token: str = ""
+) -> tuple[dict, str, str, str]:
     candidates = get_cultivator_lookup_candidates(profile)
     if not candidates:
         raise RuntimeError(
@@ -181,8 +183,10 @@ def fetch_cultivator_payload(cookie_text: str, profile) -> tuple[dict, str, str]
     last_error: Optional[Exception] = None
     for candidate in candidates:
         try:
-            payload, _status, refreshed_cookie = get_cultivator(candidate, cookie_text)
-            return payload, candidate, refreshed_cookie
+            payload, _status, refreshed_cookie, refreshed_token = get_cultivator(
+                candidate, cookie_text, api_token=api_token
+            )
+            return payload, candidate, refreshed_cookie, refreshed_token
         except AscAuthError:
             raise
         except AscNotFoundError as exc:
@@ -223,8 +227,10 @@ def sync_external_account(
         raise RuntimeError("缺少天机阁登录 Cookie")
     if not normalized_cookie.startswith("session="):
         raise RuntimeError("只识别 session=... 形式的天机阁登录 Cookie")
-    payload, resolved_identifier, refreshed_cookie = fetch_cultivator_payload(
-        normalized_cookie, profile
+    external_account = storage.get_external_account(profile_id, provider) or {}
+    stored_api_token = str(external_account.get("api_token") or "").strip()
+    payload, resolved_identifier, refreshed_cookie, refreshed_token = fetch_cultivator_payload(
+        normalized_cookie, profile, api_token=stored_api_token
     )
     persisted_cookie = resolve_external_cookie(normalized_cookie, refreshed_cookie)
     stored_cookie = persisted_cookie if is_admin else ""
@@ -236,6 +242,7 @@ def sync_external_account(
         status="connected",
         cookie_text=stored_cookie,
         me_payload=payload,
+        api_token=refreshed_token,
     )
     if is_admin:
         storage.set_external_cookie_override(persisted_cookie)
