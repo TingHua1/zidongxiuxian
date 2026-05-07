@@ -525,7 +525,7 @@ def parse_message(text):
     return FanrenParseResult("unknown", text[:80], cooldown)
 
 
-def build_status_text(session):
+def build_status_text(session, *, stage: Optional[str] = None):
     if not session:
         return "凡人修仙自动化未初始化。"
 
@@ -537,15 +537,22 @@ def build_status_text(session):
     failure_count = int(session.get("failure_count") or 0)
     stopped_reason = session.get("stopped_reason") or "-"
 
-    return "\n".join(
-        [
-            "凡人修仙自动化状态",
-            f"开关: {'开启' if enabled else '关闭'}",
-            f"Dry-run: {'开启' if dry_run else '关闭'}",
-            f"模式: {'深度闭关' if session.get('retreat_mode') == 'deep' else '普通闭关'}",
-            f"普通闭关删原消息: {'开启' if session.get('delete_normal_command_message') else '关闭'}",
-            f"自动极阴祖师: {'开启' if session.get('auto_jiyin_enabled') else '关闭'} / {session.get('auto_jiyin_choice') or '-'}",
-            f"自动南陇侯: {'开启' if session.get('auto_nanlong_enabled') else '关闭'} / {session.get('auto_nanlong_choice') or '-'}",
+    lines = [
+        "凡人修仙自动化状态",
+        f"开关: {'开启' if enabled else '关闭'}",
+        f"Dry-run: {'开启' if dry_run else '关闭'}",
+        f"模式: {'深度闭关' if session.get('retreat_mode') == 'deep' else '普通闭关'}",
+        f"普通闭关删原消息: {'开启' if session.get('delete_normal_command_message') else '关闭'}",
+        f"自动极阴祖师: {'开启' if session.get('auto_jiyin_enabled') else '关闭'} / {session.get('auto_jiyin_choice') or '-'}",
+        f"自动南陇侯: {'开启' if session.get('auto_nanlong_enabled') else '关闭'} / {session.get('auto_nanlong_choice') or '-'}",
+    ]
+
+    current_stage = stage
+    if current_stage is None:
+        current_stage, _ = extract_stage_progress(session.get("last_summary", ""))
+
+    if current_stage and "元婴" in current_stage:
+        lines.extend([
             f"自动探寻裂缝: {'开启' if session.get('auto_rift_enabled') else '关闭'}",
             f"  裂缝状态: {session.get('rift_state') or '-'}",
             f"  裂缝下次: {format_timestamp(session.get('rift_next_check_time') or 0)}",
@@ -553,21 +560,24 @@ def build_status_text(session):
             f"自动元婴出窍: {'开启' if session.get('auto_yuanying_enabled') else '关闭'}",
             f"  出窍状态: {session.get('yuanying_state') or '-'}",
             f"  出窍下次: {format_timestamp(session.get('yuanying_next_check_time') or 0)}",
-            f"检查指令: {session.get('command_text') or FANREN_CHECK_COMMAND}",
-            f"普通闭关指令: {FANREN_NORMAL_COMMAND}",
-            f"深度闭关指令: {FANREN_DEEP_COMMAND}",
-            f"检查间隔: {format_duration(session.get('interval_seconds') or FANREN_DEFAULT_INTERVAL)}",
-            f"下次检查: {format_timestamp(next_check_time)}",
-            f"剩余等待: {format_duration(remaining) if next_check_time else '-'}",
-            f"倒计时来源: {session.get('next_check_source') or '-'}",
-            f"最后事件: {session.get('last_event') or '-'}",
-            f"最后摘要: {session.get('last_summary') or '-'}",
-            f"最后动作: {session.get('last_action') or '-'}",
-            f"最后动作时间: {format_timestamp(session.get('last_action_time') or 0)}",
-            f"连续失败: {failure_count}/{FANREN_MAX_FAILURES}",
-            f"熔断原因: {stopped_reason}",
-        ]
-    )
+        ])
+
+    lines.extend([
+        f"检查指令: {session.get('command_text') or FANREN_CHECK_COMMAND}",
+        f"普通闭关指令: {FANREN_NORMAL_COMMAND}",
+        f"深度闭关指令: {FANREN_DEEP_COMMAND}",
+        f"检查间隔: {format_duration(session.get('interval_seconds') or FANREN_DEFAULT_INTERVAL)}",
+        f"下次检查: {format_timestamp(next_check_time)}",
+        f"剩余等待: {format_duration(remaining) if next_check_time else '-'}",
+        f"倒计时来源: {session.get('next_check_source') or '-'}",
+        f"最后事件: {session.get('last_event') or '-'}",
+        f"最后摘要: {session.get('last_summary') or '-'}",
+        f"最后动作: {session.get('last_action') or '-'}",
+        f"最后动作时间: {format_timestamp(session.get('last_action_time') or 0)}",
+        f"连续失败: {failure_count}/{FANREN_MAX_FAILURES}",
+        f"熔断原因: {stopped_reason}",
+    ])
+    return "\\n".join(lines)
 
 
 def set_enabled(db, chat_id, enabled, *, reset_failure=False, profile_id=None):
