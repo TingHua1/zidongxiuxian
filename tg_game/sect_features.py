@@ -1,19 +1,23 @@
-def _text_field(name: str, label: str, placeholder: str) -> dict:
+def _text_field(name: str, label: str, placeholder: str, required: bool = True) -> dict:
     return {
         "name": name,
         "label": label,
         "type": "text",
         "placeholder": placeholder,
-        "required": True,
+        "required": required,
     }
 
 
-def _select_field(name: str, label: str, options: list[tuple[str, str]]) -> dict:
+def _optional_text_field(name: str, label: str, placeholder: str) -> dict:
+    return _text_field(name, label, placeholder, required=False)
+
+
+def _select_field(name: str, label: str, options: list[tuple[str, str]], required: bool = True) -> dict:
     return {
         "name": name,
         "label": label,
         "type": "select",
-        "required": True,
+        "required": required,
         "options": [
             {"value": value, "label": option_label} for value, option_label in options
         ],
@@ -68,40 +72,40 @@ SECT_FEATURES = [
             _form_action(
                 "sow",
                 "播种",
-                ".播种 {plot} {seed}",
-                "按地块播下目标种子，适合日常补种。",
+                ".播种 {seed}",
+                "不填地块则对所有空闲地块播种指定种子，填地块则只播该地块。",
                 [
-                    _text_field("plot", "地块", "例如 1"),
+                    _optional_text_field("plot", "地块（可选，不填=全部）", "例如 1"),
                     _text_field("seed", "种子", "例如 清灵草种子"),
                 ],
             ),
             _form_action(
                 "harvest",
                 "采药",
-                ".采药 {plot}",
-                "成熟后按地块采药。",
-                [_text_field("plot", "地块", "例如 1")],
+                ".采药",
+                "不填地块则采集所有成熟药材，填地块则只采该地块。",
+                [_optional_text_field("plot", "地块（可选，不填=全部）", "例如 1")],
             ),
             _form_action(
                 "weed",
                 "除草",
-                ".除草 {plot}",
-                "地块长草时直接处理。",
-                [_text_field("plot", "地块", "例如 1")],
+                ".除草",
+                "不填地块则处理所有杂草，填地块则只处理该地块。",
+                [_optional_text_field("plot", "地块（可选，不填=全部）", "例如 1")],
             ),
             _form_action(
                 "bug",
                 "除虫",
-                ".除虫 {plot}",
-                "地块生虫时直接处理。",
-                [_text_field("plot", "地块", "例如 1")],
+                ".除虫",
+                "不填地块则处理所有虫害，填地块则只处理该地块。",
+                [_optional_text_field("plot", "地块（可选，不填=全部）", "例如 1")],
             ),
             _form_action(
                 "water",
                 "浇水",
-                ".浇水 {plot}",
-                "地块干涸时补水保产量。",
-                [_text_field("plot", "地块", "例如 1")],
+                ".浇水",
+                "不填地块则浇灌所有干旱地块，填地块则只浇该地块。",
+                [_optional_text_field("plot", "地块（可选，不填=全部）", "例如 1")],
             ),
             _button_action(
                 "expand", "扩建药园", ".扩建药园", "药园稳定后继续扩容，提高长期产出。"

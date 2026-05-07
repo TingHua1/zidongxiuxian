@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import logging
 from contextlib import suppress
 
@@ -20,8 +21,22 @@ from tg_game.telegram.send_utils import send_message_with_thread_fallback
 
 
 logger = logging.getLogger(__name__)
+_current_profile_id: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "_current_profile_id", default=0
+)
+_admin_profile_id: int = 0
 DIVINATION_COMMAND = ".卜筮问天"
 WORKER_RECONCILE_SECONDS = 5
+
+
+class _AdminLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if _admin_profile_id <= 0:
+            return True
+        current = _current_profile_id.get(0)
+        if current <= 0:
+            return True
+        return current == _admin_profile_id
 
 
 def _has_expired_external_session(storage: Storage, profile_id: int) -> bool:
@@ -196,25 +211,27 @@ async def _register_handlers(
     @client.on(events.NewMessage(incoming=True, outgoing=True))
     async def _incoming_handler(event):
         if settings.telegram_log_messages and _should_log_chat(event):
-            logger.info(
-                "Message received profile=%s chat=%s sender=%s text=%r",
-                profile_id,
-                event.chat_id,
-                event.sender_id,
-                event.raw_text or "",
-            )
+            if _current_profile_id.get(0) == _admin_profile_id:
+                logger.info(
+                    "Message received profile=%s chat=%s sender=%s text=%r",
+                    profile_id,
+                    event.chat_id,
+                    event.sender_id,
+                    event.raw_text or "",
+                )
         await router.dispatch(client, event)
 
     @client.on(events.MessageEdited(incoming=True))
     async def _edited_handler(event):
         if settings.telegram_log_messages and _should_log_chat(event):
-            logger.info(
-                "Message edited profile=%s chat=%s sender=%s text=%r",
-                profile_id,
-                event.chat_id,
-                event.sender_id,
-                event.raw_text or "",
-            )
+            if _current_profile_id.get(0) == _admin_profile_id:
+                logger.info(
+                    "Message edited profile=%s chat=%s sender=%s text=%r",
+                    profile_id,
+                    event.chat_id,
+                    event.sender_id,
+                    event.raw_text or "",
+                )
         await router.dispatch(client, event)
 
     client._tg_game_outgoing_task = asyncio.create_task(
@@ -263,6 +280,7 @@ async def _shutdown_client(client: TelegramClient) -> None:
 
 
 async def _run_profile_worker(profile_id: int) -> None:
+    _current_profile_id.set(int(profile_id))
     settings = get_settings()
     storage = Storage(settings.database_path)
     while True:
@@ -349,6 +367,17 @@ async def _main() -> None:
     storage = Storage(settings.database_path)
     storage.init_schema()
     storage.maybe_cleanup_bound_messages(min_interval_seconds=0)
+
+    global _admin_profile_id
+    authorized_user_id = str(settings.authorized_user_id or "").strip()
+    if authorized_user_id:
+        admin_profile = storage.get_profile_by_telegram_user_id(authorized_user_id)
+        if admin_profile:
+            _admin_profile_id = int(admin_profile.id)
+            logging.getLogger().addFilter(_AdminLogFilter())
+            logger.info(
+                "日志过滤器已启用，仅显示管理员 profile=%d 的消息", _admin_profile_id
+            )
 
     keepalive_task = asyncio.create_task(_refresh_external_sessions(storage))
     worker_tasks: dict[int, asyncio.Task] = {}

@@ -42,6 +42,9 @@ LINGXIAO_QUESTION_RECHECK_SECONDS = 2 * 3600
 LINGXIAO_COMMAND_REFRESH_SECONDS = 180
 LINGXIAO_ACTION_SYNC_TIMEOUT_SECONDS = 15 * 60
 YINLUO_BLOOD_WASH_SECONDS = 4 * 3600
+HUANGFENG_BATCH_TIMEOUT_SECONDS = 10 * 60
+HUANGFENG_BATCH_MAX_RETRIES = 2
+HUANGFENG_PAYLOAD_REFRESH_MAX_RETRIES = 2
 
 HUANGFENG_PLOT_PATTERN = re.compile(
     r"(?P<plot>\d+)\s*(?:号)?(?:药田|地块|灵田|田)", re.IGNORECASE
@@ -259,10 +262,12 @@ def _huangfeng_status_meta(status: str) -> dict:
         "ready": {"label": "已成熟", "action": "可采药"},
         "idle": {"label": "空闲", "action": "可播种"},
     }
+    if not normalized or normalized == "null":
+        return {"label": "空闲", "action": "可播种"}
     return mapping.get(normalized, {"label": normalized or "未知", "action": "待确认"})
 
 
-def _resolve_huangfeng_seed_names(payload) -> dict:
+def _resolve_huangfeng_seed_names(payload, game_items=None) -> dict:
     inventory = (payload or {}).get("inventory") or {}
     items = inventory.get("items") or []
     seed_name_map = {}
@@ -275,6 +280,10 @@ def _resolve_huangfeng_seed_names(payload) -> dict:
         item_name = str(item.get("name") or "").strip()
         if item_id and item_name:
             seed_name_map[item_id] = item_name
+    if game_items:
+        for seed_id, item_info in (game_items or {}).items():
+            if seed_id.startswith("seed_") and seed_id not in seed_name_map:
+                seed_name_map[seed_id] = str(item_info.get("name") or seed_id).strip()
     return seed_name_map
 
 
@@ -304,7 +313,7 @@ def _resolve_huangfeng_seed_options(payload) -> list[dict]:
     return options
 
 
-def parse_huangfeng_garden_payload(payload):
+def parse_huangfeng_garden_payload(payload, game_items=None):
     herb_garden = (payload or {}).get("herb_garden") or {}
     if isinstance(herb_garden, str) and herb_garden.strip():
         try:
@@ -316,7 +325,7 @@ def parse_huangfeng_garden_payload(payload):
     raw_plots = herb_garden.get("plots") or {}
     if not isinstance(raw_plots, dict):
         raw_plots = {}
-    seed_name_map = _resolve_huangfeng_seed_names(payload or {})
+    seed_name_map = _resolve_huangfeng_seed_names(payload or {}, game_items=game_items)
     seed_options = _resolve_huangfeng_seed_options(payload or {})
     plots = []
     for raw_plot, raw_state in raw_plots.items():
@@ -334,7 +343,7 @@ def parse_huangfeng_garden_payload(payload):
                 "seed_id": seed_id,
                 "seed_name": seed_name_map.get(seed_id) or seed_id,
                 "plant_time": str(state.get("plant_time") or "").strip(),
-                "is_idle": status in {"", "idle"} and not seed_id,
+                "is_idle": status in {"", "idle", "null"} and not seed_id,
                 "has_weeds": status == "weeds",
                 "has_insects": status == "pests",
                 "is_dry": status == "dry",
@@ -463,34 +472,45 @@ def _is_huangfeng_seed_shortage(text: str) -> bool:
 
 def _build_huangfeng_exchange_command(seed_name: str) -> str:
     normalized_seed = str(seed_name or "").strip()
-    return f".宗门兑换 {normalized_seed}*3" if normalized_seed else ""
+    return f".兑换 {normalized_seed}*3" if normalized_seed else ""
 
 
 def build_huangfeng_auto_commands(session):
     seed_name = str((session or {}).get("huangfeng_seed_name") or "").strip()
     state = _load_huangfeng_state(session)
-    commands = []
+    has_mature = False
+    has_weeds = False
+    has_insects = False
+    has_dry = False
+    has_idle = False
     for plot in state.get("plots") or []:
-        plot_id = _normalize_plot_value((plot or {}).get("plot"))
-        if not plot_id:
-            continue
         if plot.get("is_mature"):
-            commands.append(f".采药 {plot_id}")
-            continue
+            has_mature = True
         if plot.get("has_weeds"):
-            commands.append(f".除草 {plot_id}")
+            has_weeds = True
         if plot.get("has_insects"):
-            commands.append(f".除虫 {plot_id}")
+            has_insects = True
         if plot.get("is_dry"):
-            commands.append(f".浇水 {plot_id}")
-        if plot.get("is_idle") and seed_name:
-            commands.append(f".播种 {plot_id} {seed_name}")
+            has_dry = True
+        if plot.get("is_idle"):
+            has_idle = True
+    commands = []
+    if has_weeds:
+        commands.append(".除草")
+    if has_insects:
+        commands.append(".除虫")
+    if has_dry:
+        commands.append(".浇水")
+    if has_mature:
+        commands.append(".采药")
+    if has_idle and seed_name:
+        commands.append(f".播种 {seed_name}")
     return commands
 
 
-def build_huangfeng_view(payload, session=None, now=None):
+def build_huangfeng_view(payload, session=None, now=None, game_items=None):
     now = now or time.time()
-    state = parse_huangfeng_garden_payload(payload)
+    state = parse_huangfeng_garden_payload(payload, game_items=game_items)
     if not (state.get("plots") or []):
         state = _load_huangfeng_state(session)
     plots = list(state.get("plots") or [])
@@ -536,7 +556,8 @@ def sync_huangfeng_state(storage, db, profile_id, chat_id, payload=None, now=Non
         return None, None
     if payload is None:
         payload = _read_cached_profile_payload(storage, profile_id)
-    view = build_huangfeng_view(payload, session=session, now=now)
+    game_items = storage.get_game_items() if storage else None
+    view = build_huangfeng_view(payload, session=session, now=now, game_items=game_items)
     updates = {"last_panel_time": now}
     if view.get("plots"):
         state_payload = {
@@ -555,6 +576,64 @@ def sync_huangfeng_state(storage, db, profile_id, chat_id, payload=None, now=Non
                 for plot in view.get("plots") or []
             ]
         )[:4000]
+        updates["huangfeng_payload_refresh_retry"] = 0
+    elif (
+        session.get("auto_huangfeng_enabled")
+        and not has_active_huangfeng_batch(session)
+        and not (view.get("plots") or [])
+    ):
+        refresh_retry = int(session.get("huangfeng_payload_refresh_retry") or 0)
+        if refresh_retry < HUANGFENG_PAYLOAD_REFRESH_MAX_RETRIES:
+            try:
+                fresh_payload = sync_external_account(storage, profile_id)
+            except Exception as exc:
+                logger.warning(
+                    "黄枫谷天机阁接口刷新失败（第%d次） profile=%s: %s",
+                    refresh_retry + 1,
+                    profile_id,
+                    exc,
+                )
+                mark_external_account_failure(storage, profile_id, exc)
+                fresh_payload = None
+            if fresh_payload and isinstance(fresh_payload, dict):
+                view = build_huangfeng_view(fresh_payload, session=session, now=now, game_items=game_items)
+                if view.get("plots"):
+                    state_payload = {
+                        "size": view.get("size"),
+                        "plots": view.get("plots"),
+                        "updated_at": view.get("updated_at") or now,
+                        "source": "payload",
+                    }
+                    updates["huangfeng_last_garden_state"] = json.dumps(
+                        state_payload, ensure_ascii=False
+                    )
+                    updates["huangfeng_last_garden_text"] = "\n".join(
+                        [
+                            f"{plot.get('plot')}号地：{plot.get('status_label')}"
+                            + (
+                                f"（{plot.get('seed_name')}）"
+                                if plot.get("seed_name")
+                                else ""
+                            )
+                            for plot in view.get("plots") or []
+                        ]
+                    )[:4000]
+                    updates["huangfeng_payload_refresh_retry"] = 0
+                else:
+                    updates["huangfeng_payload_refresh_retry"] = refresh_retry + 1
+            else:
+                updates["huangfeng_payload_refresh_retry"] = refresh_retry + 1
+        if int(updates.get("huangfeng_payload_refresh_retry") or 0) >= HUANGFENG_PAYLOAD_REFRESH_MAX_RETRIES:
+            logger.warning(
+                "黄枫谷天机阁接口连续%d次刷新失败 profile=%s，停止自动化",
+                HUANGFENG_PAYLOAD_REFRESH_MAX_RETRIES,
+                profile_id,
+            )
+            updates["auto_huangfeng_enabled"] = 0
+            updates["huangfeng_payload_refresh_retry"] = 0
+            updates["huangfeng_next_check_source"] = (
+                f"天机阁接口连续{HUANGFENG_PAYLOAD_REFRESH_MAX_RETRIES}次刷新失败，已停止黄枫谷自动化"
+            )
     if session.get("auto_huangfeng_enabled") and not has_active_huangfeng_batch(
         session
     ):
@@ -562,6 +641,12 @@ def sync_huangfeng_state(storage, db, profile_id, chat_id, payload=None, now=Non
         simulated_session.update(updates)
         auto_commands = build_huangfeng_auto_commands(simulated_session)
         if auto_commands:
+            updates["huangfeng_pending_commands"] = (
+                _save_huangfeng_pending_commands(auto_commands)
+            )
+            updates["huangfeng_pending_index"] = 0
+            updates["huangfeng_pending_msg_id"] = 0
+            updates["huangfeng_pending_retry"] = 0
             updates["huangfeng_next_check_time"] = 0
             updates["huangfeng_next_check_source"] = (
                 f"药园存在 {len(auto_commands)} 条待处理动作，可立即执行"
@@ -611,6 +696,10 @@ def configure_huangfeng_auto(
                 "huangfeng_pending_commands": None,
                 "huangfeng_pending_index": 0,
                 "huangfeng_pending_msg_id": 0,
+                "huangfeng_pending_retry": 0,
+                "huangfeng_payload_refresh_retry": 0,
+                "huangfeng_next_check_time": 0,
+                "huangfeng_next_check_source": "已关闭黄枫谷自动化",
             }
         )
     update_session(db, chat_id, profile_id=profile_id, **updates)
@@ -1402,6 +1491,8 @@ def ensure_tables(db):
             huangfeng_pending_commands TEXT,
             huangfeng_pending_index INTEGER DEFAULT 0,
             huangfeng_pending_msg_id INTEGER DEFAULT 0,
+            huangfeng_pending_retry INTEGER DEFAULT 0,
+            huangfeng_payload_refresh_retry INTEGER DEFAULT 0,
             yinluo_batch_mode TEXT,
             yinluo_batch_commands TEXT,
             yinluo_batch_index INTEGER DEFAULT 0,
@@ -1458,6 +1549,8 @@ def ensure_tables(db):
         "huangfeng_pending_commands": "TEXT",
         "huangfeng_pending_index": "INTEGER DEFAULT 0",
         "huangfeng_pending_msg_id": "INTEGER DEFAULT 0",
+        "huangfeng_pending_retry": "INTEGER DEFAULT 0",
+        "huangfeng_payload_refresh_retry": "INTEGER DEFAULT 0",
         "yinluo_batch_mode": "TEXT",
         "yinluo_batch_commands": "TEXT",
         "yinluo_batch_index": "INTEGER DEFAULT 0",
@@ -2137,6 +2230,8 @@ def clear_huangfeng_batch(
         huangfeng_pending_commands=None,
         huangfeng_pending_index=0,
         huangfeng_pending_msg_id=0,
+        huangfeng_pending_retry=0,
+        huangfeng_payload_refresh_retry=0,
         huangfeng_next_check_time=next_check_time,
         huangfeng_next_check_source=summary or None,
         last_summary=summary or None,
@@ -2153,6 +2248,60 @@ async def maybe_run_huangfeng_batch(
     pending_msg_id = int(session.get("huangfeng_pending_msg_id") or 0)
     chat_id = int(session.get("chat_id") or 0)
     if pending_msg_id:
+        now = time.time()
+        sent_at = (
+            float(session.get("huangfeng_next_check_time") or 0)
+            - LINGXIAO_COMMAND_REFRESH_SECONDS
+        )
+        if sent_at <= 0 or now - sent_at < HUANGFENG_BATCH_TIMEOUT_SECONDS:
+            return True
+        retry_count = int(session.get("huangfeng_pending_retry") or 0)
+        if retry_count < HUANGFENG_BATCH_MAX_RETRIES:
+            update_session(
+                db,
+                chat_id,
+                profile_id=session.get("profile_id"),
+                huangfeng_pending_retry=retry_count + 1,
+                huangfeng_pending_msg_id=0,
+                huangfeng_next_check_time=0,
+                huangfeng_next_check_source=(
+                    f"黄枫谷指令超时未回复（第{retry_count + 1}次重试），重新发送{commands[current_index] if current_index < len(commands) else ''}"
+                ),
+                next_check_time=0,
+                next_check_source=(
+                    f"黄枫谷指令超时未回复（第{retry_count + 1}次重试）"
+                ),
+            )
+        else:
+            logger.warning(
+                "Huangfeng batch command timed out %d times for chat %d, stopping auto",
+                HUANGFENG_BATCH_MAX_RETRIES,
+                chat_id,
+            )
+            clear_huangfeng_batch(
+                db,
+                chat_id,
+                summary=(
+                    f"黄枫谷指令连续{retry_count}次超时未回复（各等待30分钟），已停止自动化"
+                ),
+                profile_id=session.get("profile_id"),
+            )
+            update_session(
+                db,
+                chat_id,
+                profile_id=session.get("profile_id"),
+                auto_huangfeng_enabled=0,
+                huangfeng_pending_retry=0,
+                huangfeng_next_check_source=(
+                    f"黄枫谷指令连续{retry_count}次超时未回复，已停止自动化"
+                ),
+                next_check_time=(
+                    time.time() + HUANGFENG_AUTO_CHECK_SECONDS
+                ),
+                next_check_source=(
+                    f"黄枫谷指令连续{retry_count}次超时未回复，已停止自动化"
+                ),
+            )
         return True
     if current_index >= len(commands):
         clear_huangfeng_batch(
@@ -2255,16 +2404,6 @@ def configure_lingxiao_question_auto(db, chat_id, enabled, profile_id=None):
 
 def build_auto_command(session, now=None):
     now = now or time.time()
-    if session.get("auto_huangfeng_enabled"):
-        next_time = float(session.get("huangfeng_next_check_time") or 0)
-        if not next_time or now >= next_time:
-            return {
-                "command": ".小药园",
-                "next_field": "huangfeng_next_check_time",
-                "source_field": "huangfeng_next_check_source",
-                "pending_source": "已发送 .小药园，等待药园状态刷新",
-                "pending_delay_seconds": LINGXIAO_COMMAND_REFRESH_SECONDS,
-            }
     if session.get("auto_sect_checkin_enabled"):
         next_time = float(session.get("sect_checkin_next_check_time") or 0)
         if not next_time or now >= next_time:
@@ -2601,7 +2740,7 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 update_fields["huangfeng_pending_msg_id"] = 0
                 update_fields["huangfeng_next_check_time"] = 0
                 update_fields["huangfeng_next_check_source"] = (
-                    f"{seed_name} 不足，准备先宗门兑换后重试播种"
+                    f"{seed_name} 不足，准备先兑换后重试播种"
                 )
                 update_fields["next_check_time"] = 0
                 update_fields["next_check_source"] = update_fields[
@@ -2625,6 +2764,7 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 update_fields["huangfeng_pending_commands"] = None
                 update_fields["huangfeng_pending_index"] = 0
                 update_fields["huangfeng_pending_msg_id"] = 0
+                update_fields["huangfeng_pending_retry"] = 0
                 update_fields["huangfeng_next_check_time"] = (
                     now + HUANGFENG_AUTO_CHECK_SECONDS
                 )
@@ -2637,6 +2777,7 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
             else:
                 update_fields["huangfeng_pending_index"] = next_index
                 update_fields["huangfeng_pending_msg_id"] = 0
+                update_fields["huangfeng_pending_retry"] = 0
                 update_fields["huangfeng_next_check_time"] = 0
                 update_fields["huangfeng_next_check_source"] = (
                     f"黄枫谷批次已完成 {next_index}/{len(huangfeng_commands)}，准备下一条"
@@ -2655,6 +2796,7 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
             )
             update_fields["huangfeng_pending_index"] = 0
             update_fields["huangfeng_pending_msg_id"] = 0
+            update_fields["huangfeng_pending_retry"] = 0
             update_fields["huangfeng_next_check_time"] = 0
             update_fields["huangfeng_next_check_source"] = (
                 f"已根据药园状态生成 {len(auto_commands)} 条黄枫谷命令"

@@ -1565,40 +1565,27 @@ class GeneralGameExecutor(BaseExecutor):
             if len(parts) >= 3:
                 command_texts = [f".播种 {parts[1]} {parts[2]}"]
             elif len(parts) >= 2:
-                plots = sect_game._get_huangfeng_known_plots(session)
-                command_texts = [f".播种 {plot} {parts[1]}" for plot in plots]
+                command_texts = [f".播种 {parts[1]}"]
         elif action == "harvest":
             if len(parts) >= 2:
                 command_texts = [f".采药 {parts[1]}"]
             else:
-                command_texts = [
-                    f".采药 {plot}"
-                    for plot in sect_game._get_huangfeng_known_plots(session)
-                ]
+                command_texts = [".采药"]
         elif action == "weed":
             if len(parts) >= 2:
                 command_texts = [f".除草 {parts[1]}"]
             else:
-                command_texts = [
-                    f".除草 {plot}"
-                    for plot in sect_game._get_huangfeng_known_plots(session)
-                ]
+                command_texts = [".除草"]
         elif action == "bug":
             if len(parts) >= 2:
                 command_texts = [f".除虫 {parts[1]}"]
             else:
-                command_texts = [
-                    f".除虫 {plot}"
-                    for plot in sect_game._get_huangfeng_known_plots(session)
-                ]
+                command_texts = [".除虫"]
         elif action == "water":
             if len(parts) >= 2:
                 command_texts = [f".浇水 {parts[1]}"]
             else:
-                command_texts = [
-                    f".浇水 {plot}"
-                    for plot in sect_game._get_huangfeng_known_plots(session)
-                ]
+                command_texts = [".浇水"]
         elif action == "expand":
             command_texts = [".扩建药园"]
         elif action == "auto":
