@@ -555,8 +555,28 @@ def sync_huangfeng_state(storage, db, profile_id, chat_id, payload=None, now=Non
     session = get_session(db, chat_id, profile_id=profile_id)
     if not session:
         return None, None
-    if payload is None:
+
+    if bool(session.get("huangfeng_batch_just_completed")):
+        try:
+            # A batch just finished, force a refresh of the external payload
+            payload = sync_external_account(storage, profile_id)
+            logger.info("强制刷新天机阁 payload 成功 profile=%s", profile_id)
+        except Exception as exc:
+            logger.warning("强制刷新天机阁 payload 失败 profile=%s: %s", profile_id, exc)
+            # Fallback to cached payload
+            if payload is None:
+                payload = _read_cached_profile_payload(storage, profile_id)
+        finally:
+            # Clear the flag regardless of success or failure
+            update_session(
+                db, chat_id, profile_id=profile_id, huangfeng_batch_just_completed=0
+            )
+            session["huangfeng_batch_just_completed"] = 0
+    elif payload is None:
         payload = _read_cached_profile_payload(storage, profile_id)
+    else:
+        if payload is None:
+            payload = _read_cached_profile_payload(storage, profile_id)
     game_items = storage.get_game_items() if storage else None
     view = build_huangfeng_view(payload, session=session, now=now, game_items=game_items)
     updates = {"last_panel_time": now}
@@ -581,7 +601,7 @@ def sync_huangfeng_state(storage, db, profile_id, chat_id, payload=None, now=Non
     elif (
         session.get("auto_huangfeng_enabled")
         and not has_active_huangfeng_batch(session)
-        and not (view.get("plots") or [])
+        and (force_refresh or not (view.get("plots") or []))
     ):
         refresh_retry = int(session.get("huangfeng_payload_refresh_retry") or 0)
         if refresh_retry < HUANGFENG_PAYLOAD_REFRESH_MAX_RETRIES:
@@ -1506,6 +1526,7 @@ def ensure_tables(db):
             huangfeng_pending_msg_id INTEGER DEFAULT 0,
             huangfeng_pending_retry INTEGER DEFAULT 0,
             huangfeng_payload_refresh_retry INTEGER DEFAULT 0,
+            huangfeng_batch_just_completed INTEGER DEFAULT 0,
             yinluo_batch_mode TEXT,
             yinluo_batch_commands TEXT,
             yinluo_batch_index INTEGER DEFAULT 0,
@@ -1564,6 +1585,7 @@ def ensure_tables(db):
         "huangfeng_pending_msg_id": "INTEGER DEFAULT 0",
         "huangfeng_pending_retry": "INTEGER DEFAULT 0",
         "huangfeng_payload_refresh_retry": "INTEGER DEFAULT 0",
+        "huangfeng_batch_just_completed": "INTEGER DEFAULT 0",
         "yinluo_batch_mode": "TEXT",
         "yinluo_batch_commands": "TEXT",
         "yinluo_batch_index": "INTEGER DEFAULT 0",
@@ -2780,6 +2802,7 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 update_fields["huangfeng_pending_retry"] = 0
                 update_fields["huangfeng_payload_refresh_retry"] = 0
                 update_fields["huangfeng_last_garden_state"] = None
+                update_fields["huangfeng_batch_just_completed"] = 1
                 update_fields["huangfeng_next_check_time"] = 0
                 update_fields["huangfeng_next_check_source"] = (
                     "黄枫谷批次已完成，即将刷新药园状态"
