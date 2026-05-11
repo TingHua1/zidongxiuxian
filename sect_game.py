@@ -98,9 +98,152 @@ YINLUO_REFINING_SLOT_PATTERN = re.compile(
 )
 YINLUO_SUMMON_SHADOW_SECONDS = 24 * 3600
 
+HUANGFENG_SECT_NAME = "黄枫谷"
+YINLUO_SECT_NAME = "阴罗宗"
+LINGXIAO_SECT_NAME = "凌霄宫"
+
 
 def _normalize_bool(value):
     return 1 if bool(value) else 0
+
+
+def _normalize_sect_name_text(value: str) -> str:
+    return str(value or "").replace("【", "").replace("】", "").strip()
+
+
+def _is_same_sect_name(current_name: str, expected_name: str) -> bool:
+    current = _normalize_sect_name_text(current_name)
+    expected = _normalize_sect_name_text(expected_name)
+    if not current or not expected:
+        return False
+    return current == expected or current in expected or expected in current
+
+
+def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
+    now = now or time.time()
+    normalized_sect_name = _normalize_sect_name_text(sect_name)
+    updates = {}
+    reasons = []
+
+    if not normalized_sect_name:
+        if any(
+            session.get(key)
+            for key in [
+                "auto_sect_checkin_enabled",
+                "auto_sect_teach_enabled",
+                "auto_yinluo_sacrifice_enabled",
+                "auto_yinluo_blood_wash_enabled",
+                "auto_huangfeng_enabled",
+                "auto_huangfeng_exchange_enabled",
+                "auto_lingxiao_enabled",
+                "auto_lingxiao_gangfeng_enabled",
+                "auto_lingxiao_borrow_enabled",
+                "auto_lingxiao_question_enabled",
+            ]
+        ):
+            reasons.append("人物已无宗门，已关闭全部宗门自动任务")
+        updates.update(
+            {
+                "auto_sect_checkin_enabled": 0,
+                "auto_sect_teach_enabled": 0,
+                "auto_yinluo_sacrifice_enabled": 0,
+                "auto_yinluo_blood_wash_enabled": 0,
+                "auto_huangfeng_enabled": 0,
+                "auto_huangfeng_exchange_enabled": 0,
+                "auto_lingxiao_enabled": 0,
+                "auto_lingxiao_gangfeng_enabled": 0,
+                "auto_lingxiao_borrow_enabled": 0,
+                "auto_lingxiao_question_enabled": 0,
+                "yinluo_batch_mode": None,
+                "yinluo_batch_commands": None,
+                "yinluo_batch_index": 0,
+                "yinluo_batch_pending_msg_id": 0,
+                "yinluo_batch_started_at": 0,
+                "huangfeng_pending_commands": None,
+                "huangfeng_pending_index": 0,
+                "huangfeng_pending_msg_id": 0,
+                "huangfeng_pending_retry": 0,
+                "huangfeng_payload_refresh_retry": 0,
+                "huangfeng_batch_just_completed": 0,
+                "sect_checkin_next_check_time": 0,
+                "sect_teach_next_check_time": 0,
+                "yinluo_sacrifice_next_check_time": 0,
+                "yinluo_blood_wash_next_check_time": 0,
+                "huangfeng_next_check_time": 0,
+                "lingxiao_next_check_time": 0,
+                "lingxiao_gangfeng_next_check_time": 0,
+                "lingxiao_borrow_next_check_time": 0,
+                "lingxiao_question_next_check_time": 0,
+                "next_check_time": 0,
+            }
+        )
+    else:
+        if (
+            session.get("auto_huangfeng_enabled")
+            or session.get("auto_huangfeng_exchange_enabled")
+        ) and not _is_same_sect_name(normalized_sect_name, HUANGFENG_SECT_NAME):
+            reasons.append(f"当前宗门已不是{HUANGFENG_SECT_NAME}，已关闭黄枫谷自动")
+            updates.update(
+                {
+                    "auto_huangfeng_enabled": 0,
+                    "auto_huangfeng_exchange_enabled": 0,
+                    "huangfeng_pending_commands": None,
+                    "huangfeng_pending_index": 0,
+                    "huangfeng_pending_msg_id": 0,
+                    "huangfeng_pending_retry": 0,
+                    "huangfeng_payload_refresh_retry": 0,
+                    "huangfeng_batch_just_completed": 0,
+                    "huangfeng_next_check_time": 0,
+                }
+            )
+        if (
+            session.get("auto_yinluo_sacrifice_enabled")
+            or session.get("auto_yinluo_blood_wash_enabled")
+        ) and not _is_same_sect_name(normalized_sect_name, YINLUO_SECT_NAME):
+            reasons.append(f"当前宗门已不是{YINLUO_SECT_NAME}，已关闭阴罗宗自动")
+            updates.update(
+                {
+                    "auto_yinluo_sacrifice_enabled": 0,
+                    "auto_yinluo_blood_wash_enabled": 0,
+                    "yinluo_batch_mode": None,
+                    "yinluo_batch_commands": None,
+                    "yinluo_batch_index": 0,
+                    "yinluo_batch_pending_msg_id": 0,
+                    "yinluo_batch_started_at": 0,
+                    "yinluo_sacrifice_next_check_time": 0,
+                    "yinluo_blood_wash_next_check_time": 0,
+                }
+            )
+        if any(
+            session.get(key)
+            for key in [
+                "auto_lingxiao_enabled",
+                "auto_lingxiao_gangfeng_enabled",
+                "auto_lingxiao_borrow_enabled",
+                "auto_lingxiao_question_enabled",
+            ]
+        ) and not _is_same_sect_name(normalized_sect_name, LINGXIAO_SECT_NAME):
+            reasons.append(f"当前宗门已不是{LINGXIAO_SECT_NAME}，已关闭凌霄宫自动")
+            updates.update(
+                {
+                    "auto_lingxiao_enabled": 0,
+                    "auto_lingxiao_gangfeng_enabled": 0,
+                    "auto_lingxiao_borrow_enabled": 0,
+                    "auto_lingxiao_question_enabled": 0,
+                    "lingxiao_next_check_time": 0,
+                    "lingxiao_gangfeng_next_check_time": 0,
+                    "lingxiao_borrow_next_check_time": 0,
+                    "lingxiao_question_next_check_time": 0,
+                }
+            )
+
+    if updates:
+        updates["next_check_time"] = _recompute_overall_next_check(session, updates, now)
+        reason_text = "；".join(reasons).strip()
+        if reason_text:
+            updates["next_check_source"] = reason_text
+            updates["last_summary"] = reason_text
+    return updates
 
 
 def format_timestamp(timestamp):
@@ -2073,6 +2216,26 @@ def stop_all_automation(db, chat_id, reason="", profile_id=None):
     )
 
 
+def apply_sect_auto_guard(storage, db, session, profile_id=None, payload=None, now=None):
+    now = now or time.time()
+    if not session or not session.get("enabled"):
+        return session, False
+    if payload is None and profile_id:
+        payload = _read_cached_profile_payload(storage, profile_id)
+    current_sect_name = _normalize_sect_name_text((payload or {}).get("sect_name") or "")
+    updates = _build_sect_auto_guard_updates(session, current_sect_name, now)
+    if not updates:
+        return session, False
+    update_session(
+        db,
+        session["chat_id"],
+        profile_id=profile_id,
+        **updates,
+    )
+    refreshed = get_session(db, session["chat_id"], profile_id=profile_id) or session
+    return refreshed, True
+
+
 def set_dry_run(db, chat_id, enabled, profile_id=None):
     update_session(db, chat_id, profile_id=profile_id, dry_run=_normalize_bool(enabled))
 
@@ -2982,6 +3145,17 @@ async def runner(client, storage, profile_id=None):
                         payload = _read_cached_profile_payload(
                             storage, session_profile_id
                         )
+                    if session_profile_id and payload is not None:
+                        session, guard_applied = apply_sect_auto_guard(
+                            storage,
+                            db,
+                            session,
+                            profile_id=session_profile_id,
+                            payload=payload,
+                            now=now,
+                        )
+                        if guard_applied and not _has_any_auto_keys(session):
+                            continue
                     if session_profile_id and _active_common_auto_keys(session):
                         session, _daily_state = sync_common_sect_state(
                             storage,
