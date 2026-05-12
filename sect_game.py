@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -28,8 +29,8 @@ SECT_DEFAULT_INTERVAL = 1800
 SECT_COMMAND_COOLDOWN = 15
 SECT_RUNNER_POLL_SECONDS = 5
 SECT_DAILY_TEACH_LIMIT = 3
-SECT_AUTO_CHECK_IN_TIME = "02:00"
-SECT_AUTO_TEACH_TIME = "02:10"
+SECT_AUTO_WINDOW_START_TIME = "02:00"
+SECT_AUTO_WINDOW_END_TIME = "05:00"
 YINLUO_AUTO_SACRIFICE_TIME = "02:20"
 SECT_AUTO_TEACH_REPLY_RECHECK_SECONDS = 30
 HUANGFENG_AUTO_CHECK_SECONDS = 30 * 60
@@ -291,6 +292,55 @@ def _next_daily_run_timestamp(time_text, now=None):
     if now < today_run:
         return today_run
     return today_run + 86400
+
+
+def _sect_daily_window_bounds(now=None):
+    now = now or time.time()
+    window_start = _time_today_timestamp(SECT_AUTO_WINDOW_START_TIME, now)
+    window_end = _time_today_timestamp(SECT_AUTO_WINDOW_END_TIME, now)
+    if window_end <= window_start:
+        window_end = window_start + 3 * 3600
+    return window_start, window_end
+
+
+def _stable_daily_window_seed(session, action_key, now=None):
+    date_key = current_date_key(now)
+    seed_text = "|".join(
+        [
+            str(action_key or ""),
+            date_key,
+            str((session or {}).get("profile_id") or 0),
+            str((session or {}).get("chat_id") or 0),
+            str((session or {}).get("bot_username") or ""),
+        ]
+    )
+    return int(hashlib.sha256(seed_text.encode("utf-8")).hexdigest()[:16], 16)
+
+
+def _daily_random_window_timestamp(session, action_key, now=None):
+    now = now or time.time()
+    window_start, window_end = _sect_daily_window_bounds(now)
+    window_seconds = max(int(window_end - window_start), 1)
+    offset_seconds = _stable_daily_window_seed(session, action_key, now) % (
+        window_seconds + 1
+    )
+    return window_start + offset_seconds
+
+
+def _next_daily_random_window_timestamp(session, action_key, now=None):
+    now = now or time.time()
+    today_target = _daily_random_window_timestamp(session, action_key, now)
+    if now < today_target:
+        return today_target
+    return _daily_random_window_timestamp(session, action_key, now + 86400)
+
+
+def _common_action_still_syncing(session, now, *, command_text: str) -> bool:
+    last_action = str((session or {}).get("last_action") or "").strip()
+    last_action_time = float((session or {}).get("last_action_time") or 0)
+    if last_action != str(command_text or "").strip() or not last_action_time:
+        return False
+    return now - last_action_time < LINGXIAO_ACTION_SYNC_TIMEOUT_SECONDS
 
 
 def _parse_iso_timestamp(value):
@@ -1315,49 +1365,115 @@ def sync_common_sect_state(storage, db, profile_id, chat_id, payload=None, now=N
     session = get_session(db, chat_id, profile_id=profile_id)
     if not session:
         return None, None
-    if payload is None:
+    force_refresh = bool(session.get("sect_common_force_refresh"))
+    if force_refresh:
+        try:
+            payload = sync_external_account(storage, profile_id)
+            logger.info("宗门自动任务强制刷新天机阁 payload 成功 profile=%s", profile_id)
+        except Exception as exc:
+            logger.warning("宗门自动任务强制刷新天机阁 payload 失败 profile=%s: %s", profile_id, exc)
+            if payload is None:
+                payload = _read_cached_profile_payload(storage, profile_id)
+    elif payload is None:
         payload = _read_cached_profile_payload(storage, profile_id)
     daily = _extract_sect_daily_state(payload, now)
+    today_key = current_date_key(now)
+    checkin_pending_date = _parse_date_key(session.get("sect_checkin_pending_date"))
+    teach_pending_date = _parse_date_key(session.get("sect_teach_pending_date"))
+    teach_pending_target_count = max(
+        _parse_int(session.get("sect_teach_pending_target_count"), 0), 0
+    )
+    checkin_syncing = _common_action_still_syncing(
+        session, now, command_text=".宗门点卯"
+    )
+    teach_syncing = _common_action_still_syncing(
+        session, now, command_text=".宗门传功"
+    )
     session_teach_date = _parse_date_key(session.get("last_teach_date"))
     session_teach_count = max(_parse_int(session.get("last_teach_count"), 0), 0)
-    if (
-        session_teach_date == current_date_key(now)
-        and session_teach_count > daily["teach_count"]
-    ):
+    if session_teach_date == today_key and session_teach_count > daily["teach_count"]:
         daily["last_teach_date"] = session_teach_date
         daily["teach_count"] = session_teach_count
+    if (
+        teach_pending_date == today_key
+        and teach_syncing
+        and teach_pending_target_count > daily["teach_count"]
+    ):
+        daily["last_teach_date"] = today_key
+        daily["teach_count"] = teach_pending_target_count
     updates = {
         "last_sign_date": _parse_date_key(payload.get("last_sect_check_in")),
         "last_teach_date": daily["last_teach_date"] or None,
         "last_teach_count": daily["teach_count"],
+        "sect_common_force_refresh": 0,
     }
+    if checkin_pending_date and (checkin_pending_date != today_key or not checkin_syncing):
+        updates["sect_checkin_pending_date"] = None
+        checkin_pending_date = ""
+        checkin_syncing = False
+    if teach_pending_date and (teach_pending_date != today_key or not teach_syncing):
+        updates["sect_teach_pending_date"] = None
+        updates["sect_teach_pending_target_count"] = 0
+        teach_pending_date = ""
+        teach_pending_target_count = 0
+        teach_syncing = False
 
     if session.get("auto_sect_checkin_enabled"):
-        next_check_in_time = _next_daily_run_timestamp(SECT_AUTO_CHECK_IN_TIME, now)
+        next_check_in_time = _next_daily_random_window_timestamp(
+            session, "sect_checkin", now
+        )
         if daily["checked_in_today"]:
             updates["sect_checkin_next_check_time"] = next_check_in_time
-            updates["sect_checkin_next_check_source"] = "今日已点卯，等待次日 02:00"
+            updates["sect_checkin_next_check_source"] = (
+                f"今日已点卯，等待次日 {SECT_AUTO_WINDOW_START_TIME}-{SECT_AUTO_WINDOW_END_TIME} 随机执行"
+            )
         else:
-            today_check_in_time = _time_today_timestamp(SECT_AUTO_CHECK_IN_TIME, now)
-            if now < today_check_in_time:
+            today_check_in_time = _daily_random_window_timestamp(
+                session, "sect_checkin", now
+            )
+            if checkin_pending_date == today_key and checkin_syncing:
+                retry_time = min(
+                    float(session.get("last_action_time") or 0)
+                    + LINGXIAO_ACTION_SYNC_TIMEOUT_SECONDS,
+                    now + LINGXIAO_COMMAND_REFRESH_SECONDS,
+                )
+                updates["sect_checkin_next_check_time"] = max(retry_time, now + 3)
+                updates["sect_checkin_next_check_source"] = (
+                    "已发送 .宗门点卯，等待确认或缓存刷新"
+                )
+            elif now < today_check_in_time:
                 updates["sect_checkin_next_check_time"] = today_check_in_time
-                updates["sect_checkin_next_check_source"] = "等待 02:00 执行宗门点卯"
+                updates["sect_checkin_next_check_source"] = (
+                    f"等待 {SECT_AUTO_WINDOW_START_TIME}-{SECT_AUTO_WINDOW_END_TIME} 随机时间执行宗门点卯"
+                )
             else:
                 updates["sect_checkin_next_check_time"] = 0
                 updates["sect_checkin_next_check_source"] = "可执行宗门点卯"
 
     if session.get("auto_sect_teach_enabled"):
-        next_teach_time = _next_daily_run_timestamp(SECT_AUTO_TEACH_TIME, now)
+        next_teach_time = _next_daily_random_window_timestamp(session, "sect_teach", now)
         if daily["teach_count"] >= SECT_DAILY_TEACH_LIMIT:
             updates["sect_teach_next_check_time"] = next_teach_time
             updates["sect_teach_next_check_source"] = (
-                f"今日已传功 {daily['teach_count']}/{SECT_DAILY_TEACH_LIMIT}，等待次日 02:10"
+                f"今日已传功 {daily['teach_count']}/{SECT_DAILY_TEACH_LIMIT}，等待次日 {SECT_AUTO_WINDOW_START_TIME}-{SECT_AUTO_WINDOW_END_TIME} 随机执行"
             )
         else:
-            today_teach_time = _time_today_timestamp(SECT_AUTO_TEACH_TIME, now)
-            if now < today_teach_time:
+            today_teach_time = _daily_random_window_timestamp(session, "sect_teach", now)
+            if teach_pending_date == today_key and teach_syncing:
+                retry_time = min(
+                    float(session.get("last_action_time") or 0)
+                    + LINGXIAO_ACTION_SYNC_TIMEOUT_SECONDS,
+                    now + SECT_AUTO_TEACH_REPLY_RECHECK_SECONDS,
+                )
+                updates["sect_teach_next_check_time"] = max(retry_time, now + 3)
+                updates["sect_teach_next_check_source"] = (
+                    f"已发送 .宗门传功，等待确认或缓存刷新 ({daily['teach_count']}/{SECT_DAILY_TEACH_LIMIT})"
+                )
+            elif now < today_teach_time:
                 updates["sect_teach_next_check_time"] = today_teach_time
-                updates["sect_teach_next_check_source"] = "等待 02:10 执行宗门传功"
+                updates["sect_teach_next_check_source"] = (
+                    f"等待 {SECT_AUTO_WINDOW_START_TIME}-{SECT_AUTO_WINDOW_END_TIME} 随机时间执行宗门传功"
+                )
             else:
                 updates["sect_teach_next_check_time"] = 0
                 updates["sect_teach_next_check_source"] = (
@@ -1678,8 +1794,12 @@ def ensure_tables(db):
             last_panel_time REAL DEFAULT 0,
             last_bounty_time REAL DEFAULT 0,
             last_sign_date TEXT,
+            sect_checkin_pending_date TEXT,
             last_teach_date TEXT,
             last_teach_count INTEGER DEFAULT 0,
+            sect_teach_pending_date TEXT,
+            sect_teach_pending_target_count INTEGER DEFAULT 0,
+            sect_common_force_refresh INTEGER DEFAULT 0,
             last_yinluo_sacrifice_date TEXT,
             last_command_msg_id INTEGER DEFAULT 0,
             PRIMARY KEY (profile_id, chat_id, bot_username)
@@ -1737,8 +1857,12 @@ def ensure_tables(db):
         "last_panel_time": "REAL DEFAULT 0",
         "last_bounty_time": "REAL DEFAULT 0",
         "last_sign_date": "TEXT",
+        "sect_checkin_pending_date": "TEXT",
         "last_teach_date": "TEXT",
         "last_teach_count": "INTEGER DEFAULT 0",
+        "sect_teach_pending_date": "TEXT",
+        "sect_teach_pending_target_count": "INTEGER DEFAULT 0",
+        "sect_common_force_refresh": "INTEGER DEFAULT 0",
         "last_yinluo_sacrifice_date": "TEXT",
         "last_command_msg_id": "INTEGER DEFAULT 0",
         "profile_id": "INTEGER NOT NULL DEFAULT 0",
@@ -2604,6 +2728,10 @@ def build_auto_command(session, now=None):
     now = now or time.time()
     if session.get("auto_sect_checkin_enabled"):
         next_time = float(session.get("sect_checkin_next_check_time") or 0)
+        if _parse_date_key(session.get("sect_checkin_pending_date")) == current_date_key(
+            now
+        ) and _common_action_still_syncing(session, now, command_text=".宗门点卯"):
+            next_time = max(next_time, now + 3)
         if not next_time or now >= next_time:
             return {
                 "command": ".宗门点卯",
@@ -2613,6 +2741,10 @@ def build_auto_command(session, now=None):
             }
     if session.get("auto_sect_teach_enabled"):
         next_time = float(session.get("sect_teach_next_check_time") or 0)
+        if _parse_date_key(session.get("sect_teach_pending_date")) == current_date_key(
+            now
+        ) and _common_action_still_syncing(session, now, command_text=".宗门传功"):
+            next_time = max(next_time, now + 3)
         if not next_time or now >= next_time:
             return {
                 "command": ".宗门传功",
@@ -2739,6 +2871,7 @@ async def maybe_send_check(
         next_check_source=f"已发送 {command_text}，等待机器人回复",
         last_summary=f"已发送宗门指令: {command_text}",
     )
+    today_key = current_date_key(now)
     if command_text == ".登天阶":
         update_session(
             db,
@@ -2785,6 +2918,37 @@ async def maybe_send_check(
             chat_id,
             profile_id=session.get("profile_id"),
             yinluo_blood_wash_next_check_source="已发送 .血洗山林，等待机器人回复",
+        )
+    elif command_text == ".宗门点卯":
+        update_session(
+            db,
+            chat_id,
+            profile_id=session.get("profile_id"),
+            sect_checkin_pending_date=today_key,
+            sect_checkin_next_check_time=now + LINGXIAO_COMMAND_REFRESH_SECONDS,
+            sect_checkin_next_check_source="已发送 .宗门点卯，等待确认或缓存刷新",
+        )
+    elif command_text == ".宗门传功":
+        current_teach_count = 0
+        if _parse_date_key(session.get("last_teach_date")) == today_key:
+            current_teach_count = max(
+                current_teach_count, _parse_int(session.get("last_teach_count"), 0)
+            )
+        if _parse_date_key(session.get("sect_teach_pending_date")) == today_key:
+            current_teach_count = max(
+                current_teach_count,
+                _parse_int(session.get("sect_teach_pending_target_count"), 0),
+            )
+        update_session(
+            db,
+            chat_id,
+            profile_id=session.get("profile_id"),
+            sect_teach_pending_date=today_key,
+            sect_teach_pending_target_count=min(
+                current_teach_count + 1, SECT_DAILY_TEACH_LIMIT
+            ),
+            sect_teach_next_check_time=now + SECT_AUTO_TEACH_REPLY_RECHECK_SECONDS,
+            sect_teach_next_check_source="已发送 .宗门传功，等待确认或缓存刷新",
         )
     return True, "sent", getattr(sent_message, "id", 0)
 
@@ -3031,24 +3195,29 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
         update_fields["next_check_time"] = now + cooldown_seconds
     elif parsed["event"] == "sect_sign":
         update_fields["last_sign_date"] = current_date_key(now)
+        update_fields["sect_checkin_pending_date"] = None
+        update_fields["sect_common_force_refresh"] = 1
         if session.get("auto_sect_checkin_enabled"):
-            update_fields["sect_checkin_next_check_time"] = _next_daily_run_timestamp(
-                SECT_AUTO_CHECK_IN_TIME, now
+            update_fields["sect_checkin_next_check_time"] = _next_daily_random_window_timestamp(
+                session, "sect_checkin", now
             )
             update_fields["sect_checkin_next_check_source"] = (
-                "今日已点卯，等待次日 02:00"
+                f"今日已点卯，等待次日 {SECT_AUTO_WINDOW_START_TIME}-{SECT_AUTO_WINDOW_END_TIME} 随机执行"
             )
     elif parsed["event"] == "sect_teach":
         teach_count = int(teach_progress[0]) if teach_progress else 0
         update_fields["last_teach_date"] = current_date_key(now)
         update_fields["last_teach_count"] = teach_count
+        update_fields["sect_teach_pending_date"] = None
+        update_fields["sect_teach_pending_target_count"] = 0
         if session.get("auto_sect_teach_enabled"):
             if teach_count >= SECT_DAILY_TEACH_LIMIT:
-                update_fields["sect_teach_next_check_time"] = _next_daily_run_timestamp(
-                    SECT_AUTO_TEACH_TIME, now
+                update_fields["sect_common_force_refresh"] = 1
+                update_fields["sect_teach_next_check_time"] = _next_daily_random_window_timestamp(
+                    session, "sect_teach", now
                 )
                 update_fields["sect_teach_next_check_source"] = (
-                    f"今日已传功 {teach_count}/{SECT_DAILY_TEACH_LIMIT}，等待次日 02:10"
+                    f"今日已传功 {teach_count}/{SECT_DAILY_TEACH_LIMIT}，等待次日 {SECT_AUTO_WINDOW_START_TIME}-{SECT_AUTO_WINDOW_END_TIME} 随机执行"
                 )
             else:
                 update_fields["sect_teach_next_check_time"] = 0
