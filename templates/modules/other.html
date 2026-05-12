@@ -130,6 +130,58 @@
         </div>
     </div>
 
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>玩家对 NPC 的野外遭遇</p>
+            <h2>野外历练</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>定位</span><strong>玩家对NPC的野外遭遇，不会匹配其他玩家。</strong></div>
+            <div class="kv-row"><span>当前状态</span><strong>{% if wild_experience_state.cooldown_target and not wild_experience_state.cooldown_ready %}{{ wild_experience_state.status_prefix }}<span class="countdown-text" data-countdown-target="{{ wild_experience_state.cooldown_target }}"></span>{% else %}{{ wild_experience_state.status_display }}{% endif %}</strong></div>
+            <div class="kv-row"><span>上次历练</span><strong>{{ wild_experience_state.last_experience_display }}</strong></div>
+        </div>
+
+        <form class="form-grid top-gap" method="post" action="/runtime/commands/wild-experience-auto">
+            <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+            <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+            <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+            <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+            <input type="hidden" name="redirect_to" value="/modules/other">
+            {% if wild_experience_state.active %}
+                <label>
+                    历练策略
+                    <input value="{{ wild_experience_state.strategy }}" disabled>
+                </label>
+                <input type="hidden" name="strategy" value="{{ wild_experience_state.strategy }}">
+                <div class="action-row" style="align-items: end;">
+                    <button type="submit" class="inline-button active" {% if not command_chat_ready %}disabled{% endif %}>停止自动历练</button>
+                </div>
+                <p class="muted full-span" style="font-size: 0.9em;">自动历练运行中。如需修改策略，请先关闭自动历练。</p>
+            {% else %}
+                <label>
+                    历练策略
+                    <select name="strategy" {% if not command_chat_ready %}disabled{% endif %}>
+                        {% for option in wild_experience_state.strategy_options %}
+                            <option value="{{ option }}" {% if wild_experience_state.strategy == option %}selected{% endif %}>{{ option }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <div class="action-row" style="align-items: end;">
+                    <button type="submit" {% if not command_chat_ready %}disabled{% endif %}>开启自动历练</button>
+                </div>
+                <p class="muted full-span" style="font-size: 0.9em;">发送指令示例：{{ wild_experience_state.command_preview }}。执行前会先强制刷新一次天机阁接口确认冷却。</p>
+            {% endif %}
+        </form>
+
+        <div class="stack-list compact-stack top-gap">
+            <div class="kv-row"><span>自动历练</span><strong {% if wild_experience_state.active and wild_experience_state.next_run_at %}class="countdown-text" data-countdown-target="{{ wild_experience_state.next_run_at }}"{% endif %}>{{ wild_experience_state.next_run_display if wild_experience_state.active else ('未开启' if not wild_experience_state.last_error else '已停止') }}</strong></div>
+            <div class="kv-row"><span>当前策略</span><strong>{{ wild_experience_state.strategy }}</strong></div>
+        </div>
+        {% if wild_experience_state.last_error %}
+            <p class="muted top-gap">自动历练：{{ wild_experience_state.last_error }}</p>
+        {% endif %}
+    </div>
+
 </section>
 
 <section class="detail-grid three-column-grid">
@@ -163,7 +215,7 @@
             <input type="hidden" name="text" id="companion-command-input" value=".我的侍妾">
             <div class="action-row companion-command-row">
                 <button type="button" class="inline-button" onclick="submitCompanionCommand('.我的侍妾')" {% if not command_chat_ready %}disabled{% endif %}>刷新侍妾</button>
-                <button type="button" class="inline-button" onclick="submitCompanionCommand('.残图')" {% if not command_chat_ready %}disabled{% endif %}>残图</button>
+                <button type="button" class="inline-button" onclick="submitCompanionCommand('.拼图')" {% if not command_chat_ready %}disabled{% endif %}>拼图</button>
                 <button type="button" class="inline-button" onclick="submitCompanionCommand('.安置侍妾')" {% if not command_chat_ready %}disabled{% endif %}>安置侍妾</button>
                 <button type="button" class="inline-button" onclick="submitCompanionCommand('.召回侍妾')" {% if not command_chat_ready %}disabled{% endif %}>召回侍妾</button>
             </div>
@@ -182,7 +234,6 @@
                 </label>
                 <button type="button" class="inline-button" onclick="submitCompanionCommand('.立誓 ' + document.getElementById('companion-vow-select').value)" {% if not command_chat_ready %}disabled{% endif %}>立誓</button>
                 <button type="button" class="inline-button" onclick="submitCompanionCommand('.毁誓')" {% if not command_chat_ready %}disabled{% endif %}>毁誓</button>
-                <button type="button" class="inline-button" onclick="showCompanionHeartTribulationHelp()">共历心劫（需回复）</button>
             </div>
         </form>
 
@@ -192,15 +243,55 @@
             <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
             <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
             <input type="hidden" name="redirect_to" value="/modules/other">
-            <input type="hidden" name="feature_key" id="companion-auto-feature" value="dream_seek">
+            <input type="hidden" name="feature_key" id="companion-auto-feature" value="heart_tribulation">
+            <div class="top-gap" style="padding: 12px; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 12px; background: rgba(255, 255, 255, 0.02);">
+                <div class="action-row companion-command-row" style="justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px; flex-wrap: wrap;">
+                    <div>
+                        <div class="muted" style="font-size: 0.85em;">自动心劫策略</div>
+                        <div style="font-weight: 600; color: var(--text-primary);">{{ '运行中' if companion_heart_tribulation_state.active else '开启前可调整三轮回复' }}</div>
+                    </div>
+                    <button type="button" class="inline-button {% if companion_heart_tribulation_state.active %}active{% endif %}" onclick="document.getElementById('companion-auto-feature').value='heart_tribulation'; document.getElementById('companion-auto-form').submit();" {% if not command_chat_ready %}disabled{% endif %}>{{ '自动中·心劫' if companion_heart_tribulation_state.active else '自动心劫' }}</button>
+                </div>
+                <div class="form-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;">
+                <label>
+                    第1轮
+                    <select name="heart_round1">
+                        {% for action in companion_heart_tribulation_state.action_options %}
+                            <option value="{{ action }}" {% if companion_heart_tribulation_state.round1_reply == action %}selected{% endif %}>{{ action }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
+                    第2轮
+                    <select name="heart_round2">
+                        {% for action in companion_heart_tribulation_state.action_options %}
+                            <option value="{{ action }}" {% if companion_heart_tribulation_state.round2_reply == action %}selected{% endif %}>{{ action }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                <label>
+                    第3轮
+                    <select name="heart_round3">
+                        {% for action in companion_heart_tribulation_state.action_options %}
+                            <option value="{{ action }}" {% if companion_heart_tribulation_state.round3_reply == action %}selected{% endif %}>{{ action }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                </div>
+            </div>
         </form>
 
         <div class="stack-list compact-stack top-gap">
             <div class="kv-row"><span>自动入梦</span><strong {% if companion_auto_state.dream_seek.active and companion_auto_state.dream_seek.next_run_at %}class="countdown-text" data-countdown-target="{{ companion_auto_state.dream_seek.next_run_at }}"{% endif %}>{{ companion_auto_state.dream_seek.next_run_display if companion_auto_state.dream_seek.active else companion_auto_state.dream_seek.status_display }}</strong></div>
+            <div class="kv-row"><span>自动心劫</span><strong {% if companion_heart_tribulation_state.active and companion_heart_tribulation_state.next_run_at %}class="countdown-text" data-countdown-target="{{ companion_heart_tribulation_state.next_run_at }}"{% endif %}>{{ companion_heart_tribulation_state.next_run_display if companion_heart_tribulation_state.active else companion_heart_tribulation_state.status_display }}</strong></div>
+            <div class="kv-row"><span>心劫策略</span><strong>{{ companion_heart_tribulation_state.round_choices_summary }}</strong></div>
             <div class="kv-row"><span>自动代卜</span><strong {% if companion_auto_state.divination_chain.active and companion_auto_state.divination_chain.next_run_at %}class="countdown-text" data-countdown-target="{{ companion_auto_state.divination_chain.next_run_at }}"{% endif %}>{{ companion_auto_state.divination_chain.next_run_display if companion_auto_state.divination_chain.active else companion_auto_state.divination_chain.status_display }}</strong></div>
         </div>
         {% if companion_auto_state.dream_seek.last_error %}
             <p class="muted top-gap">自动入梦：{{ companion_auto_state.dream_seek.last_error }}</p>
+        {% endif %}
+        {% if companion_heart_tribulation_state.last_error %}
+            <p class="muted">自动心劫：{{ companion_heart_tribulation_state.last_error }}</p>
         {% endif %}
         {% if companion_auto_state.divination_chain.last_error %}
             <p class="muted">自动代卜：{{ companion_auto_state.divination_chain.last_error }}</p>
@@ -208,10 +299,20 @@
 
         <div class="top-gap">
             <details class="compact-details" id="companion-heart-tribulation-help">
-                <summary>共历心劫交互要求</summary>
+                <summary>最近两次心劫结算</summary>
                 <div class="details-content">
-                    <p class="muted">请先在 Telegram 中回复一条包含侍妾/道侣内容的消息，再手动发送 <strong>{{ companion_state.heart_tribulation_command }}</strong>。当前 Web 发指令通道不支持指定 reply_to，所以这里不做一键直发。</p>
-                    <div class="message-text top-gap">推荐顺序：先点“刷新侍妾”确认最新状态 → 在 Telegram 里回复侍妾消息 → 手动发送 <code>{{ companion_state.heart_tribulation_command }}</code>。</div>
+                    {% if companion_heart_tribulation_state.records %}
+                        <div class="stack-list compact-stack" style="margin-top: 8px;">
+                        {% for record in companion_heart_tribulation_state.records %}
+                            <div style="font-size: 0.9em; padding: 6px 0; border-bottom: 1px solid rgba(255, 255, 255, 0.03);">
+                                <div class="muted" style="font-size: 0.85em; margin-bottom: 2px;">{{ record.time }}</div>
+                                <div style="color: var(--text-primary); white-space: pre-wrap;">{{ record.text }}</div>
+                            </div>
+                        {% endfor %}
+                        </div>
+                    {% else %}
+                        <div class="muted" style="padding: 8px 0;">暂无结算记录。开启自动后会在这里保留最近两次共历心劫结算内容。</div>
+                    {% endif %}
                 </div>
             </details>
         </div>

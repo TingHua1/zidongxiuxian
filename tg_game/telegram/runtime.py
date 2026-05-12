@@ -96,6 +96,7 @@ async def _dispatch_outgoing_commands(
 
             chat_id = int(command.get("chat_id") or 0)
             thread_id = command.get("thread_id")
+            reply_to_msg_id = command.get("reply_to_msg_id")
             bot_username = command.get("bot_username") or ""
             text = (command.get("text") or "").strip()
             if not chat_id or not text:
@@ -111,16 +112,23 @@ async def _dispatch_outgoing_commands(
             ):
                 continue
 
-            message = await send_message_with_thread_fallback(
-                client,
-                chat_id,
-                text,
-                thread_id=int(thread_id) if thread_id else None,
-                storage=storage,
-                profile_id=profile_id,
-                bot_username=bot_username,
-                log_prefix=f"Outgoing queue profile={profile_id}",
-            )
+            if reply_to_msg_id:
+                message = await client.send_message(
+                    chat_id,
+                    text,
+                    reply_to=int(reply_to_msg_id),
+                )
+            else:
+                message = await send_message_with_thread_fallback(
+                    client,
+                    chat_id,
+                    text,
+                    thread_id=int(thread_id) if thread_id else None,
+                    storage=storage,
+                    profile_id=profile_id,
+                    bot_username=bot_username,
+                    log_prefix=f"Outgoing queue profile={profile_id}",
+                )
             if text == DIVINATION_COMMAND and message is not None and chat_id:
                 batch = storage.get_active_divination_batch(profile_id, chat_id)
                 if batch:

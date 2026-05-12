@@ -269,6 +269,7 @@ class Storage:
                     profile_id INTEGER,
                     chat_id INTEGER NOT NULL,
                     thread_id INTEGER,
+                    reply_to_msg_id INTEGER,
                     chat_type TEXT NOT NULL DEFAULT 'group',
                     bot_username TEXT NOT NULL DEFAULT '',
                     text TEXT NOT NULL DEFAULT '',
@@ -308,13 +309,57 @@ class Storage:
                     chat_type TEXT NOT NULL DEFAULT 'group',
                     bot_username TEXT NOT NULL DEFAULT '',
                     feature_key TEXT NOT NULL DEFAULT '',
+                    strategy TEXT NOT NULL DEFAULT '',
                     enabled INTEGER NOT NULL DEFAULT 1,
+                    workflow_state TEXT NOT NULL DEFAULT '',
                     next_run_at REAL NOT NULL DEFAULT 0,
                     last_run_at REAL NOT NULL DEFAULT 0,
+                    anchor_command_msg_id INTEGER NOT NULL DEFAULT 0,
+                    anchor_bot_msg_id INTEGER NOT NULL DEFAULT 0,
+                    tribulation_msg_id INTEGER NOT NULL DEFAULT 0,
+                    last_progress_fingerprint TEXT NOT NULL DEFAULT '',
+                    last_stable_sent_at REAL NOT NULL DEFAULT 0,
+                    last_settlement_text TEXT NOT NULL DEFAULT '',
+                    last_settlement_at REAL NOT NULL DEFAULT 0,
+                    previous_settlement_text TEXT NOT NULL DEFAULT '',
+                    previous_settlement_at REAL NOT NULL DEFAULT 0,
                     last_error TEXT NOT NULL DEFAULT '',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     UNIQUE(profile_id, chat_id, bot_username, feature_key),
+                    FOREIGN KEY (profile_id) REFERENCES profiles(id)
+                );
+
+                CREATE TABLE IF NOT EXISTS companion_heart_tribulation_tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    thread_id INTEGER,
+                    chat_type TEXT NOT NULL DEFAULT 'group',
+                    bot_username TEXT NOT NULL DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    workflow_state TEXT NOT NULL DEFAULT '',
+                    next_run_at REAL NOT NULL DEFAULT 0,
+                    last_run_at REAL NOT NULL DEFAULT 0,
+                    anchor_command_msg_id INTEGER NOT NULL DEFAULT 0,
+                    anchor_bot_msg_id INTEGER NOT NULL DEFAULT 0,
+                    tribulation_msg_id INTEGER NOT NULL DEFAULT 0,
+                    round1_reply TEXT NOT NULL DEFAULT '稳',
+                    round2_reply TEXT NOT NULL DEFAULT '稳',
+                    round3_reply TEXT NOT NULL DEFAULT '稳',
+                    last_action_round_sent INTEGER NOT NULL DEFAULT 0,
+                    last_tribulation_command_at REAL NOT NULL DEFAULT 0,
+                    last_progress_at REAL NOT NULL DEFAULT 0,
+                    last_progress_fingerprint TEXT NOT NULL DEFAULT '',
+                    last_stable_sent_at REAL NOT NULL DEFAULT 0,
+                    last_settlement_text TEXT NOT NULL DEFAULT '',
+                    last_settlement_at REAL NOT NULL DEFAULT 0,
+                    previous_settlement_text TEXT NOT NULL DEFAULT '',
+                    previous_settlement_at REAL NOT NULL DEFAULT 0,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL,
+                    UNIQUE(profile_id, chat_id, bot_username),
                     FOREIGN KEY (profile_id) REFERENCES profiles(id)
                 );
 
@@ -414,6 +459,8 @@ class Storage:
                 CREATE INDEX IF NOT EXISTS idx_divination_batches_chat_status ON divination_batches(chat_id, status, created_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_companion_auto_tasks_profile_enabled ON companion_auto_tasks(profile_id, enabled, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_companion_auto_tasks_chat_feature ON companion_auto_tasks(chat_id, feature_key, enabled);
+                CREATE INDEX IF NOT EXISTS idx_companion_heart_trib_tasks_profile_enabled ON companion_heart_tribulation_tasks(profile_id, enabled, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_companion_heart_trib_tasks_chat ON companion_heart_tribulation_tasks(chat_id, enabled, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_stock_market_info_profile_updated ON stock_market_info(profile_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_stock_market_history_code_observed ON stock_market_history(stock_code, observed_at DESC, id DESC);
                 CREATE INDEX IF NOT EXISTS idx_stock_player_replies_profile_updated ON stock_player_replies(profile_id, updated_at DESC);
@@ -477,6 +524,7 @@ class Storage:
                     "profile_id": "INTEGER",
                     "chat_id": "INTEGER NOT NULL DEFAULT 0",
                     "thread_id": "INTEGER",
+                    "reply_to_msg_id": "INTEGER",
                     "chat_type": "TEXT NOT NULL DEFAULT 'group'",
                     "bot_username": "TEXT NOT NULL DEFAULT ''",
                     "text": "TEXT NOT NULL DEFAULT ''",
@@ -518,9 +566,59 @@ class Storage:
                     "chat_type": "TEXT NOT NULL DEFAULT 'group'",
                     "bot_username": "TEXT NOT NULL DEFAULT ''",
                     "feature_key": "TEXT NOT NULL DEFAULT ''",
+                    "strategy": "TEXT NOT NULL DEFAULT ''",
                     "enabled": "INTEGER NOT NULL DEFAULT 1",
+                    "workflow_state": "TEXT NOT NULL DEFAULT ''",
                     "next_run_at": "REAL NOT NULL DEFAULT 0",
                     "last_run_at": "REAL NOT NULL DEFAULT 0",
+                    "anchor_command_msg_id": "INTEGER NOT NULL DEFAULT 0",
+                    "anchor_bot_msg_id": "INTEGER NOT NULL DEFAULT 0",
+                    "tribulation_msg_id": "INTEGER NOT NULL DEFAULT 0",
+                    "round1_reply": "TEXT NOT NULL DEFAULT '稳'",
+                    "round2_reply": "TEXT NOT NULL DEFAULT '稳'",
+                    "round3_reply": "TEXT NOT NULL DEFAULT '稳'",
+                    "last_action_round_sent": "INTEGER NOT NULL DEFAULT 0",
+                    "last_tribulation_command_at": "REAL NOT NULL DEFAULT 0",
+                    "last_progress_at": "REAL NOT NULL DEFAULT 0",
+                    "last_progress_fingerprint": "TEXT NOT NULL DEFAULT ''",
+                    "last_stable_sent_at": "REAL NOT NULL DEFAULT 0",
+                    "last_settlement_text": "TEXT NOT NULL DEFAULT ''",
+                    "last_settlement_at": "REAL NOT NULL DEFAULT 0",
+                    "previous_settlement_text": "TEXT NOT NULL DEFAULT ''",
+                    "previous_settlement_at": "REAL NOT NULL DEFAULT 0",
+                    "last_error": "TEXT NOT NULL DEFAULT ''",
+                    "created_at": "REAL NOT NULL DEFAULT 0",
+                    "updated_at": "REAL NOT NULL DEFAULT 0",
+                },
+            )
+            self._ensure_columns(
+                conn,
+                "companion_heart_tribulation_tasks",
+                {
+                    "profile_id": "INTEGER NOT NULL DEFAULT 0",
+                    "chat_id": "INTEGER NOT NULL DEFAULT 0",
+                    "thread_id": "INTEGER",
+                    "chat_type": "TEXT NOT NULL DEFAULT 'group'",
+                    "bot_username": "TEXT NOT NULL DEFAULT ''",
+                    "enabled": "INTEGER NOT NULL DEFAULT 1",
+                    "workflow_state": "TEXT NOT NULL DEFAULT ''",
+                    "next_run_at": "REAL NOT NULL DEFAULT 0",
+                    "last_run_at": "REAL NOT NULL DEFAULT 0",
+                    "anchor_command_msg_id": "INTEGER NOT NULL DEFAULT 0",
+                    "anchor_bot_msg_id": "INTEGER NOT NULL DEFAULT 0",
+                    "tribulation_msg_id": "INTEGER NOT NULL DEFAULT 0",
+                    "round1_reply": "TEXT NOT NULL DEFAULT '稳'",
+                    "round2_reply": "TEXT NOT NULL DEFAULT '稳'",
+                    "round3_reply": "TEXT NOT NULL DEFAULT '稳'",
+                    "last_action_round_sent": "INTEGER NOT NULL DEFAULT 0",
+                    "last_tribulation_command_at": "REAL NOT NULL DEFAULT 0",
+                    "last_progress_at": "REAL NOT NULL DEFAULT 0",
+                    "last_progress_fingerprint": "TEXT NOT NULL DEFAULT ''",
+                    "last_stable_sent_at": "REAL NOT NULL DEFAULT 0",
+                    "last_settlement_text": "TEXT NOT NULL DEFAULT ''",
+                    "last_settlement_at": "REAL NOT NULL DEFAULT 0",
+                    "previous_settlement_text": "TEXT NOT NULL DEFAULT ''",
+                    "previous_settlement_at": "REAL NOT NULL DEFAULT 0",
                     "last_error": "TEXT NOT NULL DEFAULT ''",
                     "created_at": "REAL NOT NULL DEFAULT 0",
                     "updated_at": "REAL NOT NULL DEFAULT 0",
@@ -2047,6 +2145,7 @@ class Storage:
         chat_id: int,
         feature_key: str,
         enabled: bool,
+        strategy: str = "",
         thread_id: Optional[int] = None,
         chat_type: str = "group",
         bot_username: str = "",
@@ -2063,12 +2162,13 @@ class Storage:
                 """
                 INSERT INTO companion_auto_tasks (
                     profile_id, chat_id, thread_id, chat_type, bot_username,
-                    feature_key, enabled, next_run_at, last_run_at, last_error,
+                    feature_key, strategy, enabled, next_run_at, last_run_at, last_error,
                     created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(profile_id, chat_id, bot_username, feature_key) DO UPDATE SET
                     thread_id=excluded.thread_id,
                     chat_type=excluded.chat_type,
+                    strategy=excluded.strategy,
                     enabled=excluded.enabled,
                     next_run_at=excluded.next_run_at,
                     last_run_at=excluded.last_run_at,
@@ -2082,6 +2182,7 @@ class Storage:
                     chat_type or "group",
                     bot_username or "",
                     normalized_feature_key,
+                    str(strategy or "")[:100],
                     1 if enabled else 0,
                     float(next_run_at or 0),
                     float(last_run_at or 0),
@@ -2129,6 +2230,186 @@ class Storage:
             int(task["id"]),
             enabled=0,
             next_run_at=0,
+            last_error=(last_error or "")[:1000],
+        )
+
+    def get_companion_heart_tribulation_task(
+        self, profile_id: int, chat_id: int
+    ) -> Optional[dict]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM companion_heart_tribulation_tasks
+                WHERE profile_id=? AND chat_id=?
+                ORDER BY updated_at DESC, id DESC LIMIT 1
+                """,
+                (int(profile_id), int(chat_id)),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_active_companion_heart_tribulation_tasks(
+        self, profile_id: int
+    ) -> list[dict]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM companion_heart_tribulation_tasks
+                WHERE profile_id=? AND enabled=1
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (int(profile_id),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def upsert_companion_heart_tribulation_task(
+        self,
+        *,
+        profile_id: int,
+        chat_id: int,
+        enabled: bool,
+        thread_id: Optional[int] = None,
+        chat_type: str = "group",
+        bot_username: str = "",
+        workflow_state: str = "",
+        next_run_at: float = 0,
+        last_run_at: float = 0,
+        anchor_command_msg_id: int = 0,
+        anchor_bot_msg_id: int = 0,
+        tribulation_msg_id: int = 0,
+        round1_reply: str = "稳",
+        round2_reply: str = "稳",
+        round3_reply: str = "稳",
+        last_action_round_sent: int = 0,
+        last_tribulation_command_at: float = 0,
+        last_progress_at: float = 0,
+        last_progress_fingerprint: str = "",
+        last_stable_sent_at: float = 0,
+        last_settlement_text: str = "",
+        last_settlement_at: float = 0,
+        previous_settlement_text: str = "",
+        previous_settlement_at: float = 0,
+        last_error: str = "",
+    ) -> dict:
+        now = time.time()
+        payload = {
+            "profile_id": int(profile_id),
+            "chat_id": int(chat_id),
+            "thread_id": thread_id,
+            "chat_type": chat_type or "group",
+            "bot_username": bot_username or "",
+            "enabled": 1 if enabled else 0,
+            "workflow_state": str(workflow_state or ""),
+            "next_run_at": float(next_run_at or 0),
+            "last_run_at": float(last_run_at or 0),
+            "anchor_command_msg_id": int(anchor_command_msg_id or 0),
+            "anchor_bot_msg_id": int(anchor_bot_msg_id or 0),
+            "tribulation_msg_id": int(tribulation_msg_id or 0),
+            "round1_reply": str(round1_reply or "稳")[:10],
+            "round2_reply": str(round2_reply or "稳")[:10],
+            "round3_reply": str(round3_reply or "稳")[:10],
+            "last_action_round_sent": max(int(last_action_round_sent or 0), 0),
+            "last_tribulation_command_at": float(last_tribulation_command_at or 0),
+            "last_progress_at": float(last_progress_at or 0),
+            "last_progress_fingerprint": str(last_progress_fingerprint or "")[:1000],
+            "last_stable_sent_at": float(last_stable_sent_at or 0),
+            "last_settlement_text": str(last_settlement_text or "")[:4000],
+            "last_settlement_at": float(last_settlement_at or 0),
+            "previous_settlement_text": str(previous_settlement_text or "")[:4000],
+            "previous_settlement_at": float(previous_settlement_at or 0),
+            "last_error": str(last_error or "")[:1000],
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self.connect() as conn:
+            self._ensure_columns(
+                conn,
+                "companion_heart_tribulation_tasks",
+                {
+                    "round1_reply": "TEXT NOT NULL DEFAULT '稳'",
+                    "round2_reply": "TEXT NOT NULL DEFAULT '稳'",
+                    "round3_reply": "TEXT NOT NULL DEFAULT '稳'",
+                    "last_action_round_sent": "INTEGER NOT NULL DEFAULT 0",
+                    "last_tribulation_command_at": "REAL NOT NULL DEFAULT 0",
+                    "last_progress_at": "REAL NOT NULL DEFAULT 0",
+                },
+            )
+            columns = list(payload.keys())
+            placeholders = ", ".join("?" for _ in columns)
+            values = [payload[column] for column in columns]
+            conn.execute(
+                f"""
+                INSERT INTO companion_heart_tribulation_tasks (
+                    {", ".join(columns)}
+                ) VALUES ({placeholders})
+                ON CONFLICT(profile_id, chat_id, bot_username) DO UPDATE SET
+                    thread_id=excluded.thread_id,
+                    chat_type=excluded.chat_type,
+                    enabled=excluded.enabled,
+                    workflow_state=excluded.workflow_state,
+                    next_run_at=excluded.next_run_at,
+                    last_run_at=excluded.last_run_at,
+                    anchor_command_msg_id=excluded.anchor_command_msg_id,
+                    anchor_bot_msg_id=excluded.anchor_bot_msg_id,
+                    tribulation_msg_id=excluded.tribulation_msg_id,
+                    round1_reply=excluded.round1_reply,
+                    round2_reply=excluded.round2_reply,
+                    round3_reply=excluded.round3_reply,
+                    last_action_round_sent=excluded.last_action_round_sent,
+                    last_tribulation_command_at=excluded.last_tribulation_command_at,
+                    last_progress_at=excluded.last_progress_at,
+                    last_progress_fingerprint=excluded.last_progress_fingerprint,
+                    last_stable_sent_at=excluded.last_stable_sent_at,
+                    last_settlement_text=excluded.last_settlement_text,
+                    last_settlement_at=excluded.last_settlement_at,
+                    previous_settlement_text=excluded.previous_settlement_text,
+                    previous_settlement_at=excluded.previous_settlement_at,
+                    last_error=excluded.last_error,
+                    updated_at=excluded.updated_at
+                """,
+                values,
+            )
+        return self.get_companion_heart_tribulation_task(int(profile_id), int(chat_id)) or {}
+
+    def update_companion_heart_tribulation_task(
+        self, task_id: int, **fields
+    ) -> Optional[dict]:
+        if not fields:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM companion_heart_tribulation_tasks WHERE id=?",
+                    (int(task_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        updates = {**fields, "updated_at": time.time()}
+        assignments = ", ".join(f"{key}=?" for key in updates)
+        values = list(updates.values()) + [int(task_id)]
+        with self.connect() as conn:
+            conn.execute(
+                f"UPDATE companion_heart_tribulation_tasks SET {assignments} WHERE id=?",
+                values,
+            )
+            row = conn.execute(
+                "SELECT * FROM companion_heart_tribulation_tasks WHERE id=?",
+                (int(task_id),),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def disable_companion_heart_tribulation_task(
+        self, profile_id: int, chat_id: int, *, last_error: str = ""
+    ) -> Optional[dict]:
+        task = self.get_companion_heart_tribulation_task(profile_id, chat_id)
+        if not task:
+            return None
+        return self.update_companion_heart_tribulation_task(
+            int(task["id"]),
+            enabled=0,
+            workflow_state="",
+            next_run_at=0,
+            tribulation_msg_id=0,
+            last_action_round_sent=0,
+            last_tribulation_command_at=0,
+            last_progress_at=0,
+            last_progress_fingerprint="",
             last_error=(last_error or "")[:1000],
         )
 
@@ -2188,6 +2469,7 @@ class Storage:
         chat_id: int,
         text: str,
         thread_id: Optional[int] = None,
+        reply_to_msg_id: Optional[int] = None,
         chat_type: str = "group",
         bot_username: str = "",
         delay_seconds: int = 0,
@@ -2198,14 +2480,15 @@ class Storage:
             cursor = conn.execute(
                 """
                 INSERT INTO outgoing_commands (
-                    profile_id, chat_id, thread_id, chat_type, bot_username,
+                    profile_id, chat_id, thread_id, reply_to_msg_id, chat_type, bot_username,
                     text, status, error_text, scheduled_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, 'pending', '', ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', ?, ?, ?)
                 """,
                 (
                     profile_id,
                     int(chat_id),
                     thread_id,
+                    int(reply_to_msg_id) if reply_to_msg_id is not None else None,
                     chat_type or "group",
                     bot_username or "",
                     text or "",
@@ -2532,6 +2815,50 @@ class Storage:
                 (int(chat_id), int(reply_to_msg_id)),
             ).fetchone()
         return dict(row) if row else None
+
+    def get_recent_companion_heart_tribulation_message(
+        self,
+        chat_id: int,
+        *,
+        profile_id: Optional[int] = None,
+        thread_id: Optional[int] = None,
+        bot_username: str = "",
+        anchor_bot_msg_id: int = 0,
+        since_ts: float = 0,
+        limit: int = 20,
+    ) -> Optional[dict]:
+        normalized_bot_username = str(bot_username or "").strip().lower().lstrip("@")
+        safe_limit = max(1, min(int(limit or 20), 100))
+        query = """
+            SELECT * FROM bound_messages
+            WHERE chat_id=? AND is_bot=1 AND text LIKE ?
+        """
+        params = [int(chat_id), "%坠魔心劫%"]
+        if profile_id is not None:
+            query += " AND profile_id=?"
+            params.append(int(profile_id))
+        if thread_id is not None:
+            query += " AND (thread_id=? OR reply_to_msg_id=? OR message_id=?)"
+            params.extend([int(thread_id), int(thread_id), int(thread_id)])
+        if normalized_bot_username:
+            query += " AND LOWER(COALESCE(sender_username, ''))=?"
+            params.append(normalized_bot_username)
+        if anchor_bot_msg_id > 0:
+            query += " AND message_id>=?"
+            params.append(int(anchor_bot_msg_id))
+        if since_ts > 0:
+            query += " AND created_at>=?"
+            params.append(float(since_ts))
+        query += " ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT ?"
+        params.append(safe_limit)
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        for row in rows:
+            payload = dict(row)
+            text = str(payload.get("text") or "").strip()
+            if text.startswith("【坠魔心劫·"):
+                return payload
+        return None
 
     def get_latest_stock_market_history_observed_at(self) -> float:
         with self.connect() as conn:

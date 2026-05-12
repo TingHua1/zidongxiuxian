@@ -64,15 +64,35 @@ COMPANION_AUTO_FEATURES = {
         "command": ".入梦寻图",
         "cooldown_hours": 8,
         "payload_field": "last_dream_map_seek_time",
+        "payload_scope": "companion",
+    },
+    "heart_tribulation": {
+        "label": "共历心劫",
+        "command": ".共历心劫",
+        "cooldown_hours": 10,
+        "payload_field": "last_companion_heart_tribulation_time",
+        "payload_scope": "companion",
     },
     "divination_chain": {
         "label": "天机代卜",
         "command": ".天机代卜",
         "cooldown_hours": 12,
         "payload_field": "last_divination_chain_time",
+        "payload_scope": "companion",
+    },
+    "wild_experience": {
+        "label": "野外历练",
+        "command": ".野外历练",
+        "cooldown_hours": 2,
+        "payload_field": "last_wild_experience_time",
+        "payload_scope": "root",
     },
 }
 COMPANION_AUTO_MANUAL_DELAY_SECONDS = 1800
+COMPANION_HEART_TRIBULATION_ACTIONS = ("稳", "狠", "骗")
+COMPANION_PANEL_COMMAND = ".我的侍妾"
+COMPANION_HEART_TRIBULATION_COMMAND = ".共历心劫"
+WILD_EXPERIENCE_STRATEGY_OPTIONS = ("谨慎", "均衡", "深入")
 
 
 def _coerce_json_list(value) -> list:
@@ -288,6 +308,62 @@ def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict
     }
 
 
+def _build_companion_heart_tribulation_view(raw_task: Optional[dict]) -> dict:
+    task = raw_task or {}
+    next_run_at = float(task.get("next_run_at") or 0)
+    round1_reply = str(task.get("round1_reply") or "稳").strip() or "稳"
+    round2_reply = str(task.get("round2_reply") or "稳").strip() or "稳"
+    round3_reply = str(task.get("round3_reply") or "稳").strip() or "稳"
+
+    def _build_settlement_entry(text: str, ts: float) -> Optional[dict]:
+        normalized_text = str(text or "").strip()
+        if not normalized_text:
+            return None
+        display_time = "-"
+        if float(ts or 0) > 0:
+            display_time = datetime.fromtimestamp(
+                float(ts), tz=timezone.utc
+            ).astimezone(SHANGHAI_TZ).strftime("%m-%d %H:%M")
+        return {"text": normalized_text, "time": display_time}
+
+    records = []
+    latest_entry = _build_settlement_entry(
+        task.get("last_settlement_text"), float(task.get("last_settlement_at") or 0)
+    )
+    previous_entry = _build_settlement_entry(
+        task.get("previous_settlement_text"),
+        float(task.get("previous_settlement_at") or 0),
+    )
+    if latest_entry:
+        records.append(latest_entry)
+    if previous_entry:
+        records.append(previous_entry)
+
+    return {
+        "enabled": bool(task) and bool(task.get("enabled")),
+        "active": bool(task) and bool(task.get("enabled")),
+        "next_run_at": next_run_at,
+        "next_run_display": (
+            _format_remaining_delta(datetime.fromtimestamp(next_run_at, tz=timezone.utc))
+            if next_run_at > 0
+            else "待命"
+        ),
+        "status_display": (
+            _format_remaining_delta(datetime.fromtimestamp(next_run_at, tz=timezone.utc))
+            if next_run_at > 0 and bool(task) and bool(task.get("enabled"))
+            else ("已停止" if str(task.get("last_error") or "").strip() else "未开启")
+        ),
+        "round1_reply": round1_reply,
+        "round2_reply": round2_reply,
+        "round3_reply": round3_reply,
+        "round_choices_summary": f"第1轮{round1_reply} · 第2轮{round2_reply} · 第3轮{round3_reply}",
+        "action_options": list(COMPANION_HEART_TRIBULATION_ACTIONS),
+        "workflow_state": str(task.get("workflow_state") or "").strip(),
+        "last_error": str(task.get("last_error") or "").strip(),
+        "records": records,
+    }
+
+
 def _build_companion_auto_view(raw_task: Optional[dict], feature_key: str) -> dict:
     feature = COMPANION_AUTO_FEATURES.get(feature_key) or {}
     task = raw_task or {}
@@ -317,20 +393,79 @@ def _build_companion_auto_view(raw_task: Optional[dict], feature_key: str) -> di
     }
 
 
-def _resolve_companion_auto_next_run_at(
-    payload: dict, feature_key: str
-) -> Optional[float]:
+def _normalize_wild_experience_strategy(value: object) -> str:
+    normalized = str(value or "").strip()
+    return normalized if normalized in WILD_EXPERIENCE_STRATEGY_OPTIONS else "均衡"
+
+
+def _resolve_auto_feature_next_run_at(payload: dict, feature_key: str) -> Optional[float]:
     feature = COMPANION_AUTO_FEATURES.get(feature_key) or {}
-    companion_payload = _resolve_latest_companion_payload(payload)
     cooldown_hours = int(feature.get("cooldown_hours") or 0)
     payload_field = str(feature.get("payload_field") or "").strip()
+    payload_scope = str(feature.get("payload_scope") or "companion").strip()
     if not payload_field or cooldown_hours <= 0:
         return None
+    if payload_scope == "root":
+        return _cooldown_target_timestamp(payload.get(payload_field), cooldown_hours) or None
+    companion_payload = _resolve_latest_companion_payload(payload)
     return _resolve_latest_companion_cooldown_target(
         companion_payload,
         payload_field,
         cooldown_hours,
     )
+
+
+def _build_wild_experience_view(payload: dict, raw_task: Optional[dict]) -> dict:
+    task = raw_task or {}
+    feature = COMPANION_AUTO_FEATURES.get("wild_experience") or {}
+    cooldown_hours = int(feature.get("cooldown_hours") or 0)
+    payload_field = str(feature.get("payload_field") or "last_wild_experience_time").strip()
+    last_raw_value = payload.get(payload_field)
+    cooldown_target = _cooldown_target_timestamp(last_raw_value, cooldown_hours)
+    next_run_at = float(task.get("next_run_at") or 0)
+    active = bool(task) and bool(task.get("enabled"))
+    strategy = _normalize_wild_experience_strategy(task.get("strategy"))
+    last_display = "-"
+    last_dt = _parse_iso_datetime(last_raw_value)
+    if last_dt:
+        last_display = last_dt.astimezone(SHANGHAI_TZ).strftime("%m-%d %H:%M")
+    cooldown_ready = bool(cooldown_target) and cooldown_target <= fanren_game.time.time()
+    if not cooldown_target:
+        status_display = "接口未提供"
+        status_prefix = "接口未提供"
+    elif cooldown_target <= fanren_game.time.time():
+        status_display = "可历练"
+        status_prefix = "可历练"
+    else:
+        status_display = f"冷却中，剩余{_format_remaining_delta(datetime.fromtimestamp(cooldown_target, tz=timezone.utc))}"
+        status_prefix = "冷却中，剩余"
+    return {
+        "active": active,
+        "enabled": active,
+        "feature_key": "wild_experience",
+        "title": str(feature.get("label") or "野外历练"),
+        "strategy": strategy,
+        "strategy_options": list(WILD_EXPERIENCE_STRATEGY_OPTIONS),
+        "command_preview": f".野外历练 {strategy}",
+        "cooldown_target": float(cooldown_target or 0),
+        "cooldown_ready": cooldown_ready,
+        "status_display": status_display,
+        "status_prefix": status_prefix,
+        "last_experience_display": last_display,
+        "next_run_at": next_run_at,
+        "next_run_display": (
+            _format_remaining_delta(datetime.fromtimestamp(next_run_at, tz=timezone.utc))
+            if next_run_at > 0
+            else "待命"
+        ),
+        "last_error": str(task.get("last_error") or "").strip(),
+    }
+
+
+def _resolve_companion_auto_next_run_at(
+    payload: dict, feature_key: str
+) -> Optional[float]:
+    return _resolve_auto_feature_next_run_at(payload, feature_key)
 
 
 OTHER_PLAY_DEFINITIONS = [
@@ -3601,6 +3736,8 @@ def create_app() -> FastAPI:
             "dream_seek": _build_companion_auto_view(None, "dream_seek"),
             "divination_chain": _build_companion_auto_view(None, "divination_chain"),
         }
+        wild_experience_state = _build_wild_experience_view({}, None)
+        companion_heart_tribulation_state = _build_companion_heart_tribulation_view(None)
         if active_profile:
             storage.ensure_module_settings(
                 active_profile.id, module_registry.list_modules()
@@ -3739,7 +3876,24 @@ def create_app() -> FastAPI:
                             feature_key,
                         )
                         for feature_key in COMPANION_AUTO_FEATURES
+                        if feature_key not in {"heart_tribulation", "wild_experience"}
                     }
+                    wild_experience_state = _build_wild_experience_view(
+                        payload,
+                        storage.get_companion_auto_task(
+                            active_profile.id,
+                            command_chat.chat_id if command_chat else 0,
+                            "wild_experience",
+                        ),
+                    )
+                    companion_heart_tribulation_state = (
+                        _build_companion_heart_tribulation_view(
+                            storage.get_companion_heart_tribulation_task(
+                                active_profile.id,
+                                command_chat.chat_id if command_chat else 0,
+                            )
+                        )
+                    )
                 if module_key == "estate":
                     command_sender_text = str(
                         getattr(command_chat, "telegram_user_id", "")
@@ -4003,8 +4157,10 @@ def create_app() -> FastAPI:
                 "other_opponent_options": other_opponent_options,
                 "divination_batch_state": divination_batch_state,
                 "tianji_encounter_state": tianji_encounter_state,
-                "companion_state": companion_state,
-                "companion_auto_state": companion_auto_state,
+            "companion_state": companion_state,
+            "companion_auto_state": companion_auto_state,
+            "wild_experience_state": wild_experience_state,
+            "companion_heart_tribulation_state": companion_heart_tribulation_state,
                 "dongfu_state": dongfu_state,
                 "stock_state": stock_state,
                 "dungeon_definitions": DUNGEON_DEFINITIONS,
@@ -4377,6 +4533,9 @@ def create_app() -> FastAPI:
         chat_id: str = Form(...),
         feature_key: str = Form(...),
         thread_id: Optional[str] = Form(None),
+        heart_round1: str = Form("稳"),
+        heart_round2: str = Form("稳"),
+        heart_round3: str = Form("稳"),
         chat_type: str = Form("group"),
         bot_username: str = Form("fanrenxiuxian_bot"),
         redirect_to: str = Form("/modules/other"),
@@ -4399,9 +4558,79 @@ def create_app() -> FastAPI:
             )
 
         resolved_chat_id = int(normalized_chat_id)
+        resolved_thread_id = int(thread_id) if thread_id and thread_id.isdigit() else None
         existing_task = storage.get_companion_auto_task(
             profile.id, resolved_chat_id, normalized_feature_key
         )
+        if normalized_feature_key == "heart_tribulation":
+            normalized_rounds = [
+                str(heart_round1 or "稳").strip() or "稳",
+                str(heart_round2 or "稳").strip() or "稳",
+                str(heart_round3 or "稳").strip() or "稳",
+            ]
+            if any(
+                value not in COMPANION_HEART_TRIBULATION_ACTIONS
+                for value in normalized_rounds
+            ):
+                raise HTTPException(status_code=400, detail="Invalid heart tribulation action")
+            existing_heart_task = storage.get_companion_heart_tribulation_task(
+                profile.id, resolved_chat_id
+            )
+            if existing_heart_task and bool(existing_heart_task.get("enabled")):
+                storage.disable_companion_heart_tribulation_task(
+                    profile.id, resolved_chat_id
+                )
+                for command_text in [
+                    COMPANION_PANEL_COMMAND,
+                    COMPANION_HEART_TRIBULATION_COMMAND,
+                    *[f".{action}" for action in COMPANION_HEART_TRIBULATION_ACTIONS],
+                ]:
+                    storage.cancel_pending_outgoing_commands(
+                        profile.id,
+                        resolved_chat_id,
+                        text=command_text,
+                    )
+                return RedirectResponse(url=redirect_to, status_code=303)
+
+            cached_payload = read_cached_external_payload(storage, profile.id)
+            next_run_at = _resolve_companion_auto_next_run_at(
+                cached_payload if isinstance(cached_payload, dict) else {},
+                normalized_feature_key,
+            )
+            if next_run_at is None:
+                storage.upsert_companion_heart_tribulation_task(
+                    profile_id=profile.id,
+                    chat_id=resolved_chat_id,
+                    enabled=False,
+                    thread_id=resolved_thread_id,
+                    chat_type=chat_type,
+                    bot_username=bot_username,
+                    round1_reply=normalized_rounds[0],
+                    round2_reply=normalized_rounds[1],
+                    round3_reply=normalized_rounds[2],
+                    next_run_at=fanren_game.time.time(),
+                    last_error="等待后台刷新共历心劫冷却状态。",
+                )
+                return RedirectResponse(url=redirect_to, status_code=303)
+            storage.upsert_companion_heart_tribulation_task(
+                profile_id=profile.id,
+                chat_id=resolved_chat_id,
+                enabled=True,
+                thread_id=resolved_thread_id,
+                chat_type=chat_type,
+                bot_username=bot_username,
+                round1_reply=normalized_rounds[0],
+                round2_reply=normalized_rounds[1],
+                round3_reply=normalized_rounds[2],
+                last_action_round_sent=0,
+                last_tribulation_command_at=0,
+                last_progress_at=0,
+                workflow_state="",
+                next_run_at=next_run_at,
+                last_error="",
+            )
+            return RedirectResponse(url=redirect_to, status_code=303)
+
         if existing_task and bool(existing_task.get("enabled")):
             storage.disable_companion_auto_task(
                 profile.id, resolved_chat_id, normalized_feature_key
@@ -4423,7 +4652,7 @@ def create_app() -> FastAPI:
                 chat_id=resolved_chat_id,
                 feature_key=normalized_feature_key,
                 enabled=False,
-                thread_id=int(thread_id) if thread_id and thread_id.isdigit() else None,
+                thread_id=resolved_thread_id,
                 chat_type=chat_type,
                 bot_username=bot_username,
                 next_run_at=0,
@@ -4440,7 +4669,7 @@ def create_app() -> FastAPI:
             chat_id=resolved_chat_id,
             feature_key=normalized_feature_key,
             enabled=True,
-            thread_id=int(thread_id) if thread_id and thread_id.isdigit() else None,
+            thread_id=resolved_thread_id,
             chat_type=chat_type,
             bot_username=bot_username,
             next_run_at=next_run_at,
@@ -4452,7 +4681,7 @@ def create_app() -> FastAPI:
                 profile_id=profile.id,
                 chat_id=resolved_chat_id,
                 text=str(feature.get("command") or "").strip(),
-                thread_id=int(thread_id) if thread_id and thread_id.isdigit() else None,
+                thread_id=resolved_thread_id,
                 chat_type=chat_type,
                 bot_username=bot_username,
                 delay_seconds=0,
@@ -4462,13 +4691,83 @@ def create_app() -> FastAPI:
                 chat_id=resolved_chat_id,
                 feature_key=normalized_feature_key,
                 enabled=True,
-                thread_id=int(thread_id) if thread_id and thread_id.isdigit() else None,
+                thread_id=resolved_thread_id,
                 chat_type=chat_type,
                 bot_username=bot_username,
                 next_run_at=now_ts + COMPANION_AUTO_MANUAL_DELAY_SECONDS,
                 last_run_at=now_ts,
                 last_error="",
             )
+        return RedirectResponse(url=redirect_to, status_code=303)
+
+    @application.post("/runtime/commands/wild-experience-auto")
+    async def runtime_toggle_wild_experience_auto(
+        request: Request,
+        chat_id: str = Form(...),
+        strategy: str = Form("均衡"),
+        thread_id: Optional[str] = Form(None),
+        chat_type: str = Form("group"),
+        bot_username: str = Form("fanrenxiuxian_bot"),
+        redirect_to: str = Form("/modules/other"),
+    ) -> RedirectResponse:
+        profile = _get_request_profile(request)
+        if not profile:
+            raise HTTPException(status_code=401, detail="Profile not active")
+        expired_redirect = _ensure_external_session_active(profile)
+        if expired_redirect:
+            return expired_redirect
+
+        normalized_chat_id = str(chat_id or "").strip()
+        if not normalized_chat_id:
+            raise HTTPException(status_code=400, detail="Chat ID not configured")
+        resolved_chat_id = int(normalized_chat_id)
+        resolved_thread_id = int(thread_id) if thread_id and thread_id.isdigit() else None
+        normalized_strategy = _normalize_wild_experience_strategy(strategy)
+        existing_task = storage.get_companion_auto_task(
+            profile.id, resolved_chat_id, "wild_experience"
+        )
+        if existing_task and bool(existing_task.get("enabled")):
+            storage.disable_companion_auto_task(
+                profile.id, resolved_chat_id, "wild_experience"
+            )
+            storage.cancel_pending_outgoing_commands(
+                profile.id,
+                resolved_chat_id,
+                text=f".野外历练 {str(existing_task.get('strategy') or normalized_strategy).strip() or normalized_strategy}",
+            )
+            return RedirectResponse(url=redirect_to, status_code=303)
+
+        payload = read_cached_external_payload(storage, profile.id)
+        next_run_at = _resolve_auto_feature_next_run_at(
+            payload if isinstance(payload, dict) else {}, "wild_experience"
+        )
+        if next_run_at is None:
+            storage.upsert_companion_auto_task(
+                profile_id=profile.id,
+                chat_id=resolved_chat_id,
+                feature_key="wild_experience",
+                enabled=False,
+                strategy=normalized_strategy,
+                thread_id=resolved_thread_id,
+                chat_type=chat_type,
+                bot_username=bot_username,
+                next_run_at=0,
+                last_error="最新 payload 缺少野外历练冷却字段，已停止自动。",
+            )
+            return RedirectResponse(url=redirect_to, status_code=303)
+
+        storage.upsert_companion_auto_task(
+            profile_id=profile.id,
+            chat_id=resolved_chat_id,
+            feature_key="wild_experience",
+            enabled=True,
+            strategy=normalized_strategy,
+            thread_id=resolved_thread_id,
+            chat_type=chat_type,
+            bot_username=bot_username,
+            next_run_at=next_run_at,
+            last_error="",
+        )
         return RedirectResponse(url=redirect_to, status_code=303)
 
     @application.post("/runtime/sect/action")
