@@ -4820,6 +4820,57 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Cultivation session not found")
         return RedirectResponse(url="/modules/cultivation", status_code=303)
 
+    @application.post("/runtime/cultivation/wilderness-toggle")
+    async def toggle_cultivation_wilderness_auto(
+        request: Request,
+        chat_id: int = Form(...),
+        enabled: str = Form(...),
+    ) -> RedirectResponse:
+        db = CompatDb(storage)
+        try:
+            fanren_game.ensure_tables(db)
+            active_profile = _get_request_profile(request)
+            if not active_profile:
+                raise HTTPException(status_code=401, detail="Profile not active")
+            fanren_game.set_auto_wilderness(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id,
+            )
+            session = fanren_game.get_session(db, chat_id, profile_id=active_profile.id)
+        finally:
+            db.close()
+        if not session:
+            raise HTTPException(status_code=404, detail="Cultivation session not found")
+        return RedirectResponse(url="/modules/cultivation", status_code=303)
+
+    @application.post("/runtime/cultivation/wilderness-mode")
+    async def set_cultivation_wilderness_mode(
+        request: Request,
+        chat_id: int = Form(...),
+        mode: str = Form(...),
+    ) -> RedirectResponse:
+        db = CompatDb(storage)
+        try:
+            fanren_game.ensure_tables(db)
+            active_profile = _get_request_profile(request)
+            if not active_profile:
+                raise HTTPException(status_code=401, detail="Profile not active")
+            fanren_game.set_auto_wilderness(
+                db,
+                chat_id,
+                True,
+                mode=mode,
+                profile_id=active_profile.id,
+            )
+            session = fanren_game.get_session(db, chat_id, profile_id=active_profile.id)
+        finally:
+            db.close()
+        if not session:
+            raise HTTPException(status_code=404, detail="Cultivation session not found")
+        return RedirectResponse(url="/modules/cultivation", status_code=303)
+
     @application.post("/runtime/sect/lingxiao-toggle")
     async def toggle_lingxiao_auto(
         request: Request, chat_id: int = Form(...), enabled: str = Form(...)

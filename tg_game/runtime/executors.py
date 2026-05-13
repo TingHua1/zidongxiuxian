@@ -624,11 +624,14 @@ class FanrenExecutor(BaseExecutor):
                     fanren_game.RIFT_EXPLORE_COMMAND,
                     fanren_game.YUANYING_OUTING_COMMAND,
                     fanren_game.YUANYING_STATUS_COMMAND,
+                    fanren_game.WILDERNESS_COMMAND,
                 }
                 if session:
                     allowed_reply_commands.add(fanren_game.build_check_command(session))
                 if reply_text and reply_text not in allowed_reply_commands:
-                    return False
+                    # 带参数的指令（如 .野外历练 均衡）按前缀匹配
+                    if not reply_text.startswith(tuple(c + " " for c in allowed_reply_commands)):
+                        return False
                 stored_reply_message = self._get_stored_reply_message(context, storage)
                 reply_message_id = context.reply_to_msg_id or int(
                     (stored_reply_message or {}).get("message_id") or 0
@@ -712,6 +715,7 @@ class FanrenExecutor(BaseExecutor):
                 "cooldown",
                 "rift_",
                 "yuanying_",
+                "wilderness_",
                 "soul_",
                 "meditation",
             )
@@ -977,8 +981,60 @@ class FanrenExecutor(BaseExecutor):
                 )
                 return True
 
+        if action == "wilderness":
+            wild_action = payload.lower().strip() if payload else "status"
+            wild_session = fanren_game.get_session(
+                db,
+                chat_id,
+                profile_id=context.profile.id if context.profile else None,
+            )
+            if wild_action in ("on", "均衡", "深入"):
+                if wild_action == "on":
+                    # 不带模式参数时使用 session 中已有的模式
+                    current_mode = (
+                        (wild_session.get("wilderness_mode") or fanren_game.WILDERNESS_MODE_BALANCED)
+                        if wild_session
+                        else fanren_game.WILDERNESS_MODE_BALANCED
+                    )
+                elif wild_action == "均衡":
+                    current_mode = fanren_game.WILDERNESS_MODE_BALANCED
+                else:
+                    current_mode = fanren_game.WILDERNESS_MODE_DEEP
+
+                fanren_game.set_auto_wilderness(
+                    db,
+                    chat_id,
+                    True,
+                    mode=current_mode,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply(f"自动野外历练已开启，模式: {current_mode}")
+                return True
+            if wild_action == "off":
+                fanren_game.set_auto_wilderness(
+                    db,
+                    chat_id,
+                    False,
+                    profile_id=context.profile.id if context.profile else None,
+                )
+                await context.reply("自动野外历练已关闭。")
+                return True
+            if wild_action == "status":
+                await context.reply(
+                    "\n".join(
+                        [
+                            "自动野外历练状态",
+                            f"开关: {'开启' if wild_session.get('auto_wilderness_enabled') else '关闭'}",
+                            f"模式: {wild_session.get('wilderness_mode') or '-'}",
+                            f"状态: {wild_session.get('wilderness_state') or '-'}",
+                            f"下次: {fanren_game.format_timestamp(wild_session.get('wilderness_next_check_time') or 0)}",
+                        ]
+                    )
+                )
+                return True
+
         await context.reply(
-            "用法: .fanren status|on [normal|deep]|off|mode normal|deep|dry-run on|off|interval 5m|check 指令|run|reset|rift on|off|status|yuanying on|off|status"
+            "用法: .fanren status|on [normal|deep]|off|mode normal|deep|dry-run on|off|interval 5m|check 指令|run|reset|rift on|off|status|yuanying on|off|status|wilderness on|off|status|均衡|深入"
         )
         return True
 

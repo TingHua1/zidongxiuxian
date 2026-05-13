@@ -49,6 +49,17 @@
                 <div class="top-gap action-row">
                     <button class="inline-button small-btn" type="button" onclick="openInventorySellModal('{{ (item.name or item.item_id)|replace("'", "\\'") }}', {{ item.quantity or 1 }})" {% if not command_chat_ready %}disabled{% endif %}>上架</button>
                     <button class="inline-button small-btn" type="button" onclick="openInventoryDonateModal('{{ (item.name or item.item_id)|replace("'", "\\'") }}', {{ item.quantity or 1 }})" {% if not command_chat_ready %}disabled{% endif %}>捐献</button>
+                    {% if item.raw_type == 'recipe' or item.raw_type == 'recipe_internal' %}
+                    <form method="post" action="/runtime/commands/send-raw" style="display:inline;margin:0;">
+                        <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">
+                        <input type="hidden" name="thread_id" value="{{ bound_thread_id or '' }}">
+                        <input type="hidden" name="chat_type" value="{{ bound_chat_type or 'group' }}">
+                        <input type="hidden" name="bot_username" value="{{ bound_bot_username or 'fanrenxiuxian_bot' }}">
+                        <input type="hidden" name="redirect_to" value="/modules/inventory?inv_page={{ inventory_page }}">
+                        <input type="hidden" name="text" value=".学习 {{ (item.name or item.item_id)|replace("'", "\\'") }}">
+                        <button class="inline-button small-btn" type="submit" {% if not command_chat_ready %}disabled{% endif %}>学习</button>
+                    </form>
+                    {% endif %}
                 </div>
                 {% if item.description %}
                 <p class="muted top-gap">{{ item.description }}</p>

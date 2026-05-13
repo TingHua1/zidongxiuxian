@@ -80,6 +80,18 @@ FANREN_AUTO_NANLONG_CHOICES = {
     "拒绝交易": ".拒绝交易",
 }
 
+# 自动野外历练
+WILDERNESS_COMMAND = ".野外历练"
+WILDERNESS_COOLDOWN_SECONDS = 7200  # 2小时，优先从回包解析
+WILDERNESS_MODE_BALANCED = "均衡"
+WILDERNESS_MODE_DEEP = "深入"
+WILDERNESS_MODES = {WILDERNESS_MODE_BALANCED, WILDERNESS_MODE_DEEP}
+WILDERNESS_SUCCESS_KEYWORDS = ["历练", "野外", "探索"]
+# 野外历练回包中表示完成/结算的关键词
+WILDERNESS_COMPLETE_KEYWORDS = ["历练结束", "历练完成", "野外历练结算"]
+# 野外历练回包中表示仍在进行的关键词
+WILDERNESS_ONGOING_KEYWORDS = ["正在野外历练", "历练中", "探索中"]
+
 
 def _normalize_special_choice(choice: str) -> str:
     return str(choice or "").strip().lstrip(".").strip()
@@ -251,6 +263,22 @@ def ensure_tables(db):
     if "rift_last_asc_time" not in columns:
         db.cur.execute(
             "ALTER TABLE fanren_sessions ADD COLUMN rift_last_asc_time TEXT DEFAULT ''"
+        )
+    if "auto_wilderness_enabled" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN auto_wilderness_enabled INTEGER DEFAULT 0"
+        )
+    if "wilderness_mode" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN wilderness_mode TEXT DEFAULT '均衡'"
+        )
+    if "wilderness_next_check_time" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN wilderness_next_check_time REAL DEFAULT 0"
+        )
+    if "wilderness_state" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN wilderness_state TEXT DEFAULT ''"
         )
     db.conn.commit()
 
@@ -563,6 +591,13 @@ def build_status_text(session, *, stage: Optional[str] = None):
         ])
 
     lines.extend([
+        f"自动野外历练: {'开启' if session.get('auto_wilderness_enabled') else '关闭'}",
+        f"  历练模式: {session.get('wilderness_mode') or '-'}",
+        f"  历练状态: {session.get('wilderness_state') or '-'}",
+        f"  历练下次: {format_timestamp(session.get('wilderness_next_check_time') or 0)}",
+    ])
+
+    lines.extend([
         f"检查指令: {session.get('command_text') or FANREN_CHECK_COMMAND}",
         f"普通闭关指令: {FANREN_NORMAL_COMMAND}",
         f"深度闭关指令: {FANREN_DEEP_COMMAND}",
@@ -724,6 +759,30 @@ def set_auto_yuanying(db, chat_id, enabled, *, profile_id=None):
         )
 
 
+def set_auto_wilderness(
+    db, chat_id, enabled, mode=WILDERNESS_MODE_BALANCED, *, profile_id=None
+):
+    mode = (mode or WILDERNESS_MODE_BALANCED).strip()
+    if enabled and mode not in WILDERNESS_MODES:
+        raise ValueError(f"野外历练模式只支持 {WILDERNESS_MODE_BALANCED} 或 {WILDERNESS_MODE_DEEP}")
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        auto_wilderness_enabled=_normalize_bool(enabled),
+        wilderness_mode=mode,
+        wilderness_state="" if enabled else "已关闭",
+    )
+    if enabled:
+        update_session(
+            db,
+            chat_id,
+            profile_id=profile_id,
+            wilderness_next_check_time=0,
+            wilderness_state="等待首次执行",
+        )
+
+
 def parse_rift_reply(text):
     """解析探寻裂缝回包，返回 (is_success, cooldown_seconds)"""
     text = (text or "").strip()
@@ -813,8 +872,10 @@ def stop_all_automation_for_rift_failure(
         auto_nanlong_enabled=0,
         auto_rift_enabled=0,
         auto_yuanying_enabled=0,
+        auto_wilderness_enabled=0,
         rift_state=reason,
         yuanying_state=reason,
+        wilderness_state=reason,
         last_event="rift_escaped_soul",
         last_summary=reason,
     )
@@ -1024,6 +1085,62 @@ async def _maybe_send_yuanying_outing(
         return False, "reset_to_initial"
 
     return False, "unknown_state"
+
+
+async def _maybe_send_wilderness(
+    client, db, chat_id, *, storage=None, profile_id=None
+):
+    """处理自动野外历练发送"""
+    session = get_session(db, chat_id, profile_id=profile_id)
+    if not session or not session.get("auto_wilderness_enabled"):
+        return False, "disabled"
+
+    now = time.time()
+    next_check = session.get("wilderness_next_check_time") or 0
+    if next_check and now < next_check:
+        return False, "not_due"
+
+    resolved_storage = storage or getattr(client, "_tg_game_storage", None)
+    if _pause_if_external_session_expired(
+        db, chat_id, storage=resolved_storage, profile_id=profile_id, now=now
+    ):
+        return False, "external_expired"
+
+    mode = (session.get("wilderness_mode") or WILDERNESS_MODE_BALANCED).strip()
+    wilderness_command = f"{WILDERNESS_COMMAND} {mode}"
+    pid = session.get("profile_id")
+
+    update_session(
+        db,
+        chat_id,
+        profile_id=pid,
+        wilderness_state=f"准备发送({mode})",
+    )
+
+    await send_message_in_session(
+        client,
+        session,
+        chat_id,
+        wilderness_command,
+        storage=storage,
+        profile_id=profile_id,
+    )
+
+    update_session(
+        db,
+        chat_id,
+        profile_id=pid,
+        last_action=wilderness_command,
+        last_action_time=now,
+        wilderness_next_check_time=now + WILDERNESS_COOLDOWN_SECONDS,
+        wilderness_state=f"已发送(mode={mode})，等待回包验证",
+    )
+    logger.info(
+        "Wilderness command sent to chat %s: %s",
+        chat_id,
+        wilderness_command,
+    )
+    return True, "sent"
 
 
 async def maybe_handle_special_auto_event(
@@ -1666,6 +1783,101 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                     "yuanying_outing_retry", "元婴出窍回包异常，将重试"
                 )
 
+    # 处理自动野外历练回包
+    if session.get("auto_wilderness_enabled"):
+        wild_last_action = (session.get("last_action") or "").strip()
+        if wild_last_action == WILDERNESS_COMMAND or wild_last_action.startswith(
+            WILDERNESS_COMMAND + " "
+        ):
+            now_wild = time.time()
+            wild_cd = parse_cooldown_seconds(raw_text)
+            cooldown = wild_cd or WILDERNESS_COOLDOWN_SECONDS
+
+            # 成功/结算完成
+            if any(kw in raw_text for kw in WILDERNESS_COMPLETE_KEYWORDS):
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    last_bot_text=raw_text[:1000],
+                    last_bot_msg_id=event.id,
+                    wilderness_next_check_time=now_wild + cooldown,
+                    wilderness_state=f"完成，冷却 {format_duration(cooldown)}",
+                    last_summary=f"野外历练完成，下次在 {format_duration(cooldown)} 后",
+                    last_event="wilderness_complete",
+                )
+                logger.info(
+                    "Wilderness complete in chat %s, next in %s",
+                    event.chat_id,
+                    format_duration(cooldown),
+                )
+                return FanrenParseResult(
+                    "wilderness_complete",
+                    f"野外历练完成，{format_duration(cooldown)} 后再次",
+                    cooldown,
+                )
+
+            # 正在进行中
+            if any(kw in raw_text for kw in WILDERNESS_ONGOING_KEYWORDS):
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    last_bot_text=raw_text[:1000],
+                    last_bot_msg_id=event.id,
+                    wilderness_next_check_time=now_wild + cooldown,
+                    wilderness_state=f"历练中，{format_duration(cooldown)} 后检查",
+                    last_summary=f"野外历练进行中，{format_duration(cooldown)} 后检查",
+                    last_event="wilderness_ongoing",
+                )
+                return FanrenParseResult(
+                    "wilderness_ongoing",
+                    f"野外历练中，{format_duration(cooldown)} 后检查",
+                    cooldown,
+                )
+
+            # 冷却/等待
+            if "冷却" in raw_text or "稍后" in raw_text or "等待" in raw_text:
+                update_session(
+                    db,
+                    event.chat_id,
+                    profile_id=session.get("profile_id"),
+                    last_bot_text=raw_text[:1000],
+                    last_bot_msg_id=event.id,
+                    wilderness_next_check_time=now_wild + cooldown,
+                    wilderness_state=f"冷却中，{format_duration(cooldown)}",
+                    last_summary=f"野外历练冷却中，{format_duration(cooldown)} 后重试",
+                    last_event="wilderness_cooldown",
+                )
+                return FanrenParseResult(
+                    "wilderness_cooldown",
+                    f"野外历练冷却中，{format_duration(cooldown)} 后重试",
+                    cooldown,
+                )
+
+            # 兜底：任何非空回包都视为成功，使用解析到或默认的冷却时间
+            update_session(
+                db,
+                event.chat_id,
+                profile_id=session.get("profile_id"),
+                last_bot_text=raw_text[:1000],
+                last_bot_msg_id=event.id,
+                wilderness_next_check_time=now_wild + cooldown,
+                wilderness_state=f"等待中，{format_duration(cooldown)}",
+                last_summary=f"野外历练已调度，下次在 {format_duration(cooldown)} 后",
+                last_event="wilderness_scheduled",
+            )
+            logger.info(
+                "Wilderness reply processed in chat %s, next in %s",
+                event.chat_id,
+                format_duration(cooldown),
+            )
+            return FanrenParseResult(
+                "wilderness_scheduled",
+                f"野外历练回包已处理，{format_duration(cooldown)} 后再次",
+                cooldown,
+            )
+
     parsed = parse_message(raw_text)
     if parsed.event == "ignored":
         return None
@@ -1881,6 +2093,25 @@ async def runner(client, storage, profile_id=None):
                         except Exception as exc:
                             logger.warning(
                                 "Yuanying outing runner failed in chat %s: %s",
+                                session["chat_id"],
+                                exc,
+                            )
+
+                # 自动野外历练
+                if session.get("auto_wilderness_enabled"):
+                    wild_next = session.get("wilderness_next_check_time") or 0
+                    if not wild_next or now >= wild_next:
+                        try:
+                            await _maybe_send_wilderness(
+                                client,
+                                db,
+                                session["chat_id"],
+                                storage=storage,
+                                profile_id=session.get("profile_id"),
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Wilderness runner failed in chat %s: %s",
                                 session["chat_id"],
                                 exc,
                             )
