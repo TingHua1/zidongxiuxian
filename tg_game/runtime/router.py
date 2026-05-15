@@ -76,6 +76,19 @@ class Router:
                     should_store_message = await context.bot_message_targets_profile()
                 else:
                     should_store_message = context.is_profile_owner()
+            if (
+                not should_store_message
+                and context.is_bot_sender
+                and context.profile
+                and context.chat_id is not None
+                and context.text
+                and "坠魔心劫" in context.text
+            ):
+                heart_task = self.storage.get_companion_heart_tribulation_task(
+                    context.profile.id, context.chat_id
+                )
+                if heart_task and bool(heart_task.get("enabled")):
+                    should_store_message = True
             # 副本消息白名单存储：不限用户，所有 profile 的副本指令和 bot 回复链都存
             if not should_store_message and context.text:
                 if not context.is_bot_sender:
@@ -96,7 +109,9 @@ class Router:
                 )
             if should_store_message:
                 existing_message = self.storage.get_bound_message(
-                    context.chat_id or 0, context.message_id
+                    context.chat_id or 0,
+                    context.message_id,
+                    context.profile.id if context.profile else None,
                 )
                 sender = getattr(context.event, "sender", None)
                 sender_username = (getattr(sender, "username", "") or "") or str(
@@ -139,7 +154,9 @@ class Router:
                     text=context.text,
                 )
                 stored_message = self.storage.get_bound_message(
-                    context.chat_id or 0, context.message_id
+                    context.chat_id or 0,
+                    context.message_id,
+                    context.profile.id if context.profile else None,
                 ) or {
                     "profile_id": context.profile.id if context.profile else None,
                     "chat_id": context.chat_id or 0,

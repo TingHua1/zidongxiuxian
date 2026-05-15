@@ -153,7 +153,7 @@ class Storage:
                     text TEXT NOT NULL DEFAULT '',
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
-                    UNIQUE(chat_id, message_id)
+                    UNIQUE(profile_id, chat_id, message_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS external_accounts (
@@ -343,6 +343,7 @@ class Storage:
                     last_run_at REAL NOT NULL DEFAULT 0,
                     anchor_command_msg_id INTEGER NOT NULL DEFAULT 0,
                     anchor_bot_msg_id INTEGER NOT NULL DEFAULT 0,
+                    tribulation_command_msg_id INTEGER NOT NULL DEFAULT 0,
                     tribulation_msg_id INTEGER NOT NULL DEFAULT 0,
                     round1_reply TEXT NOT NULL DEFAULT '稳',
                     round2_reply TEXT NOT NULL DEFAULT '稳',
@@ -573,6 +574,7 @@ class Storage:
                     "last_run_at": "REAL NOT NULL DEFAULT 0",
                     "anchor_command_msg_id": "INTEGER NOT NULL DEFAULT 0",
                     "anchor_bot_msg_id": "INTEGER NOT NULL DEFAULT 0",
+                    "tribulation_command_msg_id": "INTEGER NOT NULL DEFAULT 0",
                     "tribulation_msg_id": "INTEGER NOT NULL DEFAULT 0",
                     "round1_reply": "TEXT NOT NULL DEFAULT '稳'",
                     "round2_reply": "TEXT NOT NULL DEFAULT '稳'",
@@ -606,6 +608,7 @@ class Storage:
                     "last_run_at": "REAL NOT NULL DEFAULT 0",
                     "anchor_command_msg_id": "INTEGER NOT NULL DEFAULT 0",
                     "anchor_bot_msg_id": "INTEGER NOT NULL DEFAULT 0",
+                    "tribulation_command_msg_id": "INTEGER NOT NULL DEFAULT 0",
                     "tribulation_msg_id": "INTEGER NOT NULL DEFAULT 0",
                     "round1_reply": "TEXT NOT NULL DEFAULT '稳'",
                     "round2_reply": "TEXT NOT NULL DEFAULT '稳'",
@@ -755,6 +758,53 @@ class Storage:
                     "updated_at": "REAL NOT NULL DEFAULT 0",
                 },
             )
+            self._migrate_bound_messages_schema(conn)
+
+    def _migrate_bound_messages_schema(self, conn: sqlite3.Connection) -> None:
+        index_rows = conn.execute("PRAGMA index_list(bound_messages)").fetchall()
+        unique_index_name = ""
+        for row in index_rows:
+            if int(row[2] or 0):
+                unique_index_name = str(row[1] or "")
+                break
+        if not unique_index_name:
+            return
+        index_columns = [
+            str(row[2] or "")
+            for row in conn.execute(f"PRAGMA index_info({unique_index_name})").fetchall()
+        ]
+        if index_columns == ["profile_id", "chat_id", "message_id"]:
+            return
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS bound_messages_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                profile_id INTEGER,
+                chat_id INTEGER NOT NULL,
+                thread_id INTEGER,
+                message_id INTEGER NOT NULL,
+                reply_to_msg_id INTEGER,
+                sender_id INTEGER,
+                sender_username TEXT,
+                direction TEXT NOT NULL DEFAULT '',
+                is_bot INTEGER NOT NULL DEFAULT 0,
+                text TEXT NOT NULL DEFAULT '',
+                created_at REAL NOT NULL,
+                updated_at REAL NOT NULL,
+                UNIQUE(profile_id, chat_id, message_id)
+            );
+            INSERT INTO bound_messages_v2 (
+                id, profile_id, chat_id, thread_id, message_id, reply_to_msg_id,
+                sender_id, sender_username, direction, is_bot, text, created_at, updated_at
+            )
+            SELECT id, profile_id, chat_id, thread_id, message_id, reply_to_msg_id,
+                   sender_id, sender_username, direction, is_bot, text, created_at, updated_at
+            FROM bound_messages;
+            DROP TABLE bound_messages;
+            ALTER TABLE bound_messages_v2 RENAME TO bound_messages;
+            CREATE INDEX IF NOT EXISTS idx_bound_messages_profile_created ON bound_messages(profile_id, created_at DESC);
+            """
+        )
 
     def _row_to_profile(self, row: sqlite3.Row) -> PlayerProfile:
         return PlayerProfile(
@@ -1563,6 +1613,41 @@ class Storage:
             )
         return self.get_profile(int(profile_id))
 
+    def attach_profile_to_session_token(self, session_token: str, profile_id: int) -> bool:
+        token = str(session_token or "").strip()
+        if not token:
+            return False
+        token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        now = time.time()
+        with self.connect() as conn:
+            browser_session = conn.execute(
+                """
+                SELECT * FROM browser_sessions
+                WHERE session_token_hash=? AND revoked_at=0 AND expires_at>?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (token_hash, now),
+            ).fetchone()
+            if not browser_session:
+                return False
+            profile = conn.execute(
+                "SELECT 1 FROM profiles WHERE id=? LIMIT 1",
+                (int(profile_id),),
+            ).fetchone()
+            if not profile:
+                return False
+            conn.execute(
+                """
+                INSERT INTO browser_session_profiles (
+                    browser_session_id, profile_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?)
+                ON CONFLICT(browser_session_id, profile_id) DO UPDATE SET
+                    updated_at=excluded.updated_at
+                """,
+                (int(browser_session["id"]), int(profile_id), now, now),
+            )
+        return True
+
     def remove_profile_from_session_token(
         self, session_token: str, profile_id: int
     ) -> bool:
@@ -2275,6 +2360,7 @@ class Storage:
         last_run_at: float = 0,
         anchor_command_msg_id: int = 0,
         anchor_bot_msg_id: int = 0,
+        tribulation_command_msg_id: int = 0,
         tribulation_msg_id: int = 0,
         round1_reply: str = "稳",
         round2_reply: str = "稳",
@@ -2303,6 +2389,7 @@ class Storage:
             "last_run_at": float(last_run_at or 0),
             "anchor_command_msg_id": int(anchor_command_msg_id or 0),
             "anchor_bot_msg_id": int(anchor_bot_msg_id or 0),
+            "tribulation_command_msg_id": int(tribulation_command_msg_id or 0),
             "tribulation_msg_id": int(tribulation_msg_id or 0),
             "round1_reply": str(round1_reply or "稳")[:10],
             "round2_reply": str(round2_reply or "稳")[:10],
@@ -2325,6 +2412,7 @@ class Storage:
                 conn,
                 "companion_heart_tribulation_tasks",
                 {
+                    "tribulation_command_msg_id": "INTEGER NOT NULL DEFAULT 0",
                     "round1_reply": "TEXT NOT NULL DEFAULT '稳'",
                     "round2_reply": "TEXT NOT NULL DEFAULT '稳'",
                     "round3_reply": "TEXT NOT NULL DEFAULT '稳'",
@@ -2350,6 +2438,7 @@ class Storage:
                     last_run_at=excluded.last_run_at,
                     anchor_command_msg_id=excluded.anchor_command_msg_id,
                     anchor_bot_msg_id=excluded.anchor_bot_msg_id,
+                    tribulation_command_msg_id=excluded.tribulation_command_msg_id,
                     tribulation_msg_id=excluded.tribulation_msg_id,
                     round1_reply=excluded.round1_reply,
                     round2_reply=excluded.round2_reply,
@@ -2405,6 +2494,7 @@ class Storage:
             enabled=0,
             workflow_state="",
             next_run_at=0,
+            tribulation_command_msg_id=0,
             tribulation_msg_id=0,
             last_action_round_sent=0,
             last_tribulation_command_at=0,
@@ -2436,8 +2526,7 @@ class Storage:
                     sender_id, sender_username, direction, is_bot, text,
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(chat_id, message_id) DO UPDATE SET
-                    profile_id=excluded.profile_id,
+                ON CONFLICT(profile_id, chat_id, message_id) DO UPDATE SET
                     thread_id=excluded.thread_id,
                     reply_to_msg_id=excluded.reply_to_msg_id,
                     sender_id=excluded.sender_id,
@@ -2611,12 +2700,20 @@ class Storage:
             cursor = conn.execute(query, params)
         return int(cursor.rowcount or 0)
 
-    def get_bound_message(self, chat_id: int, message_id: int) -> Optional[dict]:
+    def get_bound_message(
+        self, chat_id: int, message_id: int, profile_id: Optional[int] = None
+    ) -> Optional[dict]:
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM bound_messages WHERE chat_id=? AND message_id=?",
-                (chat_id, message_id),
-            ).fetchone()
+            if profile_id is not None:
+                row = conn.execute(
+                    "SELECT * FROM bound_messages WHERE chat_id=? AND message_id=? AND profile_id=? ORDER BY id DESC LIMIT 1",
+                    (chat_id, message_id, int(profile_id)),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM bound_messages WHERE chat_id=? AND message_id=? ORDER BY id DESC LIMIT 1",
+                    (chat_id, message_id),
+                ).fetchone()
         return dict(row) if row else None
 
     def is_known_bot_sender(
@@ -2638,17 +2735,27 @@ class Storage:
             row = conn.execute(query, params).fetchone()
         return row is not None
 
-    def delete_bound_messages(self, chat_id: int, message_ids: list[int]) -> int:
+    def delete_bound_messages(
+        self,
+        chat_id: int,
+        message_ids: list[int],
+        profile_id: Optional[int] = None,
+    ) -> int:
         normalized_ids = sorted(
             {int(message_id) for message_id in message_ids if message_id}
         )
         if not normalized_ids:
             return 0
         placeholders = ", ".join("?" for _ in normalized_ids)
+        params = [int(chat_id), *normalized_ids]
+        profile_clause = ""
+        if profile_id is not None:
+            profile_clause = " AND profile_id=?"
+            params.append(int(profile_id))
         with self.connect() as conn:
             cursor = conn.execute(
-                f"DELETE FROM bound_messages WHERE chat_id=? AND message_id IN ({placeholders})",
-                [int(chat_id), *normalized_ids],
+                f"DELETE FROM bound_messages WHERE chat_id=? AND message_id IN ({placeholders}){profile_clause}",
+                params,
             )
         return int(cursor.rowcount or 0)
 
@@ -2795,25 +2902,36 @@ class Storage:
                 if profile_id is not None:
                     reply_query += " AND profile_id=?"
                     reply_params.append(int(profile_id))
-                reply_query += " ORDER BY created_at DESC, id DESC LIMIT 1"
+                reply_query += " ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1"
                 reply_row = conn.execute(reply_query, reply_params).fetchone()
                 if reply_row:
                     return dict(reply_row)
         return None
 
     def get_latest_bot_reply_message(
-        self, chat_id: int, reply_to_msg_id: int
+        self, chat_id: int, reply_to_msg_id: int, profile_id: Optional[int] = None
     ) -> Optional[dict]:
         with self.connect() as conn:
-            row = conn.execute(
-                """
-                SELECT * FROM bound_messages
-                WHERE chat_id=? AND is_bot=1 AND reply_to_msg_id=?
-                ORDER BY updated_at DESC, created_at DESC, id DESC
-                LIMIT 1
-                """,
-                (int(chat_id), int(reply_to_msg_id)),
-            ).fetchone()
+            if profile_id is not None:
+                row = conn.execute(
+                    """
+                    SELECT * FROM bound_messages
+                    WHERE chat_id=? AND is_bot=1 AND reply_to_msg_id=? AND profile_id=?
+                    ORDER BY updated_at DESC, created_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (int(chat_id), int(reply_to_msg_id), int(profile_id)),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    """
+                    SELECT * FROM bound_messages
+                    WHERE chat_id=? AND is_bot=1 AND reply_to_msg_id=?
+                    ORDER BY updated_at DESC, created_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (int(chat_id), int(reply_to_msg_id)),
+                ).fetchone()
         return dict(row) if row else None
 
     def get_recent_companion_heart_tribulation_message(
