@@ -2,6 +2,7 @@ import asyncio
 import math
 import json
 import logging
+import subprocess
 import re
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -357,6 +358,10 @@ def _build_companion_heart_tribulation_view(raw_task: Optional[dict]) -> dict:
         "round2_reply": round2_reply,
         "round3_reply": round3_reply,
         "round_choices_summary": f"第1轮{round1_reply} · 第2轮{round2_reply} · 第3轮{round3_reply}",
+        "strategy_locked": bool(task) and bool(task.get("enabled")),
+        "automation_state_display": (
+            "运行中" if bool(task) and bool(task.get("enabled")) else ("已停止" if str(task.get("last_error") or "").strip() else "未开启")
+        ),
         "action_options": list(COMPANION_HEART_TRIBULATION_ACTIONS),
         "workflow_state": str(task.get("workflow_state") or "").strip(),
         "last_error": str(task.get("last_error") or "").strip(),
@@ -388,6 +393,9 @@ def _build_companion_auto_view(raw_task: Optional[dict], feature_key: str) -> di
             )
             if next_run_at > 0 and bool(task) and bool(task.get("enabled"))
             else ("已停止" if str(task.get("last_error") or "").strip() else "未开启")
+        ),
+        "automation_state_display": (
+            "运行中" if bool(task) and bool(task.get("enabled")) else ("已停止" if str(task.get("last_error") or "").strip() else "未开启")
         ),
         "last_error": str(task.get("last_error") or "").strip(),
     }
@@ -2568,6 +2576,25 @@ def create_app() -> FastAPI:
             return base_name
         return f"{base_name}_{digits}"
 
+    def _is_telegram_runtime_active() -> bool:
+        try:
+            completed = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process | Where-Object { $_.Name -match '^python(\\.exe)?$' -or $_.Name -match '^pythonw(\\.exe)?$' } | Select-Object -ExpandProperty CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except Exception:
+            return False
+        output = str(completed.stdout or "")
+        return "run_telegram.py" in output
+
     def _build_tianji_login_redirect(message: str = "") -> RedirectResponse:
         normalized_message = (
             message or ""
@@ -3004,6 +3031,7 @@ def create_app() -> FastAPI:
     async def _discover_authorized_account(request: Request) -> Optional[dict]:
         session_names = []
         seen = set()
+        runtime_active = _is_telegram_runtime_active()
 
         def _push_session_name(value: str) -> None:
             normalized = str(value or "").strip()
@@ -3012,12 +3040,13 @@ def create_app() -> FastAPI:
             seen.add(normalized)
             session_names.append(normalized)
 
-        for profile in _list_session_profiles(request):
-            _push_session_name(profile.telegram_session_name)
-        for profile in storage.list_profiles():
-            _push_session_name(profile.telegram_session_name)
         _push_session_name(_login_session_name())
-        _push_session_name(settings.telegram_session_name)
+        if not runtime_active:
+            for profile in _list_session_profiles(request):
+                _push_session_name(profile.telegram_session_name)
+            for profile in storage.list_profiles():
+                _push_session_name(profile.telegram_session_name)
+            _push_session_name(settings.telegram_session_name)
 
         for session_name in session_names:
             if await has_authorized_session(session_name, allow_fallback=False):
@@ -3071,6 +3100,7 @@ def create_app() -> FastAPI:
         request: Request, profile_id: int, redirect_url: str = "/profile"
     ) -> RedirectResponse:
         session_token = request.cookies.get(APP_SESSION_COOKIE, "")
+        storage.attach_profile_to_session_token(session_token, profile_id)
         profile = storage.set_current_profile_by_session_token(
             session_token, profile_id
         )
@@ -3129,7 +3159,18 @@ def create_app() -> FastAPI:
         request: Request, error: str = "", success: str = ""
     ) -> HTMLResponse:
         auth_profile = getattr(request.state, "auth_profile", None)
-        if not auth_profile and not error and not success:
+        login_challenge = None
+        raw_challenge_id = request.cookies.get(TG_LOGIN_CHALLENGE_COOKIE, "")
+        if raw_challenge_id.isdigit():
+            login_challenge = storage.get_telegram_login_challenge(
+                int(raw_challenge_id)
+            )
+        if (
+            not error
+            and not success
+            and not login_challenge
+            and (not auth_profile or not auth_profile.telegram_verified_at)
+        ):
             try:
                 account = await _discover_authorized_account(request)
                 if account:
@@ -3138,6 +3179,65 @@ def create_app() -> FastAPI:
                 logger.exception("Auto Telegram login bind failed")
         active_profile = auth_profile
         session_profiles = _list_session_profiles(request)
+        session_token = request.cookies.get(APP_SESSION_COOKIE, "")
+        if session_token:
+            session_profile_ids = {int(profile.id) for profile in session_profiles}
+            for profile in storage.list_profiles():
+                if not getattr(profile, "telegram_verified_at", 0):
+                    continue
+                if int(profile.id) in session_profile_ids:
+                    continue
+                storage.attach_profile_to_session_token(session_token, profile.id)
+            session_profiles = _list_session_profiles(request)
+        session_profile_map = {int(profile.id): profile for profile in session_profiles}
+        for profile in storage.list_profiles():
+            if not getattr(profile, "telegram_verified_at", 0):
+                continue
+            session_profile_map.setdefault(int(profile.id), profile)
+        session_profiles = sorted(
+            session_profile_map.values(),
+            key=lambda profile: (
+                0 if active_profile and profile.id == active_profile.id else 1,
+                -float(getattr(profile, "telegram_verified_at", 0) or 0),
+                -int(profile.id),
+            ),
+        )
+        available_telegram_profiles = sorted(
+            [
+                profile
+                for profile in storage.list_profiles()
+                if getattr(profile, "telegram_verified_at", 0)
+            ],
+            key=lambda profile: (
+                0 if active_profile and profile.id == active_profile.id else 1,
+                -float(getattr(profile, "telegram_verified_at", 0) or 0),
+                -int(profile.id),
+            ),
+        )
+        if (
+            not error
+            and not success
+            and not login_challenge
+            and (not active_profile or not active_profile.telegram_verified_at)
+        ):
+            verified_session_profile = next(
+                (
+                    profile
+                    for profile in session_profiles
+                    if getattr(profile, "telegram_verified_at", 0)
+                ),
+                None,
+            )
+            if verified_session_profile and (
+                not active_profile or active_profile.id != verified_session_profile.id
+            ):
+                return _switch_session_profile(
+                    request,
+                    verified_session_profile.id,
+                    redirect_url="/login",
+                )
+            if verified_session_profile:
+                active_profile = verified_session_profile
         external_account = None
         if active_profile:
             external_account = storage.get_external_account(
@@ -3154,12 +3254,6 @@ def create_app() -> FastAPI:
                 "session_name": active_profile.telegram_session_name,
             }
             has_telegram_session = True
-        login_challenge = None
-        raw_challenge_id = request.cookies.get(TG_LOGIN_CHALLENGE_COOKIE, "")
-        if raw_challenge_id.isdigit():
-            login_challenge = storage.get_telegram_login_challenge(
-                int(raw_challenge_id)
-            )
         me_payload = {}
         if external_account and external_account.get("me_json"):
             try:
@@ -3181,6 +3275,7 @@ def create_app() -> FastAPI:
                 "login_challenge": login_challenge,
                 "telegram_account": telegram_account,
                 "session_profiles": session_profiles,
+                "available_telegram_profiles": available_telegram_profiles,
                 "is_admin_profile": _is_admin_profile(active_profile),
                 "has_global_external_cookie": bool(_get_global_market_cookie()),
                 "external_session_notice": external_session_notice,
@@ -3582,7 +3677,9 @@ def create_app() -> FastAPI:
             reply_preview = ""
             if message.get("reply_to_msg_id"):
                 reply_message = storage.get_bound_message(
-                    message.get("chat_id") or 0, int(message["reply_to_msg_id"])
+                    message.get("chat_id") or 0,
+                    int(message["reply_to_msg_id"]),
+                    profile_id=profile_id,
                 )
                 reply_preview = ((reply_message or {}).get("text") or "").strip()[:160]
             message["reply_preview"] = reply_preview

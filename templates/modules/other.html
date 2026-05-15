@@ -173,10 +173,6 @@
             {% endif %}
         </form>
 
-        <div class="stack-list compact-stack top-gap">
-            <div class="kv-row"><span>自动历练</span><strong {% if wild_experience_state.active and wild_experience_state.next_run_at %}class="countdown-text" data-countdown-target="{{ wild_experience_state.next_run_at }}"{% endif %}>{{ wild_experience_state.next_run_display if wild_experience_state.active else ('未开启' if not wild_experience_state.last_error else '已停止') }}</strong></div>
-            <div class="kv-row"><span>当前策略</span><strong>{{ wild_experience_state.strategy }}</strong></div>
-        </div>
         {% if wild_experience_state.last_error %}
             <p class="muted top-gap">自动历练：{{ wild_experience_state.last_error }}</p>
         {% endif %}
@@ -246,16 +242,12 @@
             <input type="hidden" name="feature_key" id="companion-auto-feature" value="heart_tribulation">
             <div class="top-gap" style="padding: 12px; border: 1px solid rgba(255, 255, 255, 0.06); border-radius: 12px; background: rgba(255, 255, 255, 0.02);">
                 <div class="action-row companion-command-row" style="justify-content: space-between; align-items: center; margin-bottom: 10px; gap: 10px; flex-wrap: wrap;">
-                    <div>
-                        <div class="muted" style="font-size: 0.85em;">自动心劫策略</div>
-                        <div style="font-weight: 600; color: var(--text-primary);">{{ '运行中' if companion_heart_tribulation_state.active else '开启前可调整三轮回复' }}</div>
-                    </div>
                     <button type="button" class="inline-button {% if companion_heart_tribulation_state.active %}active{% endif %}" onclick="document.getElementById('companion-auto-feature').value='heart_tribulation'; document.getElementById('companion-auto-form').submit();" {% if not command_chat_ready %}disabled{% endif %}>{{ '自动中·心劫' if companion_heart_tribulation_state.active else '自动心劫' }}</button>
                 </div>
                 <div class="form-grid" style="grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px;">
                 <label>
                     第1轮
-                    <select name="heart_round1">
+                    <select name="heart_round1" {% if companion_heart_tribulation_state.strategy_locked or not command_chat_ready %}disabled{% endif %}>
                         {% for action in companion_heart_tribulation_state.action_options %}
                             <option value="{{ action }}" {% if companion_heart_tribulation_state.round1_reply == action %}selected{% endif %}>{{ action }}</option>
                         {% endfor %}
@@ -263,7 +255,7 @@
                 </label>
                 <label>
                     第2轮
-                    <select name="heart_round2">
+                    <select name="heart_round2" {% if companion_heart_tribulation_state.strategy_locked or not command_chat_ready %}disabled{% endif %}>
                         {% for action in companion_heart_tribulation_state.action_options %}
                             <option value="{{ action }}" {% if companion_heart_tribulation_state.round2_reply == action %}selected{% endif %}>{{ action }}</option>
                         {% endfor %}
@@ -271,7 +263,7 @@
                 </label>
                 <label>
                     第3轮
-                    <select name="heart_round3">
+                    <select name="heart_round3" {% if companion_heart_tribulation_state.strategy_locked or not command_chat_ready %}disabled{% endif %}>
                         {% for action in companion_heart_tribulation_state.action_options %}
                             <option value="{{ action }}" {% if companion_heart_tribulation_state.round3_reply == action %}selected{% endif %}>{{ action }}</option>
                         {% endfor %}
@@ -281,12 +273,6 @@
             </div>
         </form>
 
-        <div class="stack-list compact-stack top-gap">
-            <div class="kv-row"><span>自动入梦</span><strong {% if companion_auto_state.dream_seek.active and companion_auto_state.dream_seek.next_run_at %}class="countdown-text" data-countdown-target="{{ companion_auto_state.dream_seek.next_run_at }}"{% endif %}>{{ companion_auto_state.dream_seek.next_run_display if companion_auto_state.dream_seek.active else companion_auto_state.dream_seek.status_display }}</strong></div>
-            <div class="kv-row"><span>自动心劫</span><strong {% if companion_heart_tribulation_state.active and companion_heart_tribulation_state.next_run_at %}class="countdown-text" data-countdown-target="{{ companion_heart_tribulation_state.next_run_at }}"{% endif %}>{{ companion_heart_tribulation_state.next_run_display if companion_heart_tribulation_state.active else companion_heart_tribulation_state.status_display }}</strong></div>
-            <div class="kv-row"><span>心劫策略</span><strong>{{ companion_heart_tribulation_state.round_choices_summary }}</strong></div>
-            <div class="kv-row"><span>自动代卜</span><strong {% if companion_auto_state.divination_chain.active and companion_auto_state.divination_chain.next_run_at %}class="countdown-text" data-countdown-target="{{ companion_auto_state.divination_chain.next_run_at }}"{% endif %}>{{ companion_auto_state.divination_chain.next_run_display if companion_auto_state.divination_chain.active else companion_auto_state.divination_chain.status_display }}</strong></div>
-        </div>
         {% if companion_auto_state.dream_seek.last_error %}
             <p class="muted top-gap">自动入梦：{{ companion_auto_state.dream_seek.last_error }}</p>
         {% endif %}

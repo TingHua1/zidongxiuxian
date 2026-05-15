@@ -33,12 +33,12 @@
             <p>第一步</p>
             <h2>登录本地 Telegram 身份</h2>
         </div>
-        {% if session_profiles and session_profiles|length > 0 %}
+        {% if available_telegram_profiles and available_telegram_profiles|length > 0 %}
         <div class="stack-list compact-stack" style="margin-bottom: 16px;">
             <div class="kv-row" style="border-bottom: none; padding-bottom: 0;">
                 <span style="font-weight: bold; color: var(--accent-gold);">已登录的 Telegram 身份</span>
             </div>
-            {% for p in session_profiles %}
+            {% for p in available_telegram_profiles %}
             <div class="kv-row" style="align-items: center;">
                 <div style="display: flex; flex-direction: column; gap: 4px;">
                     <strong style="{% if active_profile and active_profile.id == p.id %}color: var(--accent-gold);{% endif %}">
