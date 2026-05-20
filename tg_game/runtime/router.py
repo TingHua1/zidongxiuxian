@@ -8,6 +8,7 @@ from tg_game.runtime.executors import (
     FanrenExecutor,
     GeneralGameExecutor,
     SectExecutor,
+    observe_companion_heart_tribulation_event,
 )
 from tg_game.services import module_registry
 from tg_game.services.external_sync import is_authorized_profile
@@ -76,19 +77,6 @@ class Router:
                     should_store_message = await context.bot_message_targets_profile()
                 else:
                     should_store_message = context.is_profile_owner()
-            if (
-                not should_store_message
-                and context.is_bot_sender
-                and context.profile
-                and context.chat_id is not None
-                and context.text
-                and "坠魔心劫" in context.text
-            ):
-                heart_task = self.storage.get_companion_heart_tribulation_task(
-                    context.profile.id, context.chat_id
-                )
-                if heart_task and bool(heart_task.get("enabled")):
-                    should_store_message = True
             # 副本消息白名单存储：不限用户，所有 profile 的副本指令和 bot 回复链都存
             if not should_store_message and context.text:
                 if not context.is_bot_sender:
@@ -168,6 +156,10 @@ class Router:
                     self.storage,
                     stored_message,
                 )
+        try:
+            await observe_companion_heart_tribulation_event(context, self.storage)
+        except Exception:
+            logger.exception("Heart tribulation observer failed")
         for executor in self.executors:
             try:
                 handled = await executor.handle(context, self.storage)

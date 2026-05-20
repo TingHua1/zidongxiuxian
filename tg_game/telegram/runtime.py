@@ -6,7 +6,6 @@ from contextlib import suppress
 from telethon import TelegramClient, events
 
 from tg_game.config import get_settings
-from tg_game.runtime import build_router
 from tg_game.services.external_sync import (
     ASC_PROVIDER,
     get_effective_external_cookie,
@@ -184,6 +183,8 @@ async def _register_handlers(
     profile_id: int,
     session_name: str,
 ) -> None:
+    from tg_game.runtime import build_router
+
     settings = get_settings()
     storage = Storage(settings.database_path)
     client._tg_game_storage = storage

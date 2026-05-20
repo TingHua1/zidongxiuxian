@@ -67,13 +67,6 @@ COMPANION_AUTO_FEATURES = {
         "payload_field": "last_dream_map_seek_time",
         "payload_scope": "companion",
     },
-    "heart_tribulation": {
-        "label": "共历心劫",
-        "command": ".共历心劫",
-        "cooldown_hours": 10,
-        "payload_field": "last_companion_heart_tribulation_time",
-        "payload_scope": "companion",
-    },
     "divination_chain": {
         "label": "天机代卜",
         "command": ".天机代卜",
@@ -315,6 +308,9 @@ def _build_companion_heart_tribulation_view(raw_task: Optional[dict]) -> dict:
     round1_reply = str(task.get("round1_reply") or "稳").strip() or "稳"
     round2_reply = str(task.get("round2_reply") or "稳").strip() or "稳"
     round3_reply = str(task.get("round3_reply") or "稳").strip() or "稳"
+    is_active = bool(task) and bool(task.get("enabled"))
+    has_error = bool(str(task.get("last_error") or "").strip())
+    workflow_state = str(task.get("workflow_state") or "").strip()
 
     def _build_settlement_entry(text: str, ts: float) -> Optional[dict]:
         normalized_text = str(text or "").strip()
@@ -341,8 +337,8 @@ def _build_companion_heart_tribulation_view(raw_task: Optional[dict]) -> dict:
         records.append(previous_entry)
 
     return {
-        "enabled": bool(task) and bool(task.get("enabled")),
-        "active": bool(task) and bool(task.get("enabled")),
+        "enabled": is_active,
+        "active": is_active,
         "next_run_at": next_run_at,
         "next_run_display": (
             _format_remaining_delta(datetime.fromtimestamp(next_run_at, tz=timezone.utc))
@@ -351,19 +347,25 @@ def _build_companion_heart_tribulation_view(raw_task: Optional[dict]) -> dict:
         ),
         "status_display": (
             _format_remaining_delta(datetime.fromtimestamp(next_run_at, tz=timezone.utc))
-            if next_run_at > 0 and bool(task) and bool(task.get("enabled"))
-            else ("已停止" if str(task.get("last_error") or "").strip() else "未开启")
+            if next_run_at > 0 and is_active and workflow_state in {"", "idle"}
+            else (
+                "进行中"
+                if is_active and workflow_state and workflow_state != "idle"
+                else ("已停止" if has_error else ("待命" if is_active else "未启用"))
+            )
         ),
         "round1_reply": round1_reply,
         "round2_reply": round2_reply,
         "round3_reply": round3_reply,
         "round_choices_summary": f"第1轮{round1_reply} · 第2轮{round2_reply} · 第3轮{round3_reply}",
-        "strategy_locked": bool(task) and bool(task.get("enabled")),
+        "strategy_locked": is_active,
         "automation_state_display": (
-            "运行中" if bool(task) and bool(task.get("enabled")) else ("已停止" if str(task.get("last_error") or "").strip() else "未开启")
+            "运行中"
+            if is_active
+            else ("已停止" if has_error else "未启用")
         ),
         "action_options": list(COMPANION_HEART_TRIBULATION_ACTIONS),
-        "workflow_state": str(task.get("workflow_state") or "").strip(),
+        "workflow_state": workflow_state,
         "last_error": str(task.get("last_error") or "").strip(),
         "records": records,
     }
@@ -3016,7 +3018,24 @@ def create_app() -> FastAPI:
 
     def _get_authenticated_profile(request: Request):
         session_token = request.cookies.get(APP_SESSION_COOKIE, "")
-        return storage.get_profile_by_session_token(session_token)
+        profile = storage.get_profile_by_session_token(session_token)
+        if profile:
+            return profile
+        session_profiles = storage.list_profiles_by_session_token(session_token)
+        if not session_profiles:
+            return None
+        fallback_profile = next(
+            (
+                candidate
+                for candidate in session_profiles
+                if getattr(candidate, "telegram_verified_at", 0)
+            ),
+            session_profiles[0],
+        )
+        restored_profile = storage.set_current_profile_by_session_token(
+            session_token, fallback_profile.id
+        )
+        return restored_profile or fallback_profile
 
     def _list_session_profiles(request: Request) -> list:
         return storage.list_profiles_by_session_token(
@@ -3202,6 +3221,15 @@ def create_app() -> FastAPI:
                 -int(profile.id),
             ),
         )
+        if not active_profile:
+            active_profile = next(
+                (
+                    profile
+                    for profile in session_profiles
+                    if getattr(profile, "telegram_verified_at", 0)
+                ),
+                session_profiles[0] if session_profiles else None,
+            )
         available_telegram_profiles = sorted(
             [
                 profile
@@ -3983,12 +4011,11 @@ def create_app() -> FastAPI:
                             "wild_experience",
                         ),
                     )
-                    companion_heart_tribulation_state = (
-                        _build_companion_heart_tribulation_view(
-                            storage.get_companion_heart_tribulation_task(
-                                active_profile.id,
-                                command_chat.chat_id if command_chat else 0,
-                            )
+                    companion_heart_tribulation_state = _build_companion_heart_tribulation_view(
+                        storage.get_companion_heart_tribulation_task(
+                            active_profile.id,
+                            command_chat.chat_id if command_chat else 0,
+                            thread_id=command_chat.thread_id if command_chat else None,
                         )
                     )
                 if module_key == "estate":
@@ -4646,19 +4673,11 @@ def create_app() -> FastAPI:
 
         normalized_chat_id = str(chat_id or "").strip()
         normalized_feature_key = str(feature_key or "").strip()
-        feature = COMPANION_AUTO_FEATURES.get(normalized_feature_key)
         if not normalized_chat_id:
             raise HTTPException(status_code=400, detail="Chat ID not configured")
-        if not feature:
-            raise HTTPException(
-                status_code=400, detail="Invalid companion auto feature"
-            )
 
         resolved_chat_id = int(normalized_chat_id)
         resolved_thread_id = int(thread_id) if thread_id and thread_id.isdigit() else None
-        existing_task = storage.get_companion_auto_task(
-            profile.id, resolved_chat_id, normalized_feature_key
-        )
         if normalized_feature_key == "heart_tribulation":
             normalized_rounds = [
                 str(heart_round1 or "稳").strip() or "稳",
@@ -4671,62 +4690,112 @@ def create_app() -> FastAPI:
             ):
                 raise HTTPException(status_code=400, detail="Invalid heart tribulation action")
             existing_heart_task = storage.get_companion_heart_tribulation_task(
-                profile.id, resolved_chat_id
+                profile.id,
+                resolved_chat_id,
+                thread_id=resolved_thread_id,
             )
             if existing_heart_task and bool(existing_heart_task.get("enabled")):
-                storage.disable_companion_heart_tribulation_task(
-                    profile.id, resolved_chat_id
+                stopped_task = storage.disable_companion_heart_tribulation_task(
+                    profile.id,
+                    resolved_chat_id,
+                    thread_id=resolved_thread_id,
+                    last_error="用户手动关闭自动共历心劫。",
+                )
+                storage.append_companion_heart_tribulation_log(
+                    profile_id=profile.id,
+                    chat_id=resolved_chat_id,
+                    thread_id=resolved_thread_id,
+                    task_id=int((stopped_task or existing_heart_task or {}).get("id") or 0),
+                    run_id=str((existing_heart_task or {}).get("run_id") or ""),
+                    step="stopped",
+                    event_type="manual_stop",
+                    text="用户关闭自动共历心劫",
+                    detail={
+                        "thread_id": resolved_thread_id,
+                        "chat_type": chat_type,
+                        "bot_username": bot_username,
+                    },
                 )
                 for command_text in [
-                    COMPANION_PANEL_COMMAND,
-                    COMPANION_HEART_TRIBULATION_COMMAND,
+                    ".我的侍妾",
+                    ".共历心劫",
                     *[f".{action}" for action in COMPANION_HEART_TRIBULATION_ACTIONS],
                 ]:
                     storage.cancel_pending_outgoing_commands(
                         profile.id,
                         resolved_chat_id,
                         text=command_text,
+                        thread_id=resolved_thread_id,
+                        require_exact_thread=True,
                     )
                 return RedirectResponse(url=redirect_to, status_code=303)
 
-            cached_payload = read_cached_external_payload(storage, profile.id)
-            next_run_at = _resolve_companion_auto_next_run_at(
-                cached_payload if isinstance(cached_payload, dict) else {},
-                normalized_feature_key,
+            payload = read_cached_external_payload(storage, profile.id)
+            now_ts = fanren_game.time.time()
+            next_run_at = _cooldown_target_timestamp(
+                _resolve_latest_companion_payload(payload).get(
+                    "last_companion_heart_tribulation_time"
+                ),
+                10,
             )
-            if next_run_at is None:
-                storage.upsert_companion_heart_tribulation_task(
-                    profile_id=profile.id,
-                    chat_id=resolved_chat_id,
-                    enabled=False,
-                    thread_id=resolved_thread_id,
-                    chat_type=chat_type,
-                    bot_username=bot_username,
-                    round1_reply=normalized_rounds[0],
-                    round2_reply=normalized_rounds[1],
-                    round3_reply=normalized_rounds[2],
-                    next_run_at=fanren_game.time.time(),
-                    last_error="等待后台刷新共历心劫冷却状态。",
-                )
-                return RedirectResponse(url=redirect_to, status_code=303)
-            storage.upsert_companion_heart_tribulation_task(
+            task = storage.upsert_companion_heart_tribulation_task(
                 profile_id=profile.id,
                 chat_id=resolved_chat_id,
                 enabled=True,
                 thread_id=resolved_thread_id,
                 chat_type=chat_type,
                 bot_username=bot_username,
+                run_id="",
+                workflow_state="idle",
+                next_run_at=float(next_run_at or now_ts),
+                step_deadline_at=0,
+                last_run_at=0,
+                matched_bot_id=0,
+                anchor_command_msg_id=0,
+                anchor_bot_msg_id=0,
+                tribulation_command_msg_id=0,
+                tribulation_msg_id=0,
+                panel_reply_msg_id=0,
                 round1_reply=normalized_rounds[0],
                 round2_reply=normalized_rounds[1],
                 round3_reply=normalized_rounds[2],
                 last_action_round_sent=0,
                 last_tribulation_command_at=0,
                 last_progress_at=0,
-                workflow_state="",
-                next_run_at=next_run_at,
+                last_progress_fingerprint="",
+                last_stable_sent_at=0,
                 last_error="",
+                retry_count=0,
+            )
+            storage.append_companion_heart_tribulation_log(
+                profile_id=profile.id,
+                chat_id=resolved_chat_id,
+                thread_id=resolved_thread_id,
+                task_id=int(task.get("id") or 0),
+                run_id="",
+                step="configured",
+                event_type="manual_start",
+                text="用户开启自动共历心劫",
+                detail={
+                    "next_run_at": float(next_run_at or now_ts),
+                    "round1": normalized_rounds[0],
+                    "round2": normalized_rounds[1],
+                    "round3": normalized_rounds[2],
+                    "chat_type": chat_type,
+                    "bot_username": bot_username,
+                },
             )
             return RedirectResponse(url=redirect_to, status_code=303)
+
+        feature = COMPANION_AUTO_FEATURES.get(normalized_feature_key)
+        if not feature:
+            raise HTTPException(
+                status_code=400, detail="Invalid companion auto feature"
+            )
+
+        existing_task = storage.get_companion_auto_task(
+            profile.id, resolved_chat_id, normalized_feature_key
+        )
 
         if existing_task and bool(existing_task.get("enabled")):
             storage.disable_companion_auto_task(

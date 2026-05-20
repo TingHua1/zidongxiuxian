@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import re
+import secrets
 import time
 from abc import ABC, abstractmethod
 from datetime import datetime, timedelta, timezone
@@ -37,24 +38,31 @@ DIVINATION_BATCH_POLL_SECONDS = 5
 FANREN_RECENT_REPLY_WINDOW_SECONDS = 30
 COMPANION_AUTO_POLL_SECONDS = 5
 COMPANION_AUTO_POST_SEND_GRACE_SECONDS = 1800
-COMPANION_HEART_TRIBULATION_WAIT_SECONDS = 300
-COMPANION_HEART_TRIBULATION_STALLED_SECONDS = 600
-COMPANION_HEART_TRIBULATION_STABLE_GUARD_SECONDS = 3
 COMPANION_PANEL_COMMAND = ".我的侍妾"
 COMPANION_HEART_TRIBULATION_COMMAND = ".共历心劫"
-COMPANION_STABLE_COMMAND = ".稳"
-COMPANION_HEART_TRIBULATION_ALLOWED_ACTIONS = {"稳", "狠", "骗"}
+COMPANION_HEART_TRIBULATION_ALLOWED_BOT_IDS = {
+    8388633812,
+    7900199668,
+    8757550896,
+    8547797815,
+}
+COMPANION_HEART_TRIBULATION_STEP_TIMEOUT_SECONDS = 300
+COMPANION_HEART_TRIBULATION_EDIT_STALL_SECONDS = 600
+COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORD = "【坠魔心劫·结算】"
+COMPANION_HEART_TRIBULATION_ROUND1_LOCK_KEYWORD = "【坠魔心劫·第1轮已定】"
+COMPANION_HEART_TRIBULATION_ROUND2_LOCK_KEYWORD = "【坠魔心劫·第2轮已定】"
+COMPANION_HEART_TRIBULATION_IDLE_STATE = "idle"
+COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE = "await_panel_reply"
+COMPANION_HEART_TRIBULATION_AWAIT_TRIBULATION_STATE = "await_tribulation_reply"
+COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE = "await_round1_edit"
+COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE = "await_round2_edit"
+COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE = "await_settlement_edit"
+COMPANION_HEART_TRIBULATION_FAILED_STATE = "failed_stopped"
 COMPANION_AUTO_FEATURES = {
     "dream_seek": {
         "command": ".入梦寻图",
         "payload_field": "last_dream_map_seek_time",
         "cooldown_hours": 8,
-        "payload_scope": "companion",
-    },
-    "heart_tribulation": {
-        "command": ".共历心劫",
-        "payload_field": "last_companion_heart_tribulation_time",
-        "cooldown_hours": 10,
         "payload_scope": "companion",
     },
     "divination_chain": {
@@ -71,37 +79,6 @@ COMPANION_AUTO_FEATURES = {
     },
 }
 WILD_EXPERIENCE_ALLOWED_STRATEGIES = {"谨慎", "均衡", "深入"}
-
-_CHINESE_NUMERAL_MAP = {
-    "零": 0,
-    "一": 1,
-    "二": 2,
-    "两": 2,
-    "三": 3,
-    "四": 4,
-    "五": 5,
-    "六": 6,
-    "七": 7,
-    "八": 8,
-    "九": 9,
-    "十": 10,
-}
-_COMPANION_HEART_TRIBULATION_PATTERN = re.compile(r"【坠魔心劫·(?P<stage>[^】]+)】")
-_COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORDS = ("结算", "结束", "完成")
-
-
-def _get_companion_allowed_bot_ids() -> set[int]:
-    fanren_bot_ids = set(getattr(fanren_game, "FANREN_BOT_IDS", set()) or set())
-    sect_bot_ids = set(getattr(sect_game, "SECT_BOT_IDS", set()) or set())
-    return fanren_bot_ids | sect_bot_ids
-
-
-def _is_allowed_companion_bot_sender_id(sender_id: object) -> bool:
-    try:
-        normalized_sender_id = int(sender_id or 0)
-    except (TypeError, ValueError):
-        return False
-    return normalized_sender_id in _get_companion_allowed_bot_ids()
 
 
 def _refresh_companion_payload(storage: Storage, profile_id: int):
@@ -186,175 +163,6 @@ def _refresh_divination_payload(storage: Storage, profile_id: int):
         return None
 
 
-def _parse_chinese_number(text: str) -> Optional[int]:
-    normalized = str(text or "").strip()
-    if not normalized:
-        return None
-    if normalized.isdigit():
-        return int(normalized)
-    if normalized == "十":
-        return 10
-    if normalized.startswith("十"):
-        tail = _CHINESE_NUMERAL_MAP.get(normalized[1:], None)
-        return 10 + tail if tail is not None else None
-    if normalized.endswith("十"):
-        head = _CHINESE_NUMERAL_MAP.get(normalized[:-1], None)
-        return head * 10 if head is not None else None
-    if "十" in normalized:
-        head_text, tail_text = normalized.split("十", 1)
-        head = _CHINESE_NUMERAL_MAP.get(head_text, None)
-        tail = _CHINESE_NUMERAL_MAP.get(tail_text, None)
-        if head is None or tail is None:
-            return None
-        return head * 10 + tail
-    return _CHINESE_NUMERAL_MAP.get(normalized, None)
-
-
-def _parse_companion_heart_tribulation_message(text: str) -> Optional[dict]:
-    raw_text = str(text or "").strip()
-    if not raw_text or "坠魔心劫" not in raw_text:
-        return None
-    matches = list(_COMPANION_HEART_TRIBULATION_PATTERN.finditer(raw_text))
-    match = matches[-1] if matches else None
-    stage_text = str(match.group("stage") if match else "").strip()
-    is_settlement = any(keyword in stage_text for keyword in _COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORDS) or any(
-        keyword in raw_text for keyword in _COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORDS
-    )
-    round_number = None
-    round_match = re.search(r"第\s*([0-9一二两三四五六七八九十]+)\s*轮", stage_text or raw_text)
-    if round_match:
-        round_number = _parse_chinese_number(round_match.group(1))
-    return {
-        "text": raw_text,
-        "stage_text": stage_text,
-        "is_settlement": is_settlement,
-        "round_number": round_number,
-        "is_progress": not is_settlement,
-        "fingerprint": f"{stage_text}|{raw_text}",
-    }
-
-
-def _resolve_companion_sender_filters(storage: Storage, profile_id: int, chat_id: int):
-    profile = storage.get_profile(profile_id)
-    binding = storage.get_chat_binding(profile_id, chat_id)
-    sender_text = str(
-        getattr(binding, "telegram_user_id", "") if binding else ""
-        or getattr(profile, "telegram_user_id", "") if profile else ""
-        or ""
-    ).strip()
-    sender_id = int(sender_text) if sender_text.isdigit() else None
-    sender_username = getattr(profile, "telegram_username", "") if profile else ""
-    return sender_id, str(sender_username or "").strip()
-
-
-def _get_companion_panel_reply(storage: Storage, task: dict) -> Optional[dict]:
-    profile_id = int(task.get("profile_id") or 0)
-    chat_id = int(task.get("chat_id") or 0)
-    if not profile_id or not chat_id:
-        return None
-    thread_id = int(task.get("thread_id")) if task.get("thread_id") else None
-    sender_id, sender_username = _resolve_companion_sender_filters(
-        storage, profile_id, chat_id
-    )
-    return storage.get_latest_bot_reply_for_command(
-        chat_id,
-        COMPANION_PANEL_COMMAND,
-        profile_id=profile_id,
-        thread_id=thread_id,
-        sender_id=sender_id,
-        sender_username=sender_username,
-    )
-
-
-def _get_companion_heart_tribulation_reply(
-    storage: Storage, task: dict
-) -> Optional[dict]:
-    profile_id = int(task.get("profile_id") or 0)
-    chat_id = int(task.get("chat_id") or 0)
-    if not profile_id or not chat_id:
-        return None
-    thread_id = int(task.get("thread_id")) if task.get("thread_id") else None
-    sender_id, sender_username = _resolve_companion_sender_filters(
-        storage, profile_id, chat_id
-    )
-    reply = storage.get_latest_bot_reply_for_command(
-        chat_id,
-        COMPANION_HEART_TRIBULATION_COMMAND,
-        profile_id=None,
-        thread_id=thread_id,
-        sender_id=sender_id,
-        sender_username=sender_username,
-    )
-    tribulation_command_msg_id = int(task.get("tribulation_command_msg_id") or 0)
-    last_tribulation_command_at = float(task.get("last_tribulation_command_at") or 0)
-    if reply:
-        if tribulation_command_msg_id > 0 and int(reply.get("reply_to_msg_id") or 0) != tribulation_command_msg_id:
-            reply = None
-        elif last_tribulation_command_at > 0 and float(reply.get("created_at") or 0) < max(
-            last_tribulation_command_at - 1, 0
-        ):
-            reply = None
-    if reply:
-        return reply
-
-    anchor_bot_msg_id = int(task.get("anchor_bot_msg_id") or 0)
-    recent_tribulation = storage.get_recent_companion_heart_tribulation_message(
-        chat_id,
-        profile_id=None,
-        thread_id=thread_id,
-        bot_username="",
-        anchor_bot_msg_id=anchor_bot_msg_id,
-        since_ts=max(last_tribulation_command_at - 1, 0)
-        if last_tribulation_command_at > 0
-        else 0,
-    )
-    if not recent_tribulation:
-        return None
-    if tribulation_command_msg_id > 0:
-        reply_to_msg_id = int(recent_tribulation.get("reply_to_msg_id") or 0)
-        if reply_to_msg_id not in {0, tribulation_command_msg_id}:
-            return None
-    return recent_tribulation
-
-
-def _is_active_companion_heart_tribulation_message(
-    storage: Storage, context: EventContext
-) -> bool:
-    if not context.profile or context.chat_id is None:
-        return False
-    if not (context.is_bot_sender or _is_allowed_companion_bot_sender_id(context.sender_id)):
-        return False
-    task = storage.get_companion_heart_tribulation_task(context.profile.id, context.chat_id)
-    if not task or not bool(task.get("enabled")):
-        return False
-    workflow_state = str(task.get("workflow_state") or "").strip()
-    if workflow_state not in {"waiting_panel", "waiting_tribulation_command", "waiting_tribulation", "settled", "", "idle"}:
-        return False
-    parsed = _parse_companion_heart_tribulation_message(context.text)
-    if not parsed:
-        return False
-    task_thread_id = int(task.get("thread_id")) if task.get("thread_id") else None
-    anchor_bot_msg_id = int(task.get("anchor_bot_msg_id") or 0)
-    if anchor_bot_msg_id > 0 and int(context.reply_to_msg_id or 0) == anchor_bot_msg_id:
-        return True
-    tribulation_command_msg_id = int(task.get("tribulation_command_msg_id") or 0)
-    if tribulation_command_msg_id > 0 and int(context.reply_to_msg_id or 0) == tribulation_command_msg_id:
-        return True
-    tribulation_msg_id = int(task.get("tribulation_msg_id") or 0)
-    if tribulation_msg_id > 0 and int(context.reply_to_msg_id or 0) == tribulation_msg_id:
-        return True
-    if task_thread_id is not None and context.thread_id != task_thread_id:
-        return False
-    if (
-        workflow_state == "waiting_tribulation_command"
-        and task_thread_id is not None
-        and context.thread_id == task_thread_id
-        and int(task.get("tribulation_command_msg_id") or 0) <= 0
-    ):
-        return True
-    return False
-
-
 def _has_pending_outgoing_command(
     storage: Storage,
     *,
@@ -396,96 +204,174 @@ def _queue_companion_command(
     )
 
 
-def _cancel_pending_companion_heart_tribulation_actions(
-    storage: Storage, *, profile_id: int, chat_id: int
-) -> None:
-    for action in COMPANION_HEART_TRIBULATION_ALLOWED_ACTIONS:
-        storage.cancel_pending_outgoing_commands(
-            profile_id,
-            chat_id,
-            text=f".{action}",
-        )
+def _is_allowed_companion_heart_tribulation_bot_id(sender_id: object) -> bool:
+    try:
+        return int(sender_id or 0) in COMPANION_HEART_TRIBULATION_ALLOWED_BOT_IDS
+    except (TypeError, ValueError):
+        return False
 
 
-def _resolve_companion_heart_tribulation_next_run_at(
-    storage: Storage, profile_id: int
-) -> Optional[float]:
-    payload = read_cached_external_payload(storage, profile_id)
-    return _resolve_companion_next_run_at(payload, "heart_tribulation")
-
-
-def _normalize_heart_tribulation_action(value: object) -> str:
+def _normalize_companion_heart_tribulation_action(value: object) -> str:
     normalized = str(value or "").strip()
-    return normalized if normalized in COMPANION_HEART_TRIBULATION_ALLOWED_ACTIONS else "稳"
+    return normalized if normalized in {"稳", "狠", "骗"} else "稳"
 
 
-def _resolve_heart_tribulation_round_command(task: dict, round_number: Optional[int]) -> str:
+def _resolve_companion_heart_tribulation_next_run_at(payload: dict) -> Optional[float]:
+    companion_payload = payload.get("companion") or {}
+    if not isinstance(companion_payload, dict):
+        companion_payload = {}
+    dongfu = payload.get("dongfu") or {}
+    if isinstance(dongfu, str):
+        try:
+            dongfu = json.loads(dongfu)
+        except Exception:
+            dongfu = {}
+    companion_residence = {}
+    if isinstance(dongfu, dict):
+        companion_residence = dongfu.get("companion_residence") or {}
+        if isinstance(companion_residence, str):
+            try:
+                companion_residence = json.loads(companion_residence)
+            except Exception:
+                companion_residence = {}
+    if not isinstance(companion_residence, dict):
+        companion_residence = {}
+    raw_value = companion_payload.get("last_companion_heart_tribulation_time")
+    if raw_value is None:
+        raw_value = companion_residence.get("last_companion_heart_tribulation_time")
+    last_ts = _parse_iso_to_ts(raw_value)
+    if last_ts <= 0:
+        return None
+    return last_ts + 10 * 3600
+
+
+def _build_companion_heart_tribulation_action_command(task: dict, round_number: int) -> str:
     normalized_round = max(int(round_number or 1), 1)
     if normalized_round <= 1:
-        action = _normalize_heart_tribulation_action(task.get("round1_reply"))
+        action = _normalize_companion_heart_tribulation_action(task.get("round1_reply"))
     elif normalized_round == 2:
-        action = _normalize_heart_tribulation_action(task.get("round2_reply"))
+        action = _normalize_companion_heart_tribulation_action(task.get("round2_reply"))
     else:
-        action = _normalize_heart_tribulation_action(task.get("round3_reply"))
+        action = _normalize_companion_heart_tribulation_action(task.get("round3_reply"))
     return f".{action}"
 
 
-def _resolve_heart_tribulation_trigger_round(
-    parsed: dict, last_action_round_sent: int
-) -> int:
-    current_round_number = max(int(parsed.get("round_number") or 0), 0)
-    if current_round_number > 0:
-        return current_round_number
-    if not parsed.get("is_settlement") and last_action_round_sent <= 0:
-        return 1
-    return 0
+def _build_companion_heart_tribulation_event_fingerprint(
+    *,
+    message_id: int,
+    text: str,
+    event_kind: str,
+) -> str:
+    return f"{event_kind}:{int(message_id or 0)}:{str(text or '').strip()[:900]}"
 
 
-async def _refresh_companion_heart_tribulation_schedule(
-    storage: Storage, task: dict, *, disable_on_missing: bool = True
+def _append_companion_heart_tribulation_log(
+    storage: Storage,
+    task: dict,
+    *,
+    step: str,
+    event_type: str,
+    message_id: int = 0,
+    reply_to_msg_id: int = 0,
+    sender_id: int = 0,
+    sender_username: str = "",
+    text: str = "",
+    detail: Optional[dict] = None,
+) -> None:
+    storage.append_companion_heart_tribulation_log(
+        profile_id=int(task.get("profile_id") or 0),
+        chat_id=int(task.get("chat_id") or 0),
+        thread_id=int(task.get("thread_id")) if task.get("thread_id") else None,
+        task_id=int(task.get("id") or 0),
+        run_id=str(task.get("run_id") or ""),
+        step=step,
+        event_type=event_type,
+        message_id=int(message_id or 0),
+        reply_to_msg_id=int(reply_to_msg_id or 0),
+        sender_id=int(sender_id or 0),
+        sender_username=sender_username,
+        text=text,
+        detail=detail or {},
+    )
+
+
+def _stop_companion_heart_tribulation_task(
+    storage: Storage,
+    task: dict,
+    *,
+    last_error: str,
+    step: str,
+    detail: Optional[dict] = None,
 ) -> Optional[dict]:
+    _append_companion_heart_tribulation_log(
+        storage,
+        task,
+        step=step,
+        event_type="failed_stop",
+        text=last_error,
+        detail=detail or {},
+    )
     profile_id = int(task.get("profile_id") or 0)
-    if not profile_id:
-        return task
-    fresh_payload = await asyncio.to_thread(_refresh_companion_payload, storage, profile_id)
-    if not fresh_payload or not isinstance(fresh_payload, dict):
-        if disable_on_missing:
-            return storage.update_companion_heart_tribulation_task(
-                int(task["id"]),
-                enabled=0,
-                workflow_state="",
-                next_run_at=0,
-                last_error="刷新侍妾 payload 失败，已停止自动共历心劫。",
+    chat_id = int(task.get("chat_id") or 0)
+    if profile_id and chat_id:
+        task_thread_id = int(task.get("thread_id")) if task.get("thread_id") else None
+        for command_text in [
+            COMPANION_PANEL_COMMAND,
+            COMPANION_HEART_TRIBULATION_COMMAND,
+            ".稳",
+            ".狠",
+            ".骗",
+        ]:
+            storage.cancel_pending_outgoing_commands(
+                profile_id,
+                chat_id,
+                text=command_text,
+                thread_id=task_thread_id,
+                require_exact_thread=True,
             )
-        return storage.update_companion_heart_tribulation_task(
-            int(task["id"]),
-            next_run_at=float(task.get("next_run_at") or 0),
-            last_error="刷新侍妾 payload 失败，稍后重试。",
+    updated_task = storage.disable_companion_heart_tribulation_task(
+        profile_id,
+        chat_id,
+        thread_id=int(task.get("thread_id")) if task.get("thread_id") else None,
+        last_error=last_error,
+    )
+    if updated_task:
+        storage.update_companion_heart_tribulation_task(
+            int(updated_task.get("id") or 0),
+            workflow_state=COMPANION_HEART_TRIBULATION_FAILED_STATE,
         )
-    next_run_at = _resolve_companion_next_run_at(fresh_payload, "heart_tribulation")
-    if next_run_at is None:
-        if disable_on_missing:
-            return storage.update_companion_heart_tribulation_task(
-                int(task["id"]),
-                enabled=0,
-                workflow_state="",
-                next_run_at=0,
-                last_error="最新 payload 缺少共历心劫冷却字段，已停止自动。",
-            )
-        return storage.update_companion_heart_tribulation_task(
-            int(task["id"]),
-            last_error="最新 payload 缺少共历心劫冷却字段。",
+        return storage.get_companion_heart_tribulation_task(
+            profile_id,
+            chat_id,
+            thread_id=int(task.get("thread_id")) if task.get("thread_id") else None,
         )
-    return storage.update_companion_heart_tribulation_task(
-        int(task["id"]),
-        workflow_state="",
-        next_run_at=next_run_at,
-        tribulation_msg_id=0,
-        last_action_round_sent=0,
-        last_tribulation_command_at=0,
-        last_progress_at=0,
-        last_progress_fingerprint="",
-        last_error="",
+    return updated_task
+
+
+async def _send_companion_heart_tribulation_command(
+    client: object,
+    storage: Storage,
+    task: dict,
+    *,
+    text: str,
+    reply_to_msg_id: Optional[int] = None,
+) -> object:
+    chat_id = int(task.get("chat_id") or 0)
+    if not chat_id:
+        raise RuntimeError("Heart tribulation chat_id missing")
+    return await send_message_with_thread_fallback(
+        client,
+        chat_id,
+        text,
+        thread_id=int(task.get("thread_id")) if task.get("thread_id") else None,
+        storage=storage,
+        profile_id=int(task.get("profile_id") or 0),
+        bot_username=str(task.get("bot_username") or ""),
+        log_prefix="Heart tribulation",
+    ) if reply_to_msg_id is None else await client.send_message(
+        chat_id,
+        text,
+        reply_to=int(reply_to_msg_id),
     )
 
 
@@ -499,347 +385,150 @@ async def _run_companion_heart_tribulation_scheduler(
     while True:
         try:
             tasks = storage.list_active_companion_heart_tribulation_tasks(int(profile_id))
+            now = time.time()
             if not tasks:
                 await asyncio.sleep(COMPANION_AUTO_POLL_SECONDS)
                 continue
 
-            now = time.time()
             for task in tasks:
                 task_id = int(task.get("id") or 0)
-                chat_id = int(task.get("chat_id") or 0)
-                if not task_id or not chat_id:
+                if not task_id:
                     continue
-                thread_id = int(task.get("thread_id")) if task.get("thread_id") else None
-                chat_type = str(task.get("chat_type") or "group")
-                bot_username = str(task.get("bot_username") or "")
                 workflow_state = str(task.get("workflow_state") or "").strip()
                 next_run_at = float(task.get("next_run_at") or 0)
-                last_run_at = float(task.get("last_run_at") or 0)
-                last_stable_sent_at = float(task.get("last_stable_sent_at") or 0)
-                tribulation_msg_id = int(task.get("tribulation_msg_id") or 0)
-                last_action_round_sent = max(int(task.get("last_action_round_sent") or 0), 0)
-                last_tribulation_command_at = float(task.get("last_tribulation_command_at") or 0)
-                last_progress_at = float(task.get("last_progress_at") or 0)
-                last_progress_fingerprint = str(
-                    task.get("last_progress_fingerprint") or ""
-                ).strip()
+                step_deadline_at = float(task.get("step_deadline_at") or 0)
 
-                if workflow_state in {"", "idle"}:
-                    if next_run_at > now:
-                        if str(task.get("last_error") or "").strip():
-                            storage.update_companion_heart_tribulation_task(
-                                task_id, last_error=""
-                            )
-                        continue
-                    refreshed_task = await _refresh_companion_heart_tribulation_schedule(
-                        storage, task, disable_on_missing=False
-                    )
-                    refreshed_next_run_at = float(
-                        (refreshed_task or {}).get("next_run_at") or 0
-                    )
-                    refreshed_error = str((refreshed_task or {}).get("last_error") or "").strip()
-                    if refreshed_error and refreshed_next_run_at <= 0:
-                        storage.update_companion_heart_tribulation_task(
-                            task_id,
-                            enabled=0,
-                            workflow_state="",
-                            next_run_at=0,
-                            last_error=refreshed_error,
-                        )
-                        continue
-                    if refreshed_next_run_at > now:
-                        continue
-                    if refreshed_task:
-                        task = refreshed_task
-                        next_run_at = refreshed_next_run_at
-                    if not _has_pending_outgoing_command(
-                        storage,
-                        profile_id=int(profile_id),
-                        chat_id=chat_id,
-                        text=COMPANION_PANEL_COMMAND,
-                        thread_id=thread_id,
-                    ):
-                        _queue_companion_command(
+                if workflow_state == COMPANION_HEART_TRIBULATION_FAILED_STATE:
+                    continue
+
+                if workflow_state in {
+                    COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE,
+                    COMPANION_HEART_TRIBULATION_AWAIT_TRIBULATION_STATE,
+                    COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE,
+                    COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE,
+                    COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE,
+                }:
+                    if step_deadline_at > 0 and now >= step_deadline_at:
+                        _stop_companion_heart_tribulation_task(
                             storage,
-                            profile_id=int(profile_id),
-                            chat_id=chat_id,
-                            text=COMPANION_PANEL_COMMAND,
-                            thread_id=thread_id,
-                            chat_type=chat_type,
-                            bot_username=bot_username,
+                            task,
+                            last_error="自动共历心劫等待超时，已停止自动。",
+                            step=workflow_state,
+                            detail={
+                                "step_deadline_at": step_deadline_at,
+                                "now": now,
+                            },
                         )
+                    continue
+
+                if workflow_state not in {"", COMPANION_HEART_TRIBULATION_IDLE_STATE}:
+                    continue
+
+                if next_run_at > now:
+                    continue
+
+                fresh_payload = await asyncio.to_thread(
+                    _refresh_companion_payload, storage, int(profile_id)
+                )
+                if not fresh_payload or not isinstance(fresh_payload, dict):
+                    _stop_companion_heart_tribulation_task(
+                        storage,
+                        task,
+                        last_error="刷新侍妾冷却失败，已停止自动共历心劫。",
+                        step="refresh_payload",
+                    )
+                    continue
+
+                resolved_next_run_at = _resolve_companion_heart_tribulation_next_run_at(
+                    fresh_payload
+                )
+                if resolved_next_run_at is None:
+                    _stop_companion_heart_tribulation_task(
+                        storage,
+                        task,
+                        last_error="最新侍妾信息缺少共历心劫冷却字段，已停止自动。",
+                        step="resolve_cooldown",
+                    )
+                    continue
+                if resolved_next_run_at > now:
                     storage.update_companion_heart_tribulation_task(
                         task_id,
-                        workflow_state="waiting_panel",
-                        anchor_command_msg_id=0,
-                        anchor_bot_msg_id=0,
-                        tribulation_command_msg_id=0,
-                        tribulation_msg_id=0,
-                        last_action_round_sent=0,
-                        last_tribulation_command_at=0,
-                        last_progress_at=0,
-                        last_progress_fingerprint="",
-                        next_run_at=now + 15,
-                        last_run_at=now,
-                        last_error="等待侍妾面板回包。",
+                        workflow_state=COMPANION_HEART_TRIBULATION_IDLE_STATE,
+                        next_run_at=resolved_next_run_at,
+                        step_deadline_at=0,
+                        last_error="",
                     )
                     continue
 
-                if workflow_state == "waiting_panel":
-                    panel_reply = _get_companion_panel_reply(storage, task)
-                    if panel_reply:
-                        anchor_command_msg_id = int(panel_reply.get("reply_to_msg_id") or 0)
-                        anchor_bot_msg_id = int(panel_reply.get("message_id") or 0)
-                        latest_tribulation_command = storage.get_latest_outgoing_command(
-                            chat_id,
-                            profile_id=int(profile_id),
-                            text=COMPANION_HEART_TRIBULATION_COMMAND,
-                            thread_id=thread_id,
-                        )
-                        latest_tribulation_failed = False
-                        latest_tribulation_error = ""
-                        if latest_tribulation_command:
-                            latest_tribulation_failed = (
-                                str(latest_tribulation_command.get("status") or "").strip()
-                                == "failed"
-                                and int(
-                                    latest_tribulation_command.get("reply_to_msg_id") or 0
-                                )
-                                == anchor_bot_msg_id
-                            )
-                            latest_tribulation_error = str(
-                                latest_tribulation_command.get("error_text") or ""
-                            ).strip()
-                        if not _has_pending_outgoing_command(
-                            storage,
-                            profile_id=int(profile_id),
-                            chat_id=chat_id,
-                            text=COMPANION_HEART_TRIBULATION_COMMAND,
-                            thread_id=thread_id,
-                        ):
-                            _queue_companion_command(
-                                storage,
-                                profile_id=int(profile_id),
-                                chat_id=chat_id,
-                                text=COMPANION_HEART_TRIBULATION_COMMAND,
-                                thread_id=thread_id,
-                                chat_type=chat_type,
-                                bot_username=bot_username,
-                                reply_to_msg_id=anchor_bot_msg_id or None,
-                            )
-                        storage.update_companion_heart_tribulation_task(
-                            task_id,
-                            workflow_state="waiting_panel",
-                            anchor_command_msg_id=anchor_command_msg_id,
-                            anchor_bot_msg_id=anchor_bot_msg_id,
-                            tribulation_command_msg_id=0,
-                            tribulation_msg_id=0,
-                            last_action_round_sent=0,
-                            last_tribulation_command_at=0,
-                            last_progress_at=0,
-                            last_progress_fingerprint="",
-                            next_run_at=now + 15,
-                            last_run_at=now,
-                            last_error=(
-                                f"上次共历心劫发送失败，已重新排队：{latest_tribulation_error}"
-                                if latest_tribulation_failed and latest_tribulation_error
-                                else "上次共历心劫发送失败，已重新排队。"
-                                if latest_tribulation_failed
-                                else "已排队共历心劫，等待命令实际发出。"
-                            ),
-                        )
-                        continue
-                    if (now - last_run_at) >= 15 and not _has_pending_outgoing_command(
+                run_id = secrets.token_hex(8)
+                updated_task = storage.update_companion_heart_tribulation_task(
+                    task_id,
+                    enabled=1,
+                    run_id=run_id,
+                    workflow_state=COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE,
+                    next_run_at=0,
+                    step_deadline_at=now + COMPANION_HEART_TRIBULATION_STEP_TIMEOUT_SECONDS,
+                    last_run_at=now,
+                    matched_bot_id=0,
+                    anchor_command_msg_id=0,
+                    anchor_bot_msg_id=0,
+                    tribulation_command_msg_id=0,
+                    tribulation_msg_id=0,
+                    panel_reply_msg_id=0,
+                    last_action_round_sent=0,
+                    last_tribulation_command_at=0,
+                    last_progress_at=0,
+                    last_progress_fingerprint="",
+                    last_stable_sent_at=0,
+                    last_error="",
+                    retry_count=0,
+                )
+                if not updated_task:
+                    continue
+                task = updated_task
+                _append_companion_heart_tribulation_log(
+                    storage,
+                    task,
+                    step="launch",
+                    event_type="cooldown_ready",
+                    detail={"resolved_next_run_at": resolved_next_run_at},
+                )
+                try:
+                    command_message = await _send_companion_heart_tribulation_command(
+                        client,
                         storage,
-                        profile_id=int(profile_id),
-                        chat_id=chat_id,
+                        task,
                         text=COMPANION_PANEL_COMMAND,
-                        thread_id=thread_id,
-                    ):
-                        _queue_companion_command(
-                            storage,
-                            profile_id=int(profile_id),
-                            chat_id=chat_id,
-                            text=COMPANION_PANEL_COMMAND,
-                            thread_id=thread_id,
-                            chat_type=chat_type,
-                            bot_username=bot_username,
-                        )
-                        storage.update_companion_heart_tribulation_task(
-                            task_id,
-                            next_run_at=now + 15,
-                            last_run_at=now,
-                            last_error="未找到侍妾回包，已重试。",
-                        )
-                    continue
-
-                if workflow_state == "waiting_tribulation_command":
-                    if (now - last_run_at) >= COMPANION_HEART_TRIBULATION_WAIT_SECONDS:
-                        storage.update_companion_heart_tribulation_task(
-                            task_id,
-                            workflow_state="",
-                            anchor_bot_msg_id=0,
-                            tribulation_command_msg_id=0,
-                            tribulation_msg_id=0,
-                            last_action_round_sent=0,
-                            last_tribulation_command_at=0,
-                            last_progress_at=0,
-                            last_progress_fingerprint="",
-                            next_run_at=now + 60,
-                            last_error="共历心劫启动超时，稍后重试。",
-                        )
-                    continue
-
-                if workflow_state == "waiting_tribulation":
-                    stalled_base = last_progress_at or last_tribulation_command_at
-                    if (
-                        stalled_base > 0
-                        and (now - stalled_base) >= COMPANION_HEART_TRIBULATION_STALLED_SECONDS
-                    ):
-                        refreshed_task = await _refresh_companion_heart_tribulation_schedule(
-                            storage, task, disable_on_missing=False
-                        )
-                        refreshed_next_run_at = float(
-                            (refreshed_task or {}).get("next_run_at") or 0
-                        )
-                        if refreshed_task and refreshed_next_run_at > now:
-                            storage.update_companion_heart_tribulation_task(
-                                task_id,
-                                workflow_state="",
-                                tribulation_command_msg_id=0,
-                                tribulation_msg_id=0,
-                                last_action_round_sent=0,
-                                last_tribulation_command_at=0,
-                                last_progress_at=0,
-                                last_progress_fingerprint="",
-                                next_run_at=refreshed_next_run_at,
-                                last_error="心劫超过10分钟未推进，检测到已进入冷却，等待下次自动开始。",
-                            )
-                        else:
-                            storage.update_companion_heart_tribulation_task(
-                                task_id,
-                                workflow_state="",
-                                tribulation_command_msg_id=0,
-                                tribulation_msg_id=0,
-                                last_action_round_sent=0,
-                                last_tribulation_command_at=0,
-                                last_progress_at=0,
-                                last_progress_fingerprint="",
-                                next_run_at=now + 60,
-                                last_error="心劫超过10分钟未推进，已刷新缓存并稍后重试。",
-                            )
-                        continue
-                    current_tribulation = None
-                    if tribulation_msg_id:
-                        current_tribulation = storage.get_bound_message(
-                            chat_id,
-                            tribulation_msg_id,
-                            profile_id=int(task.get("profile_id") or 0),
-                        )
-                    if not current_tribulation:
-                        current_tribulation = _get_companion_heart_tribulation_reply(storage, task)
-                        if current_tribulation:
-                            tribulation_msg_id = int(current_tribulation.get("message_id") or 0)
-                            storage.update_companion_heart_tribulation_task(
-                                task_id,
-                                tribulation_msg_id=tribulation_msg_id,
-                                last_progress_at=now,
-                                last_error="",
-                            )
-                    if not current_tribulation:
-                        if (now - last_run_at) >= COMPANION_HEART_TRIBULATION_WAIT_SECONDS:
-                            storage.update_companion_heart_tribulation_task(
-                                task_id,
-                                workflow_state="",
-                                tribulation_command_msg_id=0,
-                                next_run_at=now + 60,
-                                last_error="共历心劫回包超时，稍后重试。",
-                            )
-                        continue
-                    parsed = _parse_companion_heart_tribulation_message(
-                        str(current_tribulation.get("text") or "")
                     )
-                    if not parsed:
-                        continue
-                    if parsed.get("is_settlement"):
-                        task = storage.update_companion_heart_tribulation_task(
-                            task_id,
-                            previous_settlement_text=str(
-                                task.get("last_settlement_text") or ""
-                            )[:4000],
-                            previous_settlement_at=float(task.get("last_settlement_at") or 0),
-                            last_settlement_text=str(parsed.get("text") or "")[:4000],
-                            last_settlement_at=now,
-                            tribulation_msg_id=tribulation_msg_id,
-                            last_action_round_sent=max(
-                                last_action_round_sent,
-                                int(parsed.get("round_number") or 0),
-                            ),
-                            last_tribulation_command_at=0,
-                            last_progress_at=now,
-                            last_progress_fingerprint=str(parsed.get("fingerprint") or "")[:1000],
-                            last_error="",
-                        ) or task
-                        await _refresh_companion_heart_tribulation_schedule(storage, task)
-                        continue
-                    current_round_number = max(int(parsed.get("round_number") or 0), 0)
-                    progress_changed = (
-                        parsed.get("fingerprint") != last_progress_fingerprint
+                except Exception as exc:
+                    _stop_companion_heart_tribulation_task(
+                        storage,
+                        task,
+                        last_error=f"发送{COMPANION_PANEL_COMMAND}失败，已停止自动共历心劫。",
+                        step="send_panel_command",
+                        detail={"error": str(exc)},
                     )
-                    if progress_changed:
-                        update_fields = {
-                            "tribulation_msg_id": tribulation_msg_id,
-                            "last_progress_at": now,
-                            "last_progress_fingerprint": str(
-                                parsed.get("fingerprint") or ""
-                            )[:1000],
-                            "last_error": "",
-                        }
-                        if current_round_number <= last_action_round_sent:
-                            storage.update_companion_heart_tribulation_task(
-                                task_id, **update_fields
-                            )
-                    if (
-                        progress_changed
-                        and current_round_number > last_action_round_sent
-                        and (now - last_stable_sent_at)
-                        >= COMPANION_HEART_TRIBULATION_STABLE_GUARD_SECONDS
-                        and not _has_pending_outgoing_command(
-                            storage,
-                            profile_id=int(profile_id),
-                            chat_id=chat_id,
-                            text=_resolve_heart_tribulation_round_command(task, current_round_number),
-                            thread_id=thread_id,
-                        )
-                        and (now - last_progress_at)
-                        >= COMPANION_HEART_TRIBULATION_STABLE_GUARD_SECONDS
-                    ):
-                        command_text = _resolve_heart_tribulation_round_command(
-                            task, current_round_number
-                        )
-                        _queue_companion_command(
-                            storage,
-                            profile_id=int(profile_id),
-                            chat_id=chat_id,
-                            text=command_text,
-                            thread_id=thread_id,
-                            chat_type=chat_type,
-                            bot_username=bot_username,
-                            reply_to_msg_id=tribulation_msg_id or None,
-                        )
-                        storage.update_companion_heart_tribulation_task(
-                            task_id,
-                            tribulation_msg_id=tribulation_msg_id,
-                            last_action_round_sent=current_round_number,
-                            last_progress_at=now,
-                            last_progress_fingerprint=str(
-                                parsed.get("fingerprint") or ""
-                            )[:1000],
-                            last_stable_sent_at=now,
-                            next_run_at=now + COMPANION_HEART_TRIBULATION_STABLE_GUARD_SECONDS,
-                            last_error="",
-                        )
                     continue
+                storage.update_companion_heart_tribulation_task(
+                    task_id,
+                    anchor_command_msg_id=int(getattr(command_message, "id", 0) or 0),
+                    step_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_STEP_TIMEOUT_SECONDS,
+                    last_run_at=time.time(),
+                )
+                task = storage.get_companion_heart_tribulation_task(
+                    int(profile_id),
+                    int(task.get("chat_id") or 0),
+                    thread_id=int(task.get("thread_id")) if task.get("thread_id") else None,
+                ) or task
+                _append_companion_heart_tribulation_log(
+                    storage,
+                    task,
+                    step=COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE,
+                    event_type="send_panel_command",
+                    message_id=int(getattr(command_message, "id", 0) or 0),
+                    text=COMPANION_PANEL_COMMAND,
+                    detail={"run_id": run_id},
+                )
             await asyncio.sleep(COMPANION_AUTO_POLL_SECONDS)
         except asyncio.CancelledError:
             raise
@@ -1504,6 +1193,18 @@ class FanrenExecutor(BaseExecutor):
                 and context.sender_id in fanren_game.FANREN_BOT_IDS
                 and await context.bot_message_targets_profile()
             ):
+                reply_text = await self._get_reply_message_text(context, storage)
+                fallback_allowed_reply_commands = {
+                    fanren_game.FANREN_CHECK_COMMAND,
+                    fanren_game.FANREN_NORMAL_COMMAND,
+                    fanren_game.FANREN_DEEP_COMMAND,
+                    ".强行出关",
+                    fanren_game.RIFT_EXPLORE_COMMAND,
+                    fanren_game.YUANYING_OUTING_COMMAND,
+                    fanren_game.YUANYING_STATUS_COMMAND,
+                }
+                if reply_text and reply_text not in fallback_allowed_reply_commands:
+                    return False
                 parsed = await fanren_game.handle_bot_message(
                     context.event,
                     db,
@@ -2205,9 +1906,7 @@ class GeneralGameExecutor(BaseExecutor):
         )
         _register_client_background_task(
             client,
-            asyncio.create_task(
-                _run_companion_heart_tribulation_scheduler(client, storage)
-            ),
+            asyncio.create_task(_run_companion_heart_tribulation_scheduler(client, storage)),
         )
         return
 
@@ -2236,7 +1935,6 @@ class GeneralGameExecutor(BaseExecutor):
             return False
 
         await self._maybe_advance_divination_batch(context, storage)
-        await self._maybe_advance_companion_heart_tribulation(context, storage)
 
         if context.is_bot_sender and await self._bot_message_targets_profile(
             context, storage
@@ -2304,174 +2002,403 @@ class GeneralGameExecutor(BaseExecutor):
                     return True
         return False
 
+
     async def _maybe_advance_companion_heart_tribulation(
         self, context: EventContext, storage: Storage
-    ) -> None:
+    ) -> bool:
         if not context.profile or context.chat_id is None:
-            return
+            return False
         task = storage.get_companion_heart_tribulation_task(
-            context.profile.id, context.chat_id
+            context.profile.id,
+            context.chat_id,
+            thread_id=context.thread_id,
         )
         if not task or not bool(task.get("enabled")):
-            return
+            return False
 
         task_id = int(task.get("id") or 0)
         if not task_id:
-            return
+            return False
 
-        if context.is_outgoing:
-            text = context.text.strip()
-            if text == COMPANION_PANEL_COMMAND and context.message_id:
-                storage.update_companion_heart_tribulation_task(
-                    task_id,
-                    thread_id=context.thread_id or task.get("thread_id"),
-                    anchor_command_msg_id=int(context.message_id or 0),
-                    last_run_at=time.time(),
+        workflow_state = str(task.get("workflow_state") or "").strip()
+        if workflow_state in {"", COMPANION_HEART_TRIBULATION_IDLE_STATE, COMPANION_HEART_TRIBULATION_FAILED_STATE}:
+            return False
+
+        task_thread_id = int(task.get("thread_id")) if task.get("thread_id") else None
+        if task_thread_id is not None and context.thread_id != task_thread_id:
+            return False
+
+        if not _is_allowed_companion_heart_tribulation_bot_id(context.sender_id):
+            return False
+
+        sender = getattr(context.event, "sender", None)
+        sender_username = (getattr(sender, "username", "") or "").strip()
+        current_message_id = int(context.message_id or 0)
+        current_reply_to_msg_id = int(context.reply_to_msg_id or 0)
+        current_sender_id = int(context.sender_id or 0)
+        current_text = context.text or ""
+        is_edited_event = bool(getattr(context.event, "edit_date", None)) and not context.is_outgoing
+
+        if workflow_state == COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE:
+            expected_reply_to = int(task.get("anchor_command_msg_id") or 0)
+            if expected_reply_to <= 0:
+                _stop_companion_heart_tribulation_task(
+                    storage,
+                    task,
+                    last_error="自动共历心劫缺少侍妾命令锚点，已停止自动。",
+                    step=workflow_state,
                 )
-                return
-            if text == COMPANION_HEART_TRIBULATION_COMMAND and context.message_id:
-                storage.update_companion_heart_tribulation_task(
-                    task_id,
-                    thread_id=context.thread_id or task.get("thread_id"),
-                    workflow_state="waiting_tribulation_command",
-                    last_run_at=time.time(),
-                    last_action_round_sent=0,
-                    last_tribulation_command_at=time.time(),
-                    last_progress_at=0,
-                    last_progress_fingerprint="",
-                    tribulation_command_msg_id=int(context.message_id or 0),
-                    tribulation_msg_id=0,
-                    anchor_command_msg_id=int(context.reply_to_msg_id or 0)
-                    or int(task.get("anchor_command_msg_id") or 0),
-                    anchor_bot_msg_id=int(context.reply_to_msg_id or 0)
-                    or int(task.get("anchor_bot_msg_id") or 0),
-                    last_error="等待共历心劫回包。",
-                )
-                return
-            if text == COMPANION_STABLE_COMMAND and context.message_id:
-                storage.update_companion_heart_tribulation_task(
-                    task_id,
-                    workflow_state="waiting_tribulation",
-                    last_stable_sent_at=time.time(),
-                    last_error="",
-                )
-                return
-            return
-
-        is_allowed_companion_bot_sender = _is_allowed_companion_bot_sender_id(
-            context.sender_id
-        )
-        targets_profile = await self._bot_message_targets_profile(context, storage)
-        if not (context.is_bot_sender or is_allowed_companion_bot_sender) or (
-            not targets_profile
-            and not _is_active_companion_heart_tribulation_message(storage, context)
-        ):
-            return
-
-        parsed = _parse_companion_heart_tribulation_message(context.text)
-        if not parsed:
-            return
-
-        now = time.time()
-        tribulation_msg_id = int(context.message_id or 0)
-        if parsed.get("is_settlement"):
-            _cancel_pending_companion_heart_tribulation_actions(
+                return True
+            if current_reply_to_msg_id != expected_reply_to:
+                return False
+            if not current_message_id:
+                return False
+            _append_companion_heart_tribulation_log(
                 storage,
-                profile_id=context.profile.id,
-                chat_id=context.chat_id,
+                task,
+                step=workflow_state,
+                event_type="panel_reply_received",
+                message_id=current_message_id,
+                reply_to_msg_id=current_reply_to_msg_id,
+                sender_id=current_sender_id,
+                sender_username=sender_username,
+                text=current_text,
             )
-            updated_task = storage.update_companion_heart_tribulation_task(
+            try:
+                command_message = await _send_companion_heart_tribulation_command(
+                    context.client,
+                    storage,
+                    task,
+                    text=COMPANION_HEART_TRIBULATION_COMMAND,
+                    reply_to_msg_id=current_message_id,
+                )
+            except Exception as exc:
+                _stop_companion_heart_tribulation_task(
+                    storage,
+                    task,
+                    last_error=f"发送{COMPANION_HEART_TRIBULATION_COMMAND}失败，已停止自动共历心劫。",
+                    step="send_tribulation_command",
+                    detail={"error": str(exc)},
+                )
+                return True
+            storage.update_companion_heart_tribulation_task(
                 task_id,
-                workflow_state="",
-                tribulation_command_msg_id=0,
-                tribulation_msg_id=0,
-                anchor_bot_msg_id=0,
-                last_progress_at=now,
-                last_progress_fingerprint=str(parsed.get("fingerprint") or "")[:1000],
-                previous_settlement_text=str(task.get("last_settlement_text") or "")[:4000],
-                previous_settlement_at=float(task.get("last_settlement_at") or 0),
-                last_settlement_text=str(parsed.get("text") or "")[:4000],
-                last_settlement_at=now,
-                last_action_round_sent=0,
-                last_tribulation_command_at=0,
+                workflow_state=COMPANION_HEART_TRIBULATION_AWAIT_TRIBULATION_STATE,
+                step_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_STEP_TIMEOUT_SECONDS,
+                last_run_at=time.time(),
+                matched_bot_id=current_sender_id,
+                anchor_bot_msg_id=current_message_id,
+                panel_reply_msg_id=current_message_id,
+                tribulation_command_msg_id=int(getattr(command_message, "id", 0) or 0),
+                last_tribulation_command_at=time.time(),
                 last_error="",
             )
-            logger.info(
-                "Companion heart tribulation locked message profile=%s chat=%s task=%s msg=%s reply_to=%s settled=%s",
+            task = storage.get_companion_heart_tribulation_task(
                 context.profile.id,
                 context.chat_id,
-                task_id,
-                tribulation_msg_id,
-                context.reply_to_msg_id,
-                True,
+                thread_id=context.thread_id,
+            ) or task
+            _append_companion_heart_tribulation_log(
+                storage,
+                task,
+                step=COMPANION_HEART_TRIBULATION_AWAIT_TRIBULATION_STATE,
+                event_type="send_tribulation_command",
+                message_id=int(getattr(command_message, "id", 0) or 0),
+                reply_to_msg_id=current_message_id,
+                text=COMPANION_HEART_TRIBULATION_COMMAND,
             )
-            if updated_task:
-                await _refresh_companion_heart_tribulation_schedule(storage, updated_task)
-            return
+            return True
 
-        current_round_number = _resolve_heart_tribulation_trigger_round(
-            parsed, max(int(task.get("last_action_round_sent") or 0), 0)
-        )
-        progress_changed = (
-            str(parsed.get("fingerprint") or "")
-            != str(task.get("last_progress_fingerprint") or "")
-        )
-        updates = {
-            "workflow_state": "waiting_tribulation",
-            "tribulation_msg_id": tribulation_msg_id,
-            "last_progress_at": now,
-            "last_progress_fingerprint": str(parsed.get("fingerprint") or "")[:1000],
-            "last_error": "",
-        }
-        if context.reply_to_msg_id:
-            updates["anchor_bot_msg_id"] = int(context.reply_to_msg_id or 0)
-        command_text = (
-            _resolve_heart_tribulation_round_command(task, current_round_number)
-            if current_round_number > 0
-            else ""
-        )
-        can_dispatch_round = (
-            progress_changed
-            and current_round_number > max(int(task.get("last_action_round_sent") or 0), 0)
-            and (now - float(task.get("last_stable_sent_at") or 0))
-            >= COMPANION_HEART_TRIBULATION_STABLE_GUARD_SECONDS
-            and command_text
-            and not _has_pending_outgoing_command(
+        if workflow_state == COMPANION_HEART_TRIBULATION_AWAIT_TRIBULATION_STATE:
+            expected_reply_to = int(task.get("tribulation_command_msg_id") or 0)
+            if expected_reply_to <= 0:
+                _stop_companion_heart_tribulation_task(
+                    storage,
+                    task,
+                    last_error="自动共历心劫缺少心劫命令锚点，已停止自动。",
+                    step=workflow_state,
+                )
+                return True
+            if current_reply_to_msg_id != expected_reply_to:
+                return False
+            if not current_message_id:
+                return False
+            round1_command = _build_companion_heart_tribulation_action_command(task, 1)
+            _append_companion_heart_tribulation_log(
                 storage,
-                profile_id=context.profile.id,
-                chat_id=context.chat_id,
-                text=command_text,
-                thread_id=context.thread_id
-                or (int(task.get("thread_id")) if task.get("thread_id") else None),
+                task,
+                step=workflow_state,
+                event_type="tribulation_reply_received",
+                message_id=current_message_id,
+                reply_to_msg_id=current_reply_to_msg_id,
+                sender_id=current_sender_id,
+                sender_username=sender_username,
+                text=current_text,
             )
-        )
-        if can_dispatch_round:
-            _queue_companion_command(
+            try:
+                action_message = await _send_companion_heart_tribulation_command(
+                    context.client,
+                    storage,
+                    task,
+                    text=round1_command,
+                    reply_to_msg_id=current_message_id,
+                )
+            except Exception as exc:
+                _stop_companion_heart_tribulation_task(
+                    storage,
+                    task,
+                    last_error="发送第一轮心劫策略失败，已停止自动共历心劫。",
+                    step="send_round1",
+                    detail={"error": str(exc), "command": round1_command},
+                )
+                return True
+            fingerprint = _build_companion_heart_tribulation_event_fingerprint(
+                message_id=current_message_id,
+                text=current_text,
+                event_kind="tribulation_reply",
+            )
+            storage.update_companion_heart_tribulation_task(
+                task_id,
+                workflow_state=COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE,
+                step_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_EDIT_STALL_SECONDS,
+                last_run_at=time.time(),
+                matched_bot_id=current_sender_id,
+                tribulation_msg_id=current_message_id,
+                anchor_bot_msg_id=current_message_id,
+                last_action_round_sent=1,
+                last_progress_at=time.time(),
+                last_progress_fingerprint=fingerprint,
+                last_stable_sent_at=time.time(),
+                last_error="",
+            )
+            task = storage.get_companion_heart_tribulation_task(
+                context.profile.id,
+                context.chat_id,
+                thread_id=context.thread_id,
+            ) or task
+            _append_companion_heart_tribulation_log(
                 storage,
-                profile_id=context.profile.id,
-                chat_id=context.chat_id,
-                text=command_text,
-                thread_id=context.thread_id
-                or (int(task.get("thread_id")) if task.get("thread_id") else None),
-                chat_type=str(task.get("chat_type") or "group"),
-                bot_username=str(task.get("bot_username") or ""),
-                reply_to_msg_id=tribulation_msg_id or None,
+                task,
+                step=COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE,
+                event_type="send_round1",
+                message_id=int(getattr(action_message, "id", 0) or 0),
+                reply_to_msg_id=current_message_id,
+                text=round1_command,
             )
-            updates["last_action_round_sent"] = current_round_number
-            updates["last_stable_sent_at"] = now
-            updates["next_run_at"] = (
-                now + COMPANION_HEART_TRIBULATION_STABLE_GUARD_SECONDS
-            )
-        storage.update_companion_heart_tribulation_task(task_id, **updates)
-        logger.info(
-            "Companion heart tribulation locked message profile=%s chat=%s task=%s msg=%s reply_to=%s settled=%s",
-            context.profile.id,
-            context.chat_id,
+            return True
+
+        tribulation_msg_id = int(task.get("tribulation_msg_id") or 0)
+        if tribulation_msg_id <= 0 or current_message_id != tribulation_msg_id or not is_edited_event:
+            return False
+        matched_bot_id = int(task.get("matched_bot_id") or 0)
+        if matched_bot_id > 0 and current_sender_id != matched_bot_id:
+            return False
+
+        current_fingerprint = _build_companion_heart_tribulation_event_fingerprint(
+            message_id=current_message_id,
+            text=current_text,
+            event_kind="edited",
+        )
+        if current_fingerprint == str(task.get("last_progress_fingerprint") or ""):
+            return True
+
+        _append_companion_heart_tribulation_log(
+            storage,
+            task,
+            step=workflow_state,
+            event_type="message_edited",
+            message_id=current_message_id,
+            reply_to_msg_id=current_reply_to_msg_id,
+            sender_id=current_sender_id,
+            sender_username=sender_username,
+            text=current_text,
+        )
+
+        storage.update_companion_heart_tribulation_task(
             task_id,
-            tribulation_msg_id,
-            context.reply_to_msg_id,
-            False,
+            step_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_EDIT_STALL_SECONDS,
+            last_progress_at=time.time(),
+            last_progress_fingerprint=current_fingerprint,
         )
+        task = storage.update_companion_heart_tribulation_task(task_id) or task
+
+        if COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORD in current_text:
+            if workflow_state != COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE:
+                _stop_companion_heart_tribulation_task(
+                    storage,
+                    task,
+                    last_error="共历心劫流程顺序异常：未完成全部轮次前提前进入结算，已停止自动。",
+                    step=workflow_state,
+                    detail={
+                        "message_id": current_message_id,
+                        "workflow_state": workflow_state,
+                        "text": current_text[:1000],
+                    },
+                )
+                return True
+            previous_settlement_text = str(task.get("last_settlement_text") or "")
+            previous_settlement_at = float(task.get("last_settlement_at") or 0)
+            completed_run_id = str(task.get("run_id") or "")
+            updated_task = storage.update_companion_heart_tribulation_task(
+                task_id,
+                workflow_state=COMPANION_HEART_TRIBULATION_IDLE_STATE,
+                step_deadline_at=0,
+                matched_bot_id=0,
+                anchor_command_msg_id=0,
+                anchor_bot_msg_id=0,
+                tribulation_command_msg_id=0,
+                tribulation_msg_id=0,
+                panel_reply_msg_id=0,
+                last_action_round_sent=0,
+                last_tribulation_command_at=0,
+                last_progress_at=time.time(),
+                last_progress_fingerprint=current_fingerprint,
+                last_stable_sent_at=0,
+                last_settlement_text=current_text,
+                last_settlement_at=time.time(),
+                previous_settlement_text=previous_settlement_text,
+                previous_settlement_at=previous_settlement_at,
+                last_error="",
+            )
+            task = updated_task or task
+            _append_companion_heart_tribulation_log(
+                storage,
+                task,
+                step="completed",
+                event_type="settlement_recorded",
+                message_id=current_message_id,
+                sender_id=current_sender_id,
+                sender_username=sender_username,
+                text=current_text,
+            )
+            fresh_payload = await asyncio.to_thread(
+                _refresh_companion_payload, storage, context.profile.id
+            )
+            if not fresh_payload or not isinstance(fresh_payload, dict):
+                _stop_companion_heart_tribulation_task(
+                    storage,
+                    task,
+                    last_error="结算后刷新侍妾冷却失败，已停止自动共历心劫。",
+                    step="post_settlement_refresh",
+                )
+                return True
+            next_run_at = _resolve_companion_heart_tribulation_next_run_at(fresh_payload)
+            if next_run_at is None:
+                _stop_companion_heart_tribulation_task(
+                    storage,
+                    task,
+                    last_error="结算后无法解析最新共历心劫冷却，已停止自动。",
+                    step="post_settlement_cooldown",
+                )
+                return True
+            storage.update_companion_heart_tribulation_task(
+                task_id,
+                enabled=1,
+                run_id="",
+                workflow_state=COMPANION_HEART_TRIBULATION_IDLE_STATE,
+                next_run_at=next_run_at,
+                step_deadline_at=0,
+            )
+            return True
+
+        if workflow_state == COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE:
+            if COMPANION_HEART_TRIBULATION_ROUND1_LOCK_KEYWORD not in current_text:
+                return True
+            round2_command = _build_companion_heart_tribulation_action_command(task, 2)
+            try:
+                action_message = await _send_companion_heart_tribulation_command(
+                    context.client,
+                    storage,
+                    task,
+                    text=round2_command,
+                    reply_to_msg_id=current_message_id,
+                )
+            except Exception as exc:
+                _stop_companion_heart_tribulation_task(
+                    storage,
+                    task,
+                    last_error="发送第二轮心劫策略失败，已停止自动共历心劫。",
+                    step="send_round2",
+                    detail={"error": str(exc), "command": round2_command},
+                )
+                return True
+            storage.update_companion_heart_tribulation_task(
+                task_id,
+                workflow_state=COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE,
+                step_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_EDIT_STALL_SECONDS,
+                last_action_round_sent=2,
+                last_progress_at=time.time(),
+                last_progress_fingerprint=current_fingerprint,
+                last_stable_sent_at=time.time(),
+                last_error="",
+            )
+            task = storage.get_companion_heart_tribulation_task(
+                context.profile.id,
+                context.chat_id,
+                thread_id=context.thread_id,
+            ) or task
+            _append_companion_heart_tribulation_log(
+                storage,
+                task,
+                step=COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE,
+                event_type="send_round2",
+                message_id=int(getattr(action_message, "id", 0) or 0),
+                reply_to_msg_id=current_message_id,
+                text=round2_command,
+            )
+            return True
+
+        if workflow_state == COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE:
+            if COMPANION_HEART_TRIBULATION_ROUND2_LOCK_KEYWORD not in current_text:
+                return True
+            round3_command = _build_companion_heart_tribulation_action_command(task, 3)
+            try:
+                action_message = await _send_companion_heart_tribulation_command(
+                    context.client,
+                    storage,
+                    task,
+                    text=round3_command,
+                    reply_to_msg_id=current_message_id,
+                )
+            except Exception as exc:
+                _stop_companion_heart_tribulation_task(
+                    storage,
+                    task,
+                    last_error="发送第三轮心劫策略失败，已停止自动共历心劫。",
+                    step="send_round3",
+                    detail={"error": str(exc), "command": round3_command},
+                )
+                return True
+            storage.update_companion_heart_tribulation_task(
+                task_id,
+                workflow_state=COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE,
+                step_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_EDIT_STALL_SECONDS,
+                last_action_round_sent=3,
+                last_progress_at=time.time(),
+                last_progress_fingerprint=current_fingerprint,
+                last_stable_sent_at=time.time(),
+                last_error="",
+            )
+            task = storage.get_companion_heart_tribulation_task(
+                context.profile.id,
+                context.chat_id,
+                thread_id=context.thread_id,
+            ) or task
+            _append_companion_heart_tribulation_log(
+                storage,
+                task,
+                step=COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE,
+                event_type="send_round3",
+                message_id=int(getattr(action_message, "id", 0) or 0),
+                reply_to_msg_id=current_message_id,
+                text=round3_command,
+            )
+            return True
+
+        if workflow_state == COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE:
+            return True
+
+        return False
 
     async def _maybe_advance_divination_batch(
         self, context: EventContext, storage: Storage
@@ -2723,7 +2650,6 @@ class GeneralGameExecutor(BaseExecutor):
                 return True
         await context.reply(f"执行结果: {status}")
         return True
-
     async def _handle_taiyi_command(
         self, context: EventContext, db: SQLiteCompatDb, payload: str
     ) -> bool:
@@ -2754,7 +2680,6 @@ class GeneralGameExecutor(BaseExecutor):
         )
         await context.reply(f"执行结果: {status}")
         return True
-
     async def _handle_wanling_command(
         self, context: EventContext, db: SQLiteCompatDb, payload: str
     ) -> bool:
@@ -2795,7 +2720,6 @@ class GeneralGameExecutor(BaseExecutor):
         )
         await context.reply(f"执行结果: {status}")
         return True
-
     async def _handle_lingxiao_command(
         self, context: EventContext, db: SQLiteCompatDb, payload: str
     ) -> bool:
@@ -2829,7 +2753,6 @@ class GeneralGameExecutor(BaseExecutor):
         )
         await context.reply(f"执行结果: {status}")
         return True
-
     async def _handle_xingong_command(
         self, context: EventContext, db: SQLiteCompatDb, payload: str
     ) -> bool:
@@ -2877,3 +2800,10 @@ class GeneralGameExecutor(BaseExecutor):
         )
         await context.reply(f"执行结果: {status}")
         return True
+
+
+async def observe_companion_heart_tribulation_event(
+    context: EventContext, storage: Storage
+) -> bool:
+    observer = GeneralGameExecutor()
+    return await observer._maybe_advance_companion_heart_tribulation(context, storage)

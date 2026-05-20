@@ -229,8 +229,14 @@ def sync_external_account(
         raise RuntimeError("只识别 session=... 形式的天机阁登录 Cookie")
     external_account = storage.get_external_account(profile_id, provider) or {}
     stored_api_token = str(external_account.get("api_token") or "").strip()
+    stored_cookie = normalize_external_cookie(external_account.get("cookie_text") or "")
+    should_rebootstrap_token = bool(cookie_text) and (
+        not stored_api_token or normalize_external_cookie(cookie_text) != stored_cookie
+    )
     payload, resolved_identifier, refreshed_cookie, refreshed_token = fetch_cultivator_payload(
-        normalized_cookie, profile, api_token=stored_api_token
+        normalized_cookie,
+        profile,
+        api_token="" if should_rebootstrap_token else stored_api_token,
     )
     persisted_cookie = resolve_external_cookie(normalized_cookie, refreshed_cookie)
     stored_cookie = persisted_cookie if is_admin else ""

@@ -137,16 +137,12 @@ def _api_headers(cookie_text: str, api_token: str = "") -> dict:
 def _perform_json_get(
     path: str, cookie_text: str, api_token: str = ""
 ) -> Tuple[dict, int, str, str]:
-    if api_token:
-        boot_cookie = cookie_text
-    else:
-        boot_cookie, api_token = _bootstrap_dashboard_auth(cookie_text)
-    request = urllib.request.Request(
-        f"{ASC_BASE_URL}{path}",
-        headers=_api_headers(boot_cookie, api_token),
-        method="GET",
-    )
-    try:
+    def _request_json(active_cookie: str, active_token: str) -> Tuple[dict, int, str, str]:
+        request = urllib.request.Request(
+            f"{ASC_BASE_URL}{path}",
+            headers=_api_headers(active_cookie, active_token),
+            method="GET",
+        )
         with urllib.request.urlopen(request, timeout=20) as response:
             status = getattr(response, "status", HTTPStatus.OK)
             payload = json.loads(response.read().decode("utf-8"))
@@ -156,15 +152,25 @@ def _perform_json_get(
             return (
                 payload,
                 int(status),
-                _resolve_session_cookie(refreshed_cookie, boot_cookie),
-                api_token,
+                _resolve_session_cookie(refreshed_cookie, active_cookie),
+                active_token,
             )
+
+    if api_token:
+        boot_cookie = cookie_text
+    else:
+        boot_cookie, api_token = _bootstrap_dashboard_auth(cookie_text)
+    try:
+        return _request_json(boot_cookie, api_token)
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="ignore")
         try:
             payload = json.loads(body)
         except json.JSONDecodeError:
             payload = {"error": body or f"HTTP {exc.code}"}
+        if exc.code in {401, 403} and api_token:
+            refreshed_cookie, refreshed_token = _bootstrap_dashboard_auth(cookie_text)
+            return _request_json(refreshed_cookie, refreshed_token)
         if exc.code in {401, 403}:
             raise AscAuthError(payload.get("error") or f"HTTP {exc.code}") from exc
         if _is_not_found_error(exc.code, payload):
