@@ -1660,6 +1660,14 @@ def _is_sect_related_message(text: str, current_sect_feature: Optional[dict]) ->
         "阴罗宗",
         "献祭",
         "血洗",
+        "落云宗",
+        "灵树",
+        "灌溉",
+        "采摘",
+        "灵果",
+        "守山",
+        "协同守山",
+        "古剑门",
     }
     if current_sect_feature and current_sect_feature.get("name"):
         sect_keywords.add(current_sect_feature["name"])
@@ -2882,6 +2890,7 @@ def create_app() -> FastAPI:
                 "sect_session": None,
                 "lingxiao_state": None,
                 "yinluo_state": None,
+                "luoyun_state": None,
             }
 
         profile = storage.get_profile(active_profile.id) or active_profile
@@ -2921,6 +2930,7 @@ def create_app() -> FastAPI:
         lingxiao_state = None
         yinluo_state = None
         huangfeng_state = None
+        luoyun_state = None
         if current_sect_feature and current_sect_feature["name"] == "凌霄宫":
             if sect_chat:
                 db = CompatDb(storage)
@@ -2989,6 +2999,25 @@ def create_app() -> FastAPI:
                     payload,
                     session=sect_session,
                 )
+        if current_sect_feature and current_sect_feature["name"] == "落云宗":
+            if sect_chat:
+                db = CompatDb(storage)
+                try:
+                    sect_game.ensure_tables(db)
+                    sect_session, luoyun_state = sect_game.sync_luoyun_state(
+                        storage,
+                        db,
+                        profile.id,
+                        sect_chat.chat_id,
+                        payload=payload,
+                    )
+                finally:
+                    db.close()
+            if luoyun_state is None:
+                luoyun_state = sect_game.build_luoyun_view(
+                    payload,
+                    session=sect_session,
+                )
 
         return {
             "active_profile": profile,
@@ -3002,6 +3031,7 @@ def create_app() -> FastAPI:
             "lingxiao_state": lingxiao_state,
             "yinluo_state": yinluo_state,
             "huangfeng_state": huangfeng_state,
+            "luoyun_state": luoyun_state,
         }
 
     def _get_or_create_profile_for_telegram(
@@ -4274,6 +4304,7 @@ def create_app() -> FastAPI:
                 "lingxiao_state": lingxiao_state,
                 "yinluo_state": yinluo_state,
                 "huangfeng_state": huangfeng_state,
+                "luoyun_state": profile_state.get("luoyun_state"),
                 "character_state": character_state,
                 "taiyi_state": taiyi_state,
                 "other_play_definitions": OTHER_PLAY_DEFINITIONS,
@@ -5488,6 +5519,37 @@ def create_app() -> FastAPI:
                     True,
                     profile_id=active_profile.id,
                 )
+            session = sect_game.get_session(db, chat_id, profile_id=active_profile.id)
+        finally:
+            db.close()
+        if not session:
+            raise HTTPException(status_code=404, detail="Sect session not found")
+        return RedirectResponse(url="/modules/sect", status_code=303)
+
+    @application.post("/runtime/sect/luoyun-toggle")
+    async def toggle_luoyun_auto(
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
+    ) -> RedirectResponse:
+        db = CompatDb(storage)
+        try:
+            sect_game.ensure_tables(db)
+            active_profile = _get_request_profile(request)
+            if not active_profile:
+                raise HTTPException(status_code=401, detail="Profile not active")
+            sect_game.configure_luoyun_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id,
+            )
+            if enabled == "1":
+                sect_game.set_enabled(
+                    db,
+                    chat_id,
+                    True,
+                    profile_id=active_profile.id,
+                )
+                sect_game.sync_luoyun_state(storage, db, active_profile.id, chat_id)
             session = sect_game.get_session(db, chat_id, profile_id=active_profile.id)
         finally:
             db.close()

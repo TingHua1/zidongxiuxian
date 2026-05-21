@@ -70,6 +70,10 @@
             <div class="kv-row"><span>播种种子</span><strong>{{ sect_session.huangfeng_seed_name or '-' if sect_session else '-' }}</strong></div>
             <div class="kv-row"><span>自动宗门兑换</span><strong>{{ '开启' if sect_session and sect_session.auto_huangfeng_exchange_enabled else '关闭' }}</strong></div>
             {% endif %}
+            {% if current_sect_feature and current_sect_feature.name == '落云宗' %}
+            <div class="kv-row"><span>灵树自动</span><strong>{{ '自动' if sect_session and sect_session.auto_luoyun_enabled else '手动' }}</strong></div>
+            <div class="kv-row"><span>灵树冷却</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(luoyun_state.frozen_irrigation_ready_time) if luoyun_state and luoyun_state.invasion_active and luoyun_state.frozen_irrigation_ready_time else format_timestamp(luoyun_state.irrigation_ready_time) if luoyun_state and luoyun_state.irrigation_ready_time else '已就绪' }}</strong></div>
+            {% endif %}
         </div>
         <div class="action-row top-gap" style="flex-wrap: wrap; gap: 10px;">
             <form method="post" action="/runtime/sect/checkin-toggle">
@@ -87,6 +91,13 @@
                 <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
                 <input type="hidden" name="enabled" value="{{ '0' if sect_session and sect_session.auto_lingxiao_enabled else '1' }}">
                 <button type="submit">{{ '关闭自动登阶' if sect_session and sect_session.auto_lingxiao_enabled else '开启自动登阶' }}</button>
+            </form>
+            {% endif %}
+            {% if current_sect_feature and current_sect_feature.name == '落云宗' %}
+            <form method="post" action="/runtime/sect/luoyun-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if sect_session and sect_session.auto_luoyun_enabled else '1' }}">
+                <button type="submit">{{ '关闭灵树自动' if sect_session and sect_session.auto_luoyun_enabled else '开启灵树自动' }}</button>
             </form>
             {% endif %}
         </div>
@@ -197,6 +208,48 @@
         {% else %}
         <p class="muted">当前没有可展示的药园结构化数据，可先等待角色信息同步或执行一次小药园。</p>
         {% endif %}
+    </div>
+</section>
+{% endif %}
+
+{% if luoyun_state and current_sect_feature and current_sect_feature.name == '落云宗' %}
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>落云宗</p>
+            <h2>灵树状态</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>当前阶段</span><strong>{{ luoyun_state.stage or '未知' }}</strong></div>
+            <div class="kv-row"><span>当前模式</span><strong>{{ '守山中' if luoyun_state.invasion_active else '灵树循环' }}</strong></div>
+            <div class="kv-row"><span>最近灌溉</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(luoyun_state.last_irrigation_time) if luoyun_state.last_irrigation_time else '-' }}</strong></div>
+            <div class="kv-row"><span>灌溉冷却至</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(luoyun_state.irrigation_ready_time) if luoyun_state.irrigation_ready_time else '已就绪' }}</strong></div>
+            {% if luoyun_state.invasion_active and luoyun_state.frozen_irrigation_ready_time %}
+            <div class="kv-row"><span>冻结灌溉至</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(luoyun_state.frozen_irrigation_ready_time) }}</strong></div>
+            {% endif %}
+            <div class="kv-row"><span>状态剩余</span><strong>{{ luoyun_state.remaining_text or '无' }}</strong></div>
+            <div class="kv-row"><span>当前状态</span><strong>{{ luoyun_state.current_status_text or '-' }}</strong></div>
+            <div class="kv-row"><span>待执行动作</span><strong>{{ luoyun_state.pending_count }}</strong></div>
+        </div>
+        {% if luoyun_state.next_check_source %}
+        <p class="muted top-gap">{{ luoyun_state.next_check_source }}</p>
+        {% endif %}
+    </div>
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>落云调度</p>
+            <h2>灵树自动</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>自动状态</span><strong>{{ '运行中' if luoyun_state.auto_enabled else '未启用' }}</strong></div>
+            <div class="kv-row"><span>下次判断</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(luoyun_state.next_check_time) if luoyun_state.next_check_time else '立即检查' }}</strong></div>
+            <div class="kv-row"><span>可执行动作</span><strong>{% if luoyun_state.can_harvest %}可采摘{% elif luoyun_state.can_irrigate %}可灌溉{% elif luoyun_state.already_picked %}已采摘{% else %}等待中{% endif %}</strong></div>
+            {% if luoyun_state.invasion_active %}
+            <div class="kv-row"><span>守山循环</span><strong>每 5 分钟检查一次</strong></div>
+            <div class="kv-row"><span>守山冷却至</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(luoyun_state.defend_ready_time) if luoyun_state.defend_ready_time else '已就绪' }}</strong></div>
+            {% endif %}
+        </div>
+        <p class="muted top-gap">开启后会先发送 <code>.灵树状态</code>，再根据最新回包顺序决定灌溉或采摘；若遇到古剑门入侵会切换为 <code>.协同守山</code> 循环。关闭后重新开启会清空旧缓存并重新判断。</p>
     </div>
 </section>
 {% endif %}

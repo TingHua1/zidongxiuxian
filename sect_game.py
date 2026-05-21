@@ -34,6 +34,10 @@ SECT_AUTO_WINDOW_END_TIME = "05:00"
 YINLUO_AUTO_SACRIFICE_TIME = "02:20"
 SECT_AUTO_TEACH_REPLY_RECHECK_SECONDS = 30
 HUANGFENG_AUTO_CHECK_SECONDS = 30 * 60
+LUOYUN_IRRIGATION_COOLDOWN_SECONDS = 2 * 3600
+LUOYUN_COMMAND_REFRESH_SECONDS = 180
+LUOYUN_BATCH_TIMEOUT_SECONDS = 10 * 60
+LUOYUN_BATCH_MAX_RETRIES = 1
 LINGXIAO_STEP_DEFAULT_SECONDS = 7200
 LINGXIAO_STEP_SECONDS = 14400
 LINGXIAO_ELDER_STEP_SECONDS = 10800
@@ -102,6 +106,7 @@ YINLUO_SUMMON_SHADOW_SECONDS = 24 * 3600
 HUANGFENG_SECT_NAME = "黄枫谷"
 YINLUO_SECT_NAME = "阴罗宗"
 LINGXIAO_SECT_NAME = "凌霄宫"
+LUOYUN_SECT_NAME = "落云宗"
 
 
 def _normalize_bool(value):
@@ -136,6 +141,7 @@ def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
                 "auto_yinluo_blood_wash_enabled",
                 "auto_huangfeng_enabled",
                 "auto_huangfeng_exchange_enabled",
+                "auto_luoyun_enabled",
                 "auto_lingxiao_enabled",
                 "auto_lingxiao_gangfeng_enabled",
                 "auto_lingxiao_borrow_enabled",
@@ -166,11 +172,21 @@ def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
                 "huangfeng_pending_retry": 0,
                 "huangfeng_payload_refresh_retry": 0,
                 "huangfeng_batch_just_completed": 0,
+                "auto_luoyun_enabled": 0,
+                "luoyun_pending_commands": None,
+                "luoyun_pending_index": 0,
+                "luoyun_pending_msg_id": 0,
+                "luoyun_pending_retry": 0,
+                "luoyun_batch_just_completed": 0,
+                "luoyun_force_refresh": 0,
+                "luoyun_invasion_active": 0,
+                "luoyun_frozen_irrigation_ready_time": 0,
                 "sect_checkin_next_check_time": 0,
                 "sect_teach_next_check_time": 0,
                 "yinluo_sacrifice_next_check_time": 0,
                 "yinluo_blood_wash_next_check_time": 0,
                 "huangfeng_next_check_time": 0,
+                "luoyun_next_check_time": 0,
                 "lingxiao_next_check_time": 0,
                 "lingxiao_gangfeng_next_check_time": 0,
                 "lingxiao_borrow_next_check_time": 0,
@@ -195,6 +211,24 @@ def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
                     "huangfeng_payload_refresh_retry": 0,
                     "huangfeng_batch_just_completed": 0,
                     "huangfeng_next_check_time": 0,
+                }
+            )
+        if session.get("auto_luoyun_enabled") and not _is_same_sect_name(
+            normalized_sect_name, LUOYUN_SECT_NAME
+        ):
+            reasons.append(f"当前宗门已不是{LUOYUN_SECT_NAME}，已关闭落云宗自动")
+            updates.update(
+                {
+                    "auto_luoyun_enabled": 0,
+                    "luoyun_pending_commands": None,
+                    "luoyun_pending_index": 0,
+                    "luoyun_pending_msg_id": 0,
+                    "luoyun_pending_retry": 0,
+                    "luoyun_batch_just_completed": 0,
+                    "luoyun_force_refresh": 0,
+                    "luoyun_invasion_active": 0,
+                    "luoyun_frozen_irrigation_ready_time": 0,
+                    "luoyun_next_check_time": 0,
                 }
             )
         if (
@@ -431,6 +465,197 @@ def _parse_json_list(value):
             return []
         return parsed if isinstance(parsed, list) else []
     return []
+
+
+def _find_nested_value(payload, target_key):
+    normalized_key = str(target_key or "").strip()
+    if not normalized_key:
+        return None
+    if isinstance(payload, dict):
+        if normalized_key in payload:
+            return payload.get(normalized_key)
+        for value in payload.values():
+            nested = _find_nested_value(value, normalized_key)
+            if nested is not None:
+                return nested
+    elif isinstance(payload, list):
+        for item in payload:
+            nested = _find_nested_value(item, normalized_key)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _normalize_luoyun_stage(value: object) -> str:
+    normalized = str(value or "").strip()
+    return normalized or "未知"
+
+
+def _resolve_luoyun_last_irrigation_time(payload):
+    raw_value = _find_nested_value(payload if isinstance(payload, dict) else {}, "last_irrigation_time")
+    return _parse_iso_timestamp(raw_value)
+
+
+def _resolve_luoyun_last_defend_time(payload):
+    raw_value = _find_nested_value(payload if isinstance(payload, dict) else {}, "last_defend_time")
+    return _parse_iso_timestamp(raw_value)
+
+
+def parse_luoyun_tree_text(text, now=None):
+    now = now or time.time()
+    raw_text = str(text or "").strip()
+    if not raw_text:
+        return {
+            "raw_text": "",
+            "updated_at": now,
+            "stage": "未知",
+            "can_irrigate": False,
+            "can_harvest": False,
+            "already_picked": False,
+            "remaining_text": "",
+            "remaining_seconds": 0,
+            "next_ready_time": 0,
+            "current_points": 0,
+        }
+
+    remaining_match = re.search(r"⏳\s*剩余[:：]\s*(?P<value>[^\n]+)", raw_text)
+    remaining_text = str((remaining_match.group("value") if remaining_match else "") or "").strip()
+    remaining_seconds = _parse_duration_seconds(remaining_text)
+    next_ready_time = now + remaining_seconds if remaining_seconds > 0 else 0
+
+    current_status_match = re.search(r"👤\s*你的当前状态[:：]\s*(?P<value>[^\n]+)", raw_text)
+    current_status_text = str((current_status_match.group("value") if current_status_match else "") or "").strip()
+    current_points_match = re.search(r"(?P<value>\d+)\s*点", current_status_text)
+    current_points = _parse_int(current_points_match.group("value") if current_points_match else 0, 0)
+
+    progress_match = re.search(r"🌲\s*进度[:：][^\n]*\n?[^\n]*?(?P<percent>\d+(?:\.\d+)?)%", raw_text)
+    progress_percent = float(progress_match.group("percent")) if progress_match else 0.0
+    stage_match = re.search(r"🔄\s*阶段[:：]\s*(?P<current>\d+)\s*/\s*(?P<total>\d+)", raw_text)
+    current_stage = _parse_int(stage_match.group("current") if stage_match else 0, 0)
+    total_stage = _parse_int(stage_match.group("total") if stage_match else 0, 0)
+
+    is_mature = "✨ 状态: 成熟采摘期" in raw_text or "✨ 状态：成熟采摘期" in raw_text
+    invasion_detected = "⚔️ 警报: 古剑门入侵中！" in raw_text or "⚔️ 警报：古剑门入侵中！" in raw_text
+    already_picked = "已采摘" in current_status_text or "奖励已入袋" in current_status_text
+    has_numeric_status = current_points > 0 and not already_picked
+    is_growth = (bool(progress_match) or stage_match is not None) and not is_mature and has_numeric_status
+
+    stage = "未知"
+    if is_mature:
+        stage = "成熟采摘期"
+    elif already_picked:
+        stage = "已采摘"
+    elif is_growth:
+        stage = "生长阶段"
+
+    return {
+        "raw_text": raw_text[:4000],
+        "updated_at": now,
+        "stage": stage,
+        "progress_percent": progress_percent,
+        "current_stage": current_stage,
+        "total_stage": total_stage,
+        "can_irrigate": is_growth,
+        "can_harvest": is_mature and has_numeric_status,
+        "already_picked": already_picked,
+        "remaining_text": remaining_text,
+        "remaining_seconds": remaining_seconds,
+        "next_ready_time": next_ready_time,
+        "current_status_text": current_status_text,
+        "current_points": current_points,
+        "is_mature": is_mature,
+        "invasion_detected": invasion_detected,
+    }
+
+
+def _load_luoyun_state(session):
+    return _parse_json_dict((session or {}).get("luoyun_last_tree_state"))
+
+
+def _load_luoyun_pending_commands(session):
+    return [
+        str(item or "").strip()
+        for item in _parse_json_list((session or {}).get("luoyun_pending_commands"))
+        if str(item or "").strip()
+    ]
+
+
+def _save_luoyun_pending_commands(commands):
+    normalized = [
+        str(command or "").strip()
+        for command in (commands or [])
+        if str(command or "").strip()
+    ]
+    return json.dumps(normalized, ensure_ascii=False) if normalized else None
+
+
+def has_active_luoyun_batch(session):
+    return bool(_load_luoyun_pending_commands(session))
+
+
+def build_luoyun_view(payload, session=None, now=None):
+    now = now or time.time()
+    session = session or {}
+    state = _load_luoyun_state(session)
+    last_irrigation_time = _resolve_luoyun_last_irrigation_time(payload)
+    if not last_irrigation_time:
+        last_irrigation_time = float(state.get("last_irrigation_time") or 0)
+    irrigation_ready_time = (
+        last_irrigation_time + LUOYUN_IRRIGATION_COOLDOWN_SECONDS if last_irrigation_time else 0
+    )
+    last_defend_time = _resolve_luoyun_last_defend_time(payload)
+    defend_ready_time = last_defend_time + 300 if last_defend_time else 0
+    next_ready_time = float(state.get("next_ready_time") or 0)
+    current_stage = _normalize_luoyun_stage(state.get("stage"))
+    current_status_text = str(state.get("current_status_text") or "").strip()
+    current_points = _parse_int(state.get("current_points"), 0)
+    can_irrigate = bool(state.get("can_irrigate"))
+    can_harvest = bool(state.get("can_harvest"))
+    already_picked = bool(state.get("already_picked"))
+    remaining_text = str(state.get("remaining_text") or "").strip()
+    invasion_active = bool(session.get("luoyun_invasion_active"))
+    frozen_irrigation_ready_time = float(session.get("luoyun_frozen_irrigation_ready_time") or 0)
+    if irrigation_ready_time > now and not can_irrigate and not can_harvest and not next_ready_time:
+        next_ready_time = irrigation_ready_time
+    if invasion_active and frozen_irrigation_ready_time > 0:
+        irrigation_ready_time = frozen_irrigation_ready_time
+    return {
+        "auto_enabled": bool(session.get("auto_luoyun_enabled")),
+        "last_irrigation_time": last_irrigation_time,
+        "irrigation_ready_time": irrigation_ready_time,
+        "last_defend_time": last_defend_time,
+        "defend_ready_time": defend_ready_time,
+        "next_check_time": float(session.get("luoyun_next_check_time") or 0),
+        "next_check_source": str(session.get("luoyun_next_check_source") or "").strip(),
+        "pending_count": len(_load_luoyun_pending_commands(session)),
+        "pending_index": int(session.get("luoyun_pending_index") or 0),
+        "remaining_text": remaining_text,
+        "remaining_seconds": _parse_int(state.get("remaining_seconds"), 0),
+        "next_ready_time": next_ready_time,
+        "stage": current_stage,
+        "current_status_text": current_status_text,
+        "current_points": current_points,
+        "can_irrigate": can_irrigate,
+        "can_harvest": can_harvest,
+        "already_picked": already_picked,
+        "invasion_active": invasion_active,
+        "frozen_irrigation_ready_time": frozen_irrigation_ready_time,
+        "source": str(state.get("source") or "session").strip() or "session",
+        "updated_at": float(state.get("updated_at") or 0),
+        "status_text": str((session or {}).get("luoyun_last_tree_text") or "").strip(),
+    }
+
+
+def build_luoyun_auto_commands(session):
+    state = _load_luoyun_state(session)
+    if bool((session or {}).get("luoyun_invasion_active")):
+        return [".协同守山"]
+    commands = []
+    if bool(state.get("can_irrigate")):
+        commands.append(".灵树灌溉")
+    if bool(state.get("can_harvest")):
+        commands.append(".采摘灵果")
+    return commands
 
 
 def _normalize_plot_value(value) -> str:
@@ -1300,11 +1525,19 @@ def _active_huangfeng_auto_keys(session):
     return keys
 
 
+def _active_luoyun_auto_keys(session):
+    keys = []
+    if session.get("auto_luoyun_enabled"):
+        keys.append("tree")
+    return keys
+
+
 def _has_any_auto_keys(session):
     return bool(
         _active_common_auto_keys(session)
         or _active_yinluo_auto_keys(session)
         or _active_huangfeng_auto_keys(session)
+        or _active_luoyun_auto_keys(session)
         or _active_lingxiao_auto_keys(session)
     )
 
@@ -1320,6 +1553,7 @@ def _recompute_overall_next_check(session, updates, now=None):
         ("auto_yinluo_sacrifice_enabled", "yinluo_sacrifice_next_check_time"),
         ("auto_yinluo_blood_wash_enabled", "yinluo_blood_wash_next_check_time"),
         ("auto_huangfeng_enabled", "huangfeng_next_check_time"),
+        ("auto_luoyun_enabled", "luoyun_next_check_time"),
         ("auto_lingxiao_enabled", "lingxiao_next_check_time"),
         ("auto_lingxiao_gangfeng_enabled", "lingxiao_gangfeng_next_check_time"),
         ("auto_lingxiao_borrow_enabled", "lingxiao_borrow_next_check_time"),
@@ -1358,6 +1592,22 @@ def _lingxiao_sync_retry_time(session, now) -> float:
         else now + LINGXIAO_COMMAND_REFRESH_SECONDS
     )
     return min(hard_deadline, now + LINGXIAO_COMMAND_REFRESH_SECONDS)
+
+
+def _luoyun_action_still_syncing(session, now, *, command_text: str) -> bool:
+    last_action = str((session or {}).get("last_action") or "").strip()
+    last_action_time = float((session or {}).get("last_action_time") or 0)
+    if last_action != str(command_text or "").strip() or not last_action_time:
+        return False
+    return now - last_action_time < LUOYUN_BATCH_TIMEOUT_SECONDS
+
+
+def _luoyun_sync_retry_time(session, now) -> float:
+    last_action_time = float((session or {}).get("last_action_time") or 0)
+    hard_deadline = (
+        last_action_time + LUOYUN_BATCH_TIMEOUT_SECONDS if last_action_time else now + LUOYUN_COMMAND_REFRESH_SECONDS
+    )
+    return min(hard_deadline, now + LUOYUN_COMMAND_REFRESH_SECONDS)
 
 
 def sync_common_sect_state(storage, db, profile_id, chat_id, payload=None, now=None):
@@ -1786,6 +2036,19 @@ def ensure_tables(db):
             huangfeng_pending_retry INTEGER DEFAULT 0,
             huangfeng_payload_refresh_retry INTEGER DEFAULT 0,
             huangfeng_batch_just_completed INTEGER DEFAULT 0,
+            auto_luoyun_enabled INTEGER DEFAULT 0,
+            luoyun_next_check_time REAL DEFAULT 0,
+            luoyun_next_check_source TEXT,
+            luoyun_last_tree_text TEXT,
+            luoyun_last_tree_state TEXT,
+            luoyun_pending_commands TEXT,
+            luoyun_pending_index INTEGER DEFAULT 0,
+            luoyun_pending_msg_id INTEGER DEFAULT 0,
+            luoyun_pending_retry INTEGER DEFAULT 0,
+            luoyun_batch_just_completed INTEGER DEFAULT 0,
+            luoyun_force_refresh INTEGER DEFAULT 0,
+            luoyun_invasion_active INTEGER DEFAULT 0,
+            luoyun_frozen_irrigation_ready_time REAL DEFAULT 0,
             yinluo_batch_mode TEXT,
             yinluo_batch_commands TEXT,
             yinluo_batch_index INTEGER DEFAULT 0,
@@ -1849,6 +2112,19 @@ def ensure_tables(db):
         "huangfeng_pending_retry": "INTEGER DEFAULT 0",
         "huangfeng_payload_refresh_retry": "INTEGER DEFAULT 0",
         "huangfeng_batch_just_completed": "INTEGER DEFAULT 0",
+        "auto_luoyun_enabled": "INTEGER DEFAULT 0",
+        "luoyun_next_check_time": "REAL DEFAULT 0",
+        "luoyun_next_check_source": "TEXT",
+        "luoyun_last_tree_text": "TEXT",
+        "luoyun_last_tree_state": "TEXT",
+        "luoyun_pending_commands": "TEXT",
+        "luoyun_pending_index": "INTEGER DEFAULT 0",
+        "luoyun_pending_msg_id": "INTEGER DEFAULT 0",
+        "luoyun_pending_retry": "INTEGER DEFAULT 0",
+        "luoyun_batch_just_completed": "INTEGER DEFAULT 0",
+        "luoyun_force_refresh": "INTEGER DEFAULT 0",
+        "luoyun_invasion_active": "INTEGER DEFAULT 0",
+        "luoyun_frozen_irrigation_ready_time": "REAL DEFAULT 0",
         "yinluo_batch_mode": "TEXT",
         "yinluo_batch_commands": "TEXT",
         "yinluo_batch_index": "INTEGER DEFAULT 0",
@@ -2235,6 +2511,38 @@ def parse_message(text):
             "teach_progress": teach_progress,
         }
 
+    if ".灵树状态" in text or "✨ 状态:" in text or "🌲 进度:" in text or "👤 你的当前状态:" in text:
+        luoyun_state = parse_luoyun_tree_text(text)
+        return {
+            "event": "luoyun_tree_status",
+            "summary": f"收到灵树状态：{luoyun_state.get('stage') or '未知'}",
+            "luoyun_tree_state": luoyun_state,
+        }
+
+    if "当前并无外敌入侵，无需加固大阵。" in text:
+        return {
+            "event": "luoyun_invasion_clear",
+            "summary": "当前无外敌入侵，恢复灵树循环",
+        }
+
+    if "灌溉" in text and any(keyword in text for keyword in ["灵树", "浇灌", "灌溉成功"]):
+        return {
+            "event": "luoyun_tree_water",
+            "summary": "灵树灌溉完成",
+        }
+
+    if "【守山成功】" in text or ".协同守山" in text or "无需加固大阵" in text:
+        return {
+            "event": "luoyun_guard",
+            "summary": "协同守山完成",
+        }
+
+    if "采摘" in text and any(keyword in text for keyword in ["灵果", "奖励", "已入袋"]):
+        return {
+            "event": "luoyun_tree_harvest",
+            "summary": "灵果采摘完成",
+        }
+
     return {
         "event": "unknown",
         "summary": text[:80],
@@ -2287,6 +2595,10 @@ def build_status_text(session):
             f"下次黄枫检查: {format_timestamp(session.get('huangfeng_next_check_time') or 0)}",
             f"黄枫检查来源: {session.get('huangfeng_next_check_source') or '-'}",
             f"黄枫待执行批次: {int(session.get('huangfeng_pending_index') or 0)} / {len(_load_huangfeng_pending_commands(session))}",
+            f"自动落云灵树: {'开启' if session.get('auto_luoyun_enabled') else '关闭'}",
+            f"下次灵树检查: {format_timestamp(session.get('luoyun_next_check_time') or 0)}",
+            f"灵树检查来源: {session.get('luoyun_next_check_source') or '-'}",
+            f"灵树待执行批次: {int(session.get('luoyun_pending_index') or 0)} / {len(_load_luoyun_pending_commands(session))}",
             f"阴罗批次: {session.get('yinluo_batch_mode') or '-'}",
             f"阴罗批次进度: {int(session.get('yinluo_batch_index') or 0)} / {len(_load_yinluo_batch_commands(session))}",
             f"查询指令: {session.get('command_text') or SECT_CHECK_COMMAND}",
@@ -2327,6 +2639,7 @@ def stop_all_automation(db, chat_id, reason="", profile_id=None):
         auto_yinluo_blood_wash_enabled=0,
         auto_huangfeng_enabled=0,
         auto_huangfeng_exchange_enabled=0,
+        auto_luoyun_enabled=0,
         lingxiao_next_check_time=0,
         lingxiao_gangfeng_next_check_time=0,
         lingxiao_borrow_next_check_time=0,
@@ -2336,6 +2649,7 @@ def stop_all_automation(db, chat_id, reason="", profile_id=None):
         yinluo_sacrifice_next_check_time=0,
         yinluo_blood_wash_next_check_time=0,
         huangfeng_next_check_time=0,
+        luoyun_next_check_time=0,
         last_summary=reason or None,
     )
 
@@ -2558,6 +2872,256 @@ def clear_huangfeng_batch(
         huangfeng_next_check_source=summary or None,
         last_summary=summary or None,
     )
+
+
+def clear_luoyun_batch(
+    db, chat_id, summary="", profile_id=None, *, next_check_time=0, keep_state=True
+):
+    updates = {
+        "luoyun_pending_commands": None,
+        "luoyun_pending_index": 0,
+        "luoyun_pending_msg_id": 0,
+        "luoyun_pending_retry": 0,
+        "luoyun_batch_just_completed": 0,
+        "luoyun_force_refresh": 0,
+        "luoyun_next_check_time": next_check_time,
+        "luoyun_next_check_source": summary or None,
+        "last_summary": summary or None,
+    }
+    if not keep_state:
+        updates["luoyun_last_tree_text"] = None
+        updates["luoyun_last_tree_state"] = None
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        **updates,
+    )
+
+
+def configure_luoyun_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
+    updates = {
+        "auto_luoyun_enabled": _normalize_bool(enabled),
+        "luoyun_next_check_time": 0,
+        "luoyun_next_check_source": (
+            "已开启落云宗灵树自动，等待首轮灵树检查" if enabled else "已关闭落云宗灵树自动"
+        ),
+        "luoyun_force_refresh": 1 if enabled else 0,
+        "next_check_time": 0
+        if enabled
+        else _recompute_overall_next_check(session, {"auto_luoyun_enabled": 0}, time.time()),
+        "next_check_source": (
+            "已开启落云宗灵树自动，等待首轮灵树检查" if enabled else "已关闭落云宗灵树自动"
+        ),
+        "luoyun_pending_commands": None,
+        "luoyun_pending_index": 0,
+        "luoyun_pending_msg_id": 0,
+        "luoyun_pending_retry": 0,
+        "luoyun_batch_just_completed": 0,
+        "luoyun_last_tree_text": None,
+        "luoyun_last_tree_state": None,
+        "luoyun_invasion_active": 0,
+        "luoyun_frozen_irrigation_ready_time": 0,
+    }
+    update_session(db, chat_id, profile_id=profile_id, **updates)
+
+
+def sync_luoyun_state(storage, db, profile_id, chat_id, payload=None, now=None):
+    now = now or time.time()
+    session = get_session(db, chat_id, profile_id=profile_id)
+    if not session:
+        return None, None
+    force_refresh = bool(session.get("luoyun_force_refresh")) or bool(
+        session.get("luoyun_batch_just_completed")
+    )
+    if force_refresh:
+        try:
+            payload = sync_external_account(storage, profile_id)
+            logger.info("落云宗自动强制刷新天机阁 payload 成功 profile=%s", profile_id)
+        except Exception as exc:
+            logger.warning(
+                "落云宗自动强制刷新天机阁 payload 失败 profile=%s: %s",
+                profile_id,
+                exc,
+            )
+            if payload is None:
+                payload = _read_cached_profile_payload(storage, profile_id)
+    elif payload is None:
+        payload = _read_cached_profile_payload(storage, profile_id)
+
+    updates = {"luoyun_force_refresh": 0}
+    if bool(session.get("luoyun_batch_just_completed")):
+        updates["luoyun_batch_just_completed"] = 0
+        updates["luoyun_last_tree_text"] = None
+        updates["luoyun_last_tree_state"] = None
+    if bool(session.get("luoyun_invasion_active")):
+        session_for_view = dict(session)
+        session_for_view.update(updates)
+        invasion_view = build_luoyun_view(payload, session=session_for_view, now=now)
+        defend_ready_time = float(invasion_view.get("defend_ready_time") or 0)
+        if defend_ready_time > now:
+            updates["luoyun_next_check_time"] = defend_ready_time
+            updates["luoyun_next_check_source"] = (
+                f"古剑门入侵中，协同守山冷却至 {format_timestamp(defend_ready_time)}"
+            )
+        else:
+            updates["luoyun_next_check_time"] = 0
+            updates["luoyun_next_check_source"] = "古剑门入侵中，可执行协同守山"
+        updates["next_check_time"] = _recompute_overall_next_check(session, updates, now)
+        if _has_any_auto_keys(session):
+            updates["next_check_source"] = "已同步宗门缓存状态"
+        update_session(db, chat_id, profile_id=profile_id, **updates)
+        return get_session(db, chat_id, profile_id=profile_id), build_luoyun_view(
+            payload,
+            session=get_session(db, chat_id, profile_id=profile_id),
+            now=now,
+        )
+
+    session_for_view = dict(session)
+    session_for_view.update(updates)
+    if force_refresh and not has_active_luoyun_batch(session_for_view):
+        refreshed_state = _load_luoyun_state(session_for_view)
+        if refreshed_state:
+            refreshed_state = dict(refreshed_state)
+            refreshed_state.pop("next_ready_time", None)
+            refreshed_state.pop("remaining_seconds", None)
+            session_for_view["luoyun_last_tree_state"] = json.dumps(
+                refreshed_state, ensure_ascii=False
+            )
+    view = build_luoyun_view(payload, session=session_for_view, now=now)
+
+    if session.get("auto_luoyun_enabled"):
+        if _luoyun_action_still_syncing(session, now, command_text=".灵树状态"):
+            pending_time = _luoyun_sync_retry_time(session, now)
+            updates["luoyun_next_check_time"] = pending_time
+            updates["luoyun_next_check_source"] = "已发送 .灵树状态，等待机器人回包"
+        elif not has_active_luoyun_batch(session_for_view):
+            simulated_session = dict(session_for_view)
+            simulated_session.update(updates)
+            auto_commands = build_luoyun_auto_commands(simulated_session)
+            if auto_commands:
+                updates["luoyun_pending_commands"] = _save_luoyun_pending_commands(auto_commands)
+                updates["luoyun_pending_index"] = 0
+                updates["luoyun_pending_msg_id"] = 0
+                updates["luoyun_pending_retry"] = 0
+                updates["luoyun_force_refresh"] = 0
+                updates["luoyun_next_check_time"] = 0
+                updates["luoyun_next_check_source"] = (
+                    f"已根据灵树状态生成 {len(auto_commands)} 条落云宗命令"
+                )
+            elif view.get("next_ready_time") and float(view.get("next_ready_time") or 0) > now:
+                updates["luoyun_next_check_time"] = float(view.get("next_ready_time") or 0)
+                updates["luoyun_next_check_source"] = (
+                    f"灵树状态等待至 {format_timestamp(view.get('next_ready_time') or 0)}"
+                )
+                updates["luoyun_force_refresh"] = 0
+            elif view.get("irrigation_ready_time") and float(view.get("irrigation_ready_time") or 0) > now:
+                updates["luoyun_next_check_time"] = float(view.get("irrigation_ready_time") or 0)
+                updates["luoyun_next_check_source"] = (
+                    f"灵树灌溉冷却至 {format_timestamp(view.get('irrigation_ready_time') or 0)}"
+                )
+                updates["luoyun_force_refresh"] = 0
+            else:
+                updates["luoyun_next_check_time"] = 0
+                updates["luoyun_next_check_source"] = "可发送 .灵树状态 检查当前灵树状态"
+
+    updates["next_check_time"] = _recompute_overall_next_check(session, updates, now)
+    if _has_any_auto_keys(session_for_view):
+        updates["next_check_source"] = "已同步宗门缓存状态"
+    update_session(db, chat_id, profile_id=profile_id, **updates)
+    return get_session(db, chat_id, profile_id=profile_id), build_luoyun_view(
+        payload,
+        session=get_session(db, chat_id, profile_id=profile_id),
+        now=now,
+    )
+
+
+async def maybe_run_luoyun_batch(client, db, session, *, storage=None, profile_id=None):
+    commands = _load_luoyun_pending_commands(session)
+    if not commands:
+        return False
+    current_index = int(session.get("luoyun_pending_index") or 0)
+    pending_msg_id = int(session.get("luoyun_pending_msg_id") or 0)
+    chat_id = int(session.get("chat_id") or 0)
+    if pending_msg_id:
+        now = time.time()
+        sent_at = float(session.get("luoyun_next_check_time") or 0) - LUOYUN_COMMAND_REFRESH_SECONDS
+        if sent_at <= 0 or now - sent_at < LUOYUN_BATCH_TIMEOUT_SECONDS:
+            return True
+        retry_count = int(session.get("luoyun_pending_retry") or 0)
+        if retry_count < LUOYUN_BATCH_MAX_RETRIES:
+            update_session(
+                db,
+                chat_id,
+                profile_id=session.get("profile_id"),
+                luoyun_pending_retry=retry_count + 1,
+                luoyun_pending_msg_id=0,
+                luoyun_next_check_time=0,
+                luoyun_next_check_source=f"灵树指令超时未回复，准备重试 {commands[current_index] if current_index < len(commands) else ''}",
+                next_check_time=0,
+                next_check_source="灵树指令超时未回复，准备重试",
+            )
+        else:
+            clear_luoyun_batch(
+                db,
+                chat_id,
+                summary="灵树指令重试后仍未收到回复，已停止本轮自动执行",
+                profile_id=session.get("profile_id"),
+                next_check_time=time.time() + LUOYUN_IRRIGATION_COOLDOWN_SECONDS,
+            )
+            update_session(
+                db,
+                chat_id,
+                profile_id=session.get("profile_id"),
+                auto_luoyun_enabled=0,
+                luoyun_pending_retry=0,
+                next_check_source="灵树指令连续超时，已停止落云宗自动",
+                next_check_time=time.time() + LUOYUN_IRRIGATION_COOLDOWN_SECONDS,
+            )
+        return True
+    if current_index >= len(commands):
+        clear_luoyun_batch(
+            db,
+            chat_id,
+            summary="落云宗批次已完成，等待重新检查灵树状态",
+            profile_id=session.get("profile_id"),
+            next_check_time=0,
+        )
+        update_session(
+            db,
+            chat_id,
+            profile_id=session.get("profile_id"),
+            luoyun_batch_just_completed=1,
+            luoyun_force_refresh=1,
+            luoyun_last_tree_text=None,
+            luoyun_last_tree_state=None,
+            next_check_time=0,
+            next_check_source="落云宗批次已完成，准备重新获取灵树状态",
+        )
+        return True
+    command_text = commands[current_index]
+    _ok, status, sent_message_id = await maybe_send_check(
+        client,
+        db,
+        chat_id,
+        force=True,
+        command_text=command_text,
+        storage=storage,
+        profile_id=profile_id,
+    )
+    if status == "sent" and sent_message_id:
+        update_session(
+            db,
+            chat_id,
+            profile_id=session.get("profile_id"),
+            luoyun_pending_msg_id=int(sent_message_id),
+            luoyun_next_check_time=time.time() + LUOYUN_COMMAND_REFRESH_SECONDS,
+            luoyun_next_check_source=f"落云宗批次等待回复: {command_text}",
+            next_check_time=time.time() + LUOYUN_COMMAND_REFRESH_SECONDS,
+            next_check_source=f"落云宗批次等待回复: {command_text}",
+        )
+    return True
 
 
 async def maybe_run_huangfeng_batch(
@@ -2809,6 +3373,30 @@ def build_auto_command(session, now=None):
                 "pending_source": "已发送 .登天阶，等待天机阁同步云阶状态",
             }
         return None
+    if session.get("auto_luoyun_enabled"):
+        if bool(session.get("luoyun_invasion_active")):
+            next_time = float(session.get("luoyun_next_check_time") or 0)
+            if not next_time or now >= next_time:
+                return {
+                    "command": ".协同守山",
+                    "next_field": "luoyun_next_check_time",
+                    "source_field": "luoyun_next_check_source",
+                    "pending_source": "已发送 .协同守山，等待机器人回包",
+                    "pending_delay_seconds": LUOYUN_COMMAND_REFRESH_SECONDS,
+                }
+            return None
+        if has_active_luoyun_batch(session):
+            return None
+        next_time = float(session.get("luoyun_next_check_time") or 0)
+        if not next_time or now >= next_time:
+            return {
+                "command": ".灵树状态",
+                "next_field": "luoyun_next_check_time",
+                "source_field": "luoyun_next_check_source",
+                "pending_source": "已发送 .灵树状态，等待机器人回包",
+                "pending_delay_seconds": LUOYUN_COMMAND_REFRESH_SECONDS,
+            }
+        return None
     return None
 
 
@@ -2950,6 +3538,23 @@ async def maybe_send_check(
             sect_teach_next_check_time=now + SECT_AUTO_TEACH_REPLY_RECHECK_SECONDS,
             sect_teach_next_check_source="已发送 .宗门传功，等待确认或缓存刷新",
         )
+    elif command_text == ".灵树状态":
+        update_session(
+            db,
+            chat_id,
+            profile_id=session.get("profile_id"),
+            luoyun_force_refresh=0,
+            luoyun_next_check_time=now + LUOYUN_COMMAND_REFRESH_SECONDS,
+            luoyun_next_check_source="已发送 .灵树状态，等待机器人回包",
+        )
+    elif command_text in {".灵树灌溉", ".采摘灵果"}:
+        update_session(
+            db,
+            chat_id,
+            profile_id=session.get("profile_id"),
+            luoyun_next_check_time=now + LUOYUN_COMMAND_REFRESH_SECONDS,
+            luoyun_next_check_source=f"已发送 {command_text}，等待机器人回包",
+        )
     return True, "sent", getattr(sent_message, "id", 0)
 
 
@@ -3032,6 +3637,109 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
             update_fields["huangfeng_last_garden_state"] = json.dumps(
                 garden_state, ensure_ascii=False
             )
+    luoyun_pending_commands = _load_luoyun_pending_commands(session)
+    luoyun_pending_msg_id = int(session.get("luoyun_pending_msg_id") or 0)
+    luoyun_pending_index = int(session.get("luoyun_pending_index") or 0)
+    if parsed.get("event") == "luoyun_tree_status":
+        luoyun_state = parsed.get("luoyun_tree_state") or {}
+        luoyun_state["source"] = "status_text"
+        existing_luoyun_state = _load_luoyun_state(session)
+        cached_last_irrigation_time = float(existing_luoyun_state.get("last_irrigation_time") or 0)
+        if cached_last_irrigation_time > 0:
+            luoyun_state["last_irrigation_time"] = cached_last_irrigation_time
+        update_fields["luoyun_last_tree_text"] = raw_text[:4000]
+        update_fields["luoyun_last_tree_state"] = json.dumps(luoyun_state, ensure_ascii=False)
+        update_fields["luoyun_force_refresh"] = 0
+        if bool(luoyun_state.get("invasion_detected")):
+            frozen_ready_time = float(session.get("luoyun_frozen_irrigation_ready_time") or 0)
+            if frozen_ready_time <= 0:
+                existing_ready = float(existing_luoyun_state.get("next_ready_time") or 0)
+                frozen_ready_time = existing_ready
+            update_fields["luoyun_invasion_active"] = 1
+            update_fields["luoyun_frozen_irrigation_ready_time"] = frozen_ready_time
+            update_fields["luoyun_pending_commands"] = None
+            update_fields["luoyun_pending_index"] = 0
+            update_fields["luoyun_pending_msg_id"] = 0
+            update_fields["luoyun_pending_retry"] = 0
+            update_fields["luoyun_next_check_time"] = 0
+            update_fields["luoyun_next_check_source"] = "检测到古剑门入侵，切换为协同守山"
+            update_fields["next_check_time"] = 0
+            update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
+        if session.get("auto_luoyun_enabled") and (
+            reply_to_msg_id == int(session.get("last_command_msg_id") or 0)
+            or _luoyun_action_still_syncing(session, now, command_text=".灵树状态")
+        ):
+            refreshed_session = dict(session)
+            refreshed_session.update(update_fields)
+            auto_commands = build_luoyun_auto_commands(refreshed_session)
+            if auto_commands:
+                update_fields["luoyun_pending_commands"] = _save_luoyun_pending_commands(auto_commands)
+                update_fields["luoyun_pending_index"] = 0
+                update_fields["luoyun_pending_msg_id"] = 0
+                update_fields["luoyun_pending_retry"] = 0
+                update_fields["luoyun_next_check_time"] = 0
+                update_fields["luoyun_next_check_source"] = (
+                    f"已根据灵树状态生成 {len(auto_commands)} 条落云宗命令"
+                )
+                update_fields["next_check_time"] = 0
+                update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
+            else:
+                update_fields["luoyun_force_refresh"] = 1
+                update_fields["luoyun_next_check_time"] = 0
+                update_fields["luoyun_next_check_source"] = (
+                    "灵树状态已更新，准备刷新天机阁冷却后进入下一轮等待"
+                )
+                update_fields["next_check_time"] = 0
+                update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
+    if parsed.get("event") == "luoyun_invasion_clear":
+        update_fields["luoyun_invasion_active"] = 0
+        update_fields["luoyun_pending_commands"] = None
+        update_fields["luoyun_pending_index"] = 0
+        update_fields["luoyun_pending_msg_id"] = 0
+        update_fields["luoyun_pending_retry"] = 0
+        update_fields["luoyun_force_refresh"] = 1
+        update_fields["luoyun_last_tree_text"] = None
+        update_fields["luoyun_last_tree_state"] = None
+        update_fields["luoyun_next_check_time"] = 0
+        update_fields["luoyun_next_check_source"] = "外敌已退，准备重新获取灵树状态"
+        update_fields["next_check_time"] = 0
+        update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
+    if (
+        luoyun_pending_commands
+        and luoyun_pending_msg_id
+        and reply_to_msg_id == luoyun_pending_msg_id
+        and parsed.get("event") in {"luoyun_tree_water", "luoyun_tree_harvest", "luoyun_tree_status", "luoyun_guard", "luoyun_invasion_clear"}
+    ):
+        next_index = luoyun_pending_index + 1
+        if next_index >= len(luoyun_pending_commands):
+            update_fields["luoyun_pending_commands"] = None
+            update_fields["luoyun_pending_index"] = 0
+            update_fields["luoyun_pending_msg_id"] = 0
+            update_fields["luoyun_pending_retry"] = 0
+            if bool(session.get("luoyun_invasion_active")) or parsed.get("event") == "luoyun_guard":
+                update_fields["luoyun_force_refresh"] = 1
+                update_fields["luoyun_next_check_time"] = 0
+                update_fields["luoyun_next_check_source"] = "守山完成，等待根据最新守山冷却重新判断"
+            else:
+                update_fields["luoyun_batch_just_completed"] = 1
+                update_fields["luoyun_force_refresh"] = 1
+                update_fields["luoyun_last_tree_text"] = None
+                update_fields["luoyun_last_tree_state"] = None
+                update_fields["luoyun_next_check_time"] = 0
+                update_fields["luoyun_next_check_source"] = "落云宗批次已完成，准备重新获取灵树状态"
+            update_fields["last_summary"] = update_fields["luoyun_next_check_source"]
+            update_fields["next_check_time"] = update_fields["luoyun_next_check_time"] or 0
+            update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
+        else:
+            update_fields["luoyun_pending_index"] = next_index
+            update_fields["luoyun_pending_msg_id"] = 0
+            update_fields["luoyun_pending_retry"] = 0
+            update_fields["luoyun_next_check_time"] = 0
+            update_fields["luoyun_next_check_source"] = (
+                f"落云宗批次已完成 {next_index}/{len(luoyun_pending_commands)}，准备下一条"
+            )
+            update_fields["next_check_time"] = 0
+            update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
     batch_commands = _load_yinluo_batch_commands(session)
     batch_pending_msg_id = int(session.get("yinluo_batch_pending_msg_id") or 0)
     batch_index = int(session.get("yinluo_batch_index") or 0)
@@ -3176,6 +3884,8 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 now + HUANGFENG_AUTO_CHECK_SECONDS
             )
             update_fields["huangfeng_next_check_source"] = "药园状态正常，30 分钟后复查"
+    if parsed["event"] == "luoyun_tree_status":
+        update_fields["last_panel_time"] = now
     if parsed["event"] == "sect_panel":
         update_fields["last_panel_time"] = now
         if not session.get("auto_lingxiao_enabled"):
@@ -3224,6 +3934,8 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 update_fields["sect_teach_next_check_source"] = (
                     f"收到传功回复，可继续执行 ({teach_count}/{SECT_DAILY_TEACH_LIMIT})"
                 )
+    elif parsed["event"] in {"luoyun_tree_water", "luoyun_tree_harvest", "luoyun_guard", "luoyun_invasion_clear"}:
+        update_fields["next_check_time"] = 0
     elif parsed["event"] not in {"sect_panel_pending", "unknown"}:
         update_fields["next_check_time"] = now + session["interval_seconds"]
     if _has_any_auto_keys(session):
@@ -3301,6 +4013,32 @@ async def runner(client, storage, profile_id=None):
                             next_check_time=now + max(session["interval_seconds"], 60),
                         )
                         continue
+                if has_active_luoyun_batch(session):
+                    try:
+                        handled = await maybe_run_luoyun_batch(
+                            client,
+                            db,
+                            session,
+                            storage=storage,
+                            profile_id=session_profile_id,
+                        )
+                        if handled:
+                            continue
+                    except Exception as exc:
+                        logger.warning(
+                            "Luoyun batch failed in chat %s: %s",
+                            session["chat_id"],
+                            exc,
+                        )
+                        clear_luoyun_batch(
+                            db,
+                            session["chat_id"],
+                            summary=f"落云宗批次失败: {exc}",
+                            profile_id=session_profile_id,
+                            next_check_time=now + max(session["interval_seconds"], 60),
+                            keep_state=False,
+                        )
+                        continue
                 if session["next_check_time"] and now < session["next_check_time"]:
                     continue
                 try:
@@ -3309,6 +4047,7 @@ async def runner(client, storage, profile_id=None):
                         _active_common_auto_keys(session)
                         or _active_yinluo_auto_keys(session)
                         or _active_huangfeng_auto_keys(session)
+                        or _active_luoyun_auto_keys(session)
                         or _active_lingxiao_auto_keys(session)
                     ):
                         payload = _read_cached_profile_payload(
@@ -3347,6 +4086,16 @@ async def runner(client, storage, profile_id=None):
                         now = time.time()
                     if session_profile_id and _active_huangfeng_auto_keys(session):
                         session, _view = sync_huangfeng_state(
+                            storage,
+                            db,
+                            session_profile_id,
+                            session["chat_id"],
+                            payload=payload,
+                            now=now,
+                        )
+                        now = time.time()
+                    if session_profile_id and _active_luoyun_auto_keys(session):
+                        session, _view = sync_luoyun_state(
                             storage,
                             db,
                             session_profile_id,
