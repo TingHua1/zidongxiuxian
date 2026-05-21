@@ -52,6 +52,7 @@ COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORD = "【坠魔心劫·结算】"
 COMPANION_HEART_TRIBULATION_ROUND1_LOCK_KEYWORD = "【坠魔心劫·第1轮已定】"
 COMPANION_HEART_TRIBULATION_ROUND2_LOCK_KEYWORD = "【坠魔心劫·第2轮已定】"
 COMPANION_HEART_TRIBULATION_IDLE_STATE = "idle"
+COMPANION_HEART_TRIBULATION_SENDING_PANEL_STATE = "sending_panel_command"
 COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE = "await_panel_reply"
 COMPANION_HEART_TRIBULATION_AWAIT_TRIBULATION_STATE = "await_tribulation_reply"
 COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE = "await_round1_edit"
@@ -402,6 +403,7 @@ async def _run_companion_heart_tribulation_scheduler(
                     continue
 
                 if workflow_state in {
+                    COMPANION_HEART_TRIBULATION_SENDING_PANEL_STATE,
                     COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE,
                     COMPANION_HEART_TRIBULATION_AWAIT_TRIBULATION_STATE,
                     COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE,
@@ -465,7 +467,7 @@ async def _run_companion_heart_tribulation_scheduler(
                     task_id,
                     enabled=1,
                     run_id=run_id,
-                    workflow_state=COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE,
+                    workflow_state=COMPANION_HEART_TRIBULATION_SENDING_PANEL_STATE,
                     next_run_at=0,
                     step_deadline_at=now + COMPANION_HEART_TRIBULATION_STEP_TIMEOUT_SECONDS,
                     last_run_at=now,
@@ -511,6 +513,7 @@ async def _run_companion_heart_tribulation_scheduler(
                     continue
                 storage.update_companion_heart_tribulation_task(
                     task_id,
+                    workflow_state=COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE,
                     anchor_command_msg_id=int(getattr(command_message, "id", 0) or 0),
                     step_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_STEP_TIMEOUT_SECONDS,
                     last_run_at=time.time(),
@@ -2021,7 +2024,12 @@ class GeneralGameExecutor(BaseExecutor):
             return False
 
         workflow_state = str(task.get("workflow_state") or "").strip()
-        if workflow_state in {"", COMPANION_HEART_TRIBULATION_IDLE_STATE, COMPANION_HEART_TRIBULATION_FAILED_STATE}:
+        if workflow_state in {
+            "",
+            COMPANION_HEART_TRIBULATION_IDLE_STATE,
+            COMPANION_HEART_TRIBULATION_SENDING_PANEL_STATE,
+            COMPANION_HEART_TRIBULATION_FAILED_STATE,
+        }:
             return False
 
         task_thread_id = int(task.get("thread_id")) if task.get("thread_id") else None
