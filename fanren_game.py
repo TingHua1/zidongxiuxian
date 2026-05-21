@@ -1047,25 +1047,33 @@ async def maybe_handle_special_auto_event(
         auto_label = f"南陇侯 → {choice}" if auto_command else ""
     if not auto_command:
         return False
+    event_message_id = int(getattr(event, "id", 0) or 0)
     try:
-        await event.reply(f"自动应对：{auto_label}")
+        if event_message_id > 0:
+            await client.send_message(event.chat_id, auto_command, reply_to=event_message_id)
+        else:
+            await send_message_in_session(
+                client,
+                session,
+                event.chat_id,
+                auto_command,
+                storage=storage or getattr(client, "_tg_game_storage", None),
+                profile_id=profile_id,
+            )
     except Exception:
-        logger.warning("Special auto event reply notice failed", exc_info=True)
-    await send_message_in_session(
-        client,
-        session,
-        event.chat_id,
-        auto_command,
-        storage=storage or getattr(client, "_tg_game_storage", None),
-        profile_id=profile_id,
-    )
+        logger.warning("Special auto event auto reply failed", exc_info=True)
+        return False
     update_session(
         db,
         event.chat_id,
         profile_id=session.get("profile_id"),
         last_action=auto_command,
         last_action_time=time.time(),
-        last_summary=f"已自动应对 {auto_label}",
+        last_summary=(
+            f"已自动应对 {auto_label}，reply_to={event_message_id}"
+            if event_message_id > 0
+            else f"已自动应对 {auto_label}"
+        ),
     )
     return True
 
