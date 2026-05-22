@@ -7,6 +7,7 @@ import time
 from datetime import datetime, timedelta
 
 from tg_game.clients.asc_client import AscAuthError
+from tg_game.config import ALLOWED_GAME_BOT_IDS
 from tg_game.services.external_sync import (
     ASC_PROVIDER,
     get_cultivator_lookup_candidates,
@@ -23,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 SECT_BOT_USERNAME = "fanrenxiuxian_bot"
-SECT_BOT_IDS = {8388633812, 7900199668, 8757550896, 8547797815}
+SECT_BOT_IDS = set(ALLOWED_GAME_BOT_IDS)
 SECT_CHECK_COMMAND = ".我的宗门"
 SECT_DEFAULT_INTERVAL = 1800
 SECT_COMMAND_COOLDOWN = 15

@@ -387,6 +387,24 @@ class Storage:
                     created_at REAL NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS rift_execution_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    profile_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL,
+                    thread_id INTEGER,
+                    step TEXT NOT NULL DEFAULT '',
+                    event_type TEXT NOT NULL DEFAULT '',
+                    rift_state TEXT NOT NULL DEFAULT '',
+                    retry_count INTEGER NOT NULL DEFAULT 0,
+                    message_id INTEGER NOT NULL DEFAULT 0,
+                    reply_to_msg_id INTEGER NOT NULL DEFAULT 0,
+                    sender_id INTEGER NOT NULL DEFAULT 0,
+                    sender_username TEXT NOT NULL DEFAULT '',
+                    text TEXT NOT NULL DEFAULT '',
+                    detail_json TEXT NOT NULL DEFAULT '{}',
+                    created_at REAL NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS stock_market_info (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     profile_id INTEGER NOT NULL,
@@ -2695,6 +2713,76 @@ class Storage:
             query += " AND run_id=?"
             params.append(normalized_run_id)
         query += " ORDER BY created_at ASC, id ASC LIMIT ?"
+        params.append(safe_limit)
+        with self.connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
+    def append_rift_execution_log(
+        self,
+        *,
+        profile_id: int,
+        chat_id: int,
+        thread_id: Optional[int] = None,
+        step: str = "",
+        event_type: str = "",
+        rift_state: str = "",
+        retry_count: int = 0,
+        message_id: int = 0,
+        reply_to_msg_id: int = 0,
+        sender_id: int = 0,
+        sender_username: str = "",
+        text: str = "",
+        detail: Optional[dict] = None,
+    ) -> int:
+        now = time.time()
+        detail_json = "{}"
+        try:
+            detail_json = json.dumps(detail or {}, ensure_ascii=False)[:4000]
+        except Exception:
+            detail_json = "{}"
+        with self.connect() as conn:
+            cursor = conn.execute(
+                """
+                INSERT INTO rift_execution_logs (
+                    profile_id, chat_id, thread_id, step, event_type, rift_state,
+                    retry_count, message_id, reply_to_msg_id, sender_id, sender_username,
+                    text, detail_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    int(profile_id),
+                    int(chat_id),
+                    int(thread_id) if thread_id is not None else None,
+                    str(step or "")[:100],
+                    str(event_type or "")[:100],
+                    str(rift_state or "")[:1000],
+                    max(int(retry_count or 0), 0),
+                    int(message_id or 0),
+                    int(reply_to_msg_id or 0),
+                    int(sender_id or 0),
+                    str(sender_username or "")[:255],
+                    str(text or "")[:4000],
+                    detail_json,
+                    now,
+                ),
+            )
+            return int(cursor.lastrowid)
+
+    def list_rift_execution_logs(
+        self,
+        *,
+        profile_id: int,
+        chat_id: Optional[int] = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        safe_limit = max(1, min(int(limit or 100), 500))
+        query = "SELECT * FROM rift_execution_logs WHERE profile_id=?"
+        params: list[object] = [int(profile_id)]
+        if chat_id is not None:
+            query += " AND chat_id=?"
+            params.append(int(chat_id))
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
         params.append(safe_limit)
         with self.connect() as conn:
             rows = conn.execute(query, params).fetchall()
