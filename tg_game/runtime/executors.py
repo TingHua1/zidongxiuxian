@@ -23,6 +23,7 @@ import shop_game
 import stock_trade_game
 import inventory_feature_game
 
+from tg_game.config import ALLOWED_GAME_BOT_IDS
 from tg_game.runtime.context import EventContext
 from tg_game.services.cultivation_sync import sync_cultivation_session
 from tg_game.services.external_sync import read_cached_external_payload
@@ -41,10 +42,7 @@ COMPANION_AUTO_POST_SEND_GRACE_SECONDS = 1800
 COMPANION_PANEL_COMMAND = ".我的侍妾"
 COMPANION_HEART_TRIBULATION_COMMAND = ".共历心劫"
 COMPANION_HEART_TRIBULATION_ALLOWED_BOT_IDS = {
-    8388633812,
-    7900199668,
-    8757550896,
-    8547797815,
+    *ALLOWED_GAME_BOT_IDS,
 }
 COMPANION_HEART_TRIBULATION_STEP_TIMEOUT_SECONDS = 300
 COMPANION_HEART_TRIBULATION_EDIT_STALL_SECONDS = 600
@@ -1476,6 +1474,28 @@ class FanrenExecutor(BaseExecutor):
                         ]
                     )
                 )
+                return True
+            if rift_action == "log":
+                if not context.profile:
+                    await context.reply("当前未绑定角色，无法查看裂缝日志。")
+                    return True
+                logs = fanren_game.get_rift_execution_logs(
+                    storage,
+                    profile_id=context.profile.id,
+                    chat_id=chat_id,
+                    limit=12,
+                )
+                if not logs:
+                    await context.reply("最近没有自动探寻裂缝执行日志。")
+                    return True
+                lines = ["自动探寻裂缝日志（最近12条）"]
+                for entry in reversed(logs):
+                    lines.append(
+                        f"[{fanren_game.format_timestamp(entry.get('created_at') or 0)}] "
+                        f"{entry.get('step') or '-'} / {entry.get('event_type') or '-'} / "
+                        f"{entry.get('rift_state') or '-'}"
+                    )
+                await context.reply("\n".join(lines))
                 return True
         if action == "yuanying":
             yy_action = payload.lower() if payload else "status"
