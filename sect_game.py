@@ -538,7 +538,7 @@ def parse_luoyun_tree_text(text, now=None):
     is_mature = "✨ 状态: 成熟采摘期" in raw_text or "✨ 状态：成熟采摘期" in raw_text
     invasion_detected = "⚔️ 警报: 古剑门入侵中！" in raw_text or "⚔️ 警报：古剑门入侵中！" in raw_text
     already_picked = "已采摘" in current_status_text or "奖励已入袋" in current_status_text
-    has_numeric_status = current_points > 0 and not already_picked
+    has_numeric_status = current_points >= 0 and not already_picked
     is_growth = (bool(progress_match) or stage_match is not None) and not is_mature and has_numeric_status
 
     stage = "未知"
@@ -1600,6 +1600,14 @@ def _luoyun_action_still_syncing(session, now, *, command_text: str) -> bool:
     last_action_time = float((session or {}).get("last_action_time") or 0)
     if last_action != str(command_text or "").strip() or not last_action_time:
         return False
+    if command_text == ".灵树状态":
+        next_check_source = str((session or {}).get("luoyun_next_check_source") or "").strip()
+        pending_msg_id = int((session or {}).get("luoyun_pending_msg_id") or 0)
+        waiting_source_matches = (
+            ".灵树状态" in next_check_source and "等待机器人回包" in next_check_source
+        )
+        if not waiting_source_matches and pending_msg_id <= 0:
+            return False
     return now - last_action_time < LUOYUN_BATCH_TIMEOUT_SECONDS
 
 
@@ -2888,6 +2896,10 @@ def clear_luoyun_batch(
         "luoyun_next_check_time": next_check_time,
         "luoyun_next_check_source": summary or None,
         "last_summary": summary or None,
+        "last_action": None,
+        "last_action_time": 0,
+        "last_command_time": 0,
+        "last_command_msg_id": 0,
     }
     if not keep_state:
         updates["luoyun_last_tree_text"] = None
@@ -2924,6 +2936,10 @@ def configure_luoyun_auto(db, chat_id, enabled, profile_id=None):
         "luoyun_last_tree_state": None,
         "luoyun_invasion_active": 0,
         "luoyun_frozen_irrigation_ready_time": 0,
+        "last_action": None,
+        "last_action_time": 0,
+        "last_command_time": 0,
+        "last_command_msg_id": 0,
     }
     update_session(db, chat_id, profile_id=profile_id, **updates)
 
@@ -3666,10 +3682,11 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
             update_fields["luoyun_next_check_source"] = "检测到古剑门入侵，切换为协同守山"
             update_fields["next_check_time"] = 0
             update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
-        if session.get("auto_luoyun_enabled") and (
-            reply_to_msg_id == int(session.get("last_command_msg_id") or 0)
-            or _luoyun_action_still_syncing(session, now, command_text=".灵树状态")
-        ):
+        syncing_tree_status = _luoyun_action_still_syncing(
+            session, now, command_text=".灵树状态"
+        )
+        expected_status_reply = reply_to_msg_id == int(session.get("last_command_msg_id") or 0)
+        if session.get("auto_luoyun_enabled") and (expected_status_reply or syncing_tree_status):
             refreshed_session = dict(session)
             refreshed_session.update(update_fields)
             auto_commands = build_luoyun_auto_commands(refreshed_session)
@@ -3692,6 +3709,14 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 )
                 update_fields["next_check_time"] = 0
                 update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
+        elif syncing_tree_status:
+            update_fields["luoyun_force_refresh"] = 1
+            update_fields["luoyun_pending_msg_id"] = 0
+            update_fields["luoyun_pending_retry"] = 0
+            update_fields["luoyun_next_check_time"] = 0
+            update_fields["luoyun_next_check_source"] = "已收到灵树状态回包，准备按最新状态重新判断"
+            update_fields["next_check_time"] = 0
+            update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
     if parsed.get("event") == "luoyun_invasion_clear":
         update_fields["luoyun_invasion_active"] = 0
         update_fields["luoyun_pending_commands"] = None
