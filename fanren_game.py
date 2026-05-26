@@ -3,6 +3,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 from tg_game.services.external_sync import (
@@ -59,7 +60,7 @@ RIFT_EXPLORE_COMMAND = ".探寻裂缝"
 RIFT_EXPLORE_COOLDOWN_SECONDS = 43200  # 12 小时
 RIFT_RETRY_INTERVAL_SECONDS = 600  # 10 分钟
 RIFT_RETRY_MAX = 1
-RIFT_SUCCESS_KEYWORD = "探寻裂缝"  # 成功回包关键词
+RIFT_REPLY_TIMEOUT_SECONDS = FANREN_REPLY_SYNC_GRACE_SECONDS
 
 # 自动元婴出窍
 YUANYING_STATUS_COMMAND = ".元婴状态"
@@ -237,6 +238,7 @@ def ensure_tables(db):
             last_summary TEXT,
             last_bot_text TEXT,
             last_bot_msg_id INTEGER DEFAULT 0,
+            last_command_msg_id INTEGER DEFAULT 0,
             last_action TEXT,
             last_action_time REAL DEFAULT 0,
             failure_count INTEGER DEFAULT 0,
@@ -267,6 +269,10 @@ def ensure_tables(db):
         db.cur.execute("ALTER TABLE fanren_sessions ADD COLUMN thread_id INTEGER")
     if "next_check_source" not in columns:
         db.cur.execute("ALTER TABLE fanren_sessions ADD COLUMN next_check_source TEXT")
+    if "last_command_msg_id" not in columns:
+        db.cur.execute(
+            "ALTER TABLE fanren_sessions ADD COLUMN last_command_msg_id INTEGER DEFAULT 0"
+        )
     if "delete_normal_command_message" not in columns:
         db.cur.execute(
             "ALTER TABLE fanren_sessions ADD COLUMN delete_normal_command_message INTEGER DEFAULT 0"
@@ -430,7 +436,7 @@ async def send_message_in_session(
         session.get("retreat_mode"),
         command_text,
     )
-    await send_message_with_thread_fallback(
+    sent_message = await send_message_with_thread_fallback(
         client,
         chat_id,
         command_text,
@@ -446,6 +452,7 @@ async def send_message_in_session(
         thread_id,
         command_text,
     )
+    return sent_message
 
 
 def list_sessions(db, profile_id=None):
@@ -694,6 +701,7 @@ def reset_runtime_state(db, chat_id, profile_id=None):
         last_summary=None,
         last_bot_text=None,
         last_bot_msg_id=0,
+        last_command_msg_id=0,
         last_action=None,
         last_action_time=0,
         last_command_time=0,
@@ -779,13 +787,19 @@ def set_auto_nanlong(db, chat_id, enabled, choice, profile_id=None):
 
 
 def set_auto_rift(db, chat_id, enabled, *, profile_id=None):
-    update_session(
-        db,
-        chat_id,
-        profile_id=profile_id,
-        auto_rift_enabled=_normalize_bool(enabled),
-        rift_state="" if enabled else "已关闭",
-    )
+    fields = {
+        "auto_rift_enabled": _normalize_bool(enabled),
+        "rift_state": "" if enabled else "已关闭",
+    }
+    if not enabled:
+        fields.update(
+            {
+                "rift_next_check_time": 0,
+                "rift_retry_count": 0,
+                "last_command_msg_id": 0,
+            }
+        )
+    update_session(db, chat_id, profile_id=profile_id, **fields)
     if enabled:
         update_session(
             db,
@@ -795,6 +809,7 @@ def set_auto_rift(db, chat_id, enabled, *, profile_id=None):
             rift_retry_count=0,
             rift_state="等待首次执行",
             rift_last_asc_time="",
+            last_command_msg_id=0,
         )
 
 
@@ -828,19 +843,6 @@ def set_auto_yuanying(db, chat_id, enabled, *, profile_id=None):
             yuanying_next_check_time=0,
             yuanying_state="等待首次检查",
         )
-
-
-def parse_rift_reply(text):
-    """解析探寻裂缝回包，返回 (is_success, cooldown_seconds)"""
-    text = (text or "").strip()
-    if not text:
-        return False, None
-    cooldown = parse_cooldown_seconds(text)
-    if any(kw in text for kw in ["探寻裂缝", "裂缝", "裂隙"]):
-        return True, cooldown or RIFT_EXPLORE_COOLDOWN_SECONDS
-    if "失败" in text or "无法" in text or "不可" in text:
-        return False, cooldown
-    return True, cooldown or RIFT_EXPLORE_COOLDOWN_SECONDS
 
 
 def parse_yuanying_reply(text):
@@ -919,16 +921,134 @@ def stop_all_automation_for_rift_failure(
         auto_nanlong_enabled=0,
         auto_rift_enabled=0,
         auto_yuanying_enabled=0,
+        rift_next_check_time=0,
+        rift_retry_count=0,
         rift_state=reason,
         yuanying_state=reason,
         last_event="rift_escaped_soul",
         last_summary=reason,
+        last_command_msg_id=0,
     )
     return True
 
 
-async def _check_asc_rift_time_changed(storage, profile_id, chat_id, db):
-    """通过天机阁 API 检查 last_rift_explore_time 是否已刷新"""
+def _parse_iso_to_ts(raw_value) -> float:
+    text = str(raw_value or "").strip()
+    if not text:
+        return 0.0
+    try:
+        normalized = text.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _resolve_rift_next_due_at(raw_value) -> float:
+    last_ts = _parse_iso_to_ts(raw_value)
+    if last_ts <= 0:
+        return 0.0
+    return last_ts + RIFT_EXPLORE_COOLDOWN_SECONDS
+
+
+def _is_waiting_rift_reply(session: dict) -> bool:
+    if not session:
+        return False
+    if not session.get("auto_rift_enabled"):
+        return False
+    if (session.get("last_action") or "").strip() != RIFT_EXPLORE_COMMAND:
+        return False
+    if int(session.get("last_command_msg_id") or 0) <= 0:
+        return False
+    return "等待回包" in str(session.get("rift_state") or "")
+
+
+def _schedule_rift_retry_or_stop(
+    db,
+    chat_id,
+    session,
+    *,
+    now: float,
+    retry_state: str,
+    retry_summary: str,
+    retry_event_type: str,
+    stop_state: str,
+    stop_summary: str,
+    stop_event_type: str,
+    storage=None,
+    message_id: int = 0,
+    reply_to_msg_id: int = 0,
+    sender_id: int = 0,
+    sender_username: str = "",
+    text: str = "",
+    detail: Optional[dict] = None,
+):
+    retry_count = int(session.get("rift_retry_count") or 0) + 1
+    profile_id = session.get("profile_id")
+    thread_id = session.get("thread_id")
+    if retry_count <= RIFT_RETRY_MAX:
+        update_session(
+            db,
+            chat_id,
+            profile_id=profile_id,
+            rift_next_check_time=now + RIFT_RETRY_INTERVAL_SECONDS,
+            rift_retry_count=retry_count,
+            rift_state=retry_state,
+            last_summary=retry_summary,
+            last_event="rift_explore_retry",
+            last_command_msg_id=0,
+        )
+        append_rift_execution_log(
+            storage,
+            profile_id=profile_id,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            step="finalize",
+            event_type=retry_event_type,
+            rift_state=retry_state,
+            retry_count=retry_count,
+            message_id=message_id,
+            reply_to_msg_id=reply_to_msg_id,
+            sender_id=sender_id,
+            sender_username=sender_username,
+            text=text,
+            detail={
+                "retry_after_seconds": RIFT_RETRY_INTERVAL_SECONDS,
+                **(detail or {}),
+            },
+        )
+        return False, "retry"
+
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        auto_rift_enabled=0,
+        rift_state=stop_state,
+        last_summary=stop_summary,
+        last_event="rift_explore_failed",
+        last_command_msg_id=0,
+    )
+    append_rift_execution_log(
+        storage,
+        profile_id=profile_id,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        step="stop",
+        event_type=stop_event_type,
+        rift_state=stop_state,
+        retry_count=retry_count,
+        message_id=message_id,
+        reply_to_msg_id=reply_to_msg_id,
+        sender_id=sender_id,
+        sender_username=sender_username,
+        text=text,
+        detail=detail or {},
+    )
+    return False, "stopped"
+
+
+async def _refresh_asc_rift_status(storage, profile_id, chat_id, db):
+    """刷新天机阁角色信息，并根据最新 last_rift_explore_time 计算裂缝冷却。"""
     try:
         from tg_game.services.external_sync import (
             get_effective_external_cookie,
@@ -937,36 +1057,55 @@ async def _check_asc_rift_time_changed(storage, profile_id, chat_id, db):
 
         cookie_text = get_effective_external_cookie(storage)
         if not cookie_text:
-            return False, "天机阁未登录"
+            return {
+                "ok": False,
+                "message": "天机阁未登录",
+                "payload": {},
+                "last_rift_explore_time": "",
+                "next_due_at": 0.0,
+                "cooldown_ready": False,
+            }
         cultivator = sync_external_account(storage, profile_id, cookie_text=cookie_text)
         new_rift_time = (cultivator.get("last_rift_explore_time") or "").strip()
         if not new_rift_time:
-            return False, "天机阁未返回探寻裂缝时间"
-        session = get_session(db, chat_id, profile_id=profile_id)
-        old_rift_time = (session.get("rift_last_asc_time") or "").strip()
+            return {
+                "ok": False,
+                "message": "天机阁未返回探寻裂缝时间",
+                "payload": cultivator if isinstance(cultivator, dict) else {},
+                "last_rift_explore_time": "",
+                "next_due_at": 0.0,
+                "cooldown_ready": False,
+            }
+        next_due_at = _resolve_rift_next_due_at(new_rift_time)
+        cooldown_ready = next_due_at <= time.time() if next_due_at > 0 else False
         update_session(
             db,
             chat_id,
             profile_id=profile_id,
             rift_last_asc_time=new_rift_time,
         )
-        changed = new_rift_time != old_rift_time
-        # 截短时间戳: "2026-04-30T05:08:58..." → "04-30 05:08"
-        try:
-            clean = new_rift_time.replace("T", " ")[:16]
-            if "+" in clean:
-                clean = clean[: clean.index("+")].strip()
-            short_time = clean
-        except Exception:
-            short_time = new_rift_time[:16]
-        return (
-            changed,
-            f"新: {short_time}" if changed else f"未变: {short_time}",
-            cultivator if isinstance(cultivator, dict) else {},
-        )
+        return {
+            "ok": True,
+            "message": (
+                f"冷却至 {format_timestamp(next_due_at)}"
+                if next_due_at > 0
+                else "裂缝冷却时间解析失败"
+            ),
+            "payload": cultivator if isinstance(cultivator, dict) else {},
+            "last_rift_explore_time": new_rift_time,
+            "next_due_at": next_due_at,
+            "cooldown_ready": cooldown_ready,
+        }
     except Exception as exc:
         logger.warning("ASC rift time check failed: %s", exc)
-        return False, f"天机阁查询失败: {exc}", {}
+        return {
+            "ok": False,
+            "message": f"天机阁查询失败: {exc}",
+            "payload": {},
+            "last_rift_explore_time": "",
+            "next_due_at": 0.0,
+            "cooldown_ready": False,
+        }
 
 
 async def _maybe_send_rift_explore(
@@ -1001,6 +1140,26 @@ async def _maybe_send_rift_explore(
             detail={"next_check_time": float(next_check or 0)},
         )
         return False, "not_due"
+
+    if _is_waiting_rift_reply(session):
+        return _schedule_rift_retry_or_stop(
+            db,
+            chat_id,
+            session,
+            now=now,
+            retry_state="未收到本次探寻裂缝回包，将重试",
+            retry_summary=(
+                f"本轮探寻裂缝未收到机器人对本次指令的回包，"
+                f"将在 {format_duration(RIFT_RETRY_INTERVAL_SECONDS)} 后重试"
+            ),
+            retry_event_type="reply_missing_retry_scheduled",
+            stop_state="失败已停止 - 未收到本次探寻裂缝回包",
+            stop_summary="探寻裂缝连续两轮未收到机器人对本次指令的回包，已停止自动探寻",
+            stop_event_type="reply_missing_stop",
+            storage=storage,
+            message_id=int(session.get("last_command_msg_id") or 0),
+            detail={"last_command_msg_id": int(session.get("last_command_msg_id") or 0)},
+        )
 
     resolved_storage = storage or getattr(client, "_tg_game_storage", None)
     if _pause_if_external_session_expired(
@@ -1037,7 +1196,7 @@ async def _maybe_send_rift_explore(
         text=RIFT_EXPLORE_COMMAND,
     )
 
-    await send_message_in_session(
+    sent_message = await send_message_in_session(
         client,
         session,
         chat_id,
@@ -1045,13 +1204,34 @@ async def _maybe_send_rift_explore(
         storage=storage,
         profile_id=profile_id,
     )
+    command_msg_id = int(getattr(sent_message, "id", 0) or 0)
+    if command_msg_id <= 0:
+        return _schedule_rift_retry_or_stop(
+            db,
+            chat_id,
+            session,
+            now=now,
+            retry_state="未记录本次探寻裂缝命令锚点，将重试",
+            retry_summary=(
+                f"本轮探寻裂缝发送后未拿到命令消息锚点，"
+                f"将在 {format_duration(RIFT_RETRY_INTERVAL_SECONDS)} 后重试"
+            ),
+            retry_event_type="command_anchor_missing_retry_scheduled",
+            stop_state="失败已停止 - 未记录本次探寻裂缝命令锚点",
+            stop_summary="探寻裂缝连续两轮发送后都未拿到命令消息锚点，已停止自动探寻",
+            stop_event_type="command_anchor_missing_stop",
+            storage=storage,
+            text=RIFT_EXPLORE_COMMAND,
+            detail={},
+        )
     update_session(
         db,
         chat_id,
         profile_id=session.get("profile_id"),
         last_action=RIFT_EXPLORE_COMMAND,
         last_action_time=now,
-        rift_next_check_time=now + RIFT_EXPLORE_COOLDOWN_SECONDS,
+        last_command_msg_id=command_msg_id,
+        rift_next_check_time=now + RIFT_REPLY_TIMEOUT_SECONDS,
         rift_state=f"已发送{'(第' + str(retry_count) + '次重试)' if retry_count > 0 else ''}，等待回包验证",
     )
     append_rift_execution_log(
@@ -1063,8 +1243,12 @@ async def _maybe_send_rift_explore(
         event_type="sent",
         rift_state=f"已发送{'(第' + str(retry_count) + '次重试)' if retry_count > 0 else ''}，等待回包验证",
         retry_count=retry_count,
+        message_id=command_msg_id,
         text=RIFT_EXPLORE_COMMAND,
-        detail={"next_check_time": now + RIFT_EXPLORE_COOLDOWN_SECONDS},
+        detail={
+            "command_msg_id": command_msg_id,
+            "reply_deadline_at": now + RIFT_REPLY_TIMEOUT_SECONDS,
+        },
     )
     logger.info("Rift explore command sent to chat %s retry=%s", chat_id, retry_count)
     return True, "sent"
@@ -1541,10 +1725,11 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
     if not session:
         return None
     last_action = (session.get("last_action") or "").strip()
+    allow_rift_reply_when_main_disabled = bool(session.get("auto_rift_enabled")) and last_action == RIFT_EXPLORE_COMMAND
     allow_yuanying_reply_when_main_disabled = bool(
         session.get("auto_yuanying_enabled")
     ) and last_action in {YUANYING_STATUS_COMMAND, YUANYING_OUTING_COMMAND}
-    if not session["enabled"] and not allow_yuanying_reply_when_main_disabled:
+    if not session["enabled"] and not allow_rift_reply_when_main_disabled and not allow_yuanying_reply_when_main_disabled:
         return None
     raw_text = (event.raw_text or "").strip()
     last_bot_text = (session.get("last_bot_text") or "").strip()
@@ -1573,10 +1758,22 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
 
     # 处理自动探寻裂缝回包
     if last_action == RIFT_EXPLORE_COMMAND and session.get("auto_rift_enabled"):
-        rift_success, rift_cd = parse_rift_reply(raw_text)
+        expected_command_msg_id = int(session.get("last_command_msg_id") or 0)
+        if expected_command_msg_id <= 0:
+            return None
+        incoming_reply_to_msg_id = int(
+            getattr(getattr(event, "reply_to", None), "reply_to_msg_id", 0) or 0
+        )
+        if expected_command_msg_id > 0 and incoming_reply_to_msg_id != expected_command_msg_id:
+            return None
         now = time.time()
+        storage = (
+            getattr(client, "_tg_game_storage", None)
+            if client is not None
+            else None
+        )
         append_rift_execution_log(
-            getattr(client, "_tg_game_storage", None) if client is not None else None,
+            storage,
             profile_id=session.get("profile_id"),
             chat_id=event.chat_id,
             thread_id=session.get("thread_id"),
@@ -1585,270 +1782,202 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
             rift_state=session.get("rift_state") or "",
             retry_count=int(session.get("rift_retry_count") or 0),
             message_id=int(getattr(event, "id", 0) or 0),
-            reply_to_msg_id=int(getattr(getattr(event, "reply_to", None), "reply_to_msg_id", 0) or 0),
+            reply_to_msg_id=incoming_reply_to_msg_id,
             sender_id=int(getattr(event, "sender_id", 0) or 0),
             sender_username=str(getattr(sender, "username", "") or ""),
             text=raw_text,
-            detail={"parsed_success": bool(rift_success), "parsed_cooldown": rift_cd},
+            detail={"command_msg_id": expected_command_msg_id},
         )
-        if rift_success:
-            # 通过天机阁 API 验证 last_rift_explore_time 是否刷新
-            storage = (
-                getattr(client, "_tg_game_storage", None)
-                if client is not None
-                else None
+        refresh_result = None
+        rift_profile_id = int(session.get("profile_id") or 0)
+        if storage and rift_profile_id:
+            refresh_result = await _refresh_asc_rift_status(
+                storage, rift_profile_id, event.chat_id, db
             )
-            if storage and profile_id:
-                (
-                    changed,
-                    check_msg,
-                    cultivator_payload,
-                ) = await _check_asc_rift_time_changed(
-                    storage, profile_id, event.chat_id, db
-                )
-                append_rift_execution_log(
-                    storage,
-                    profile_id=session.get("profile_id"),
-                    chat_id=event.chat_id,
-                    thread_id=session.get("thread_id"),
-                    step="asc_check",
-                    event_type="asc_checked",
-                    rift_state=session.get("rift_state") or "",
-                    retry_count=int(session.get("rift_retry_count") or 0),
-                    message_id=int(getattr(event, "id", 0) or 0),
-                    sender_id=int(getattr(event, "sender_id", 0) or 0),
-                    text=raw_text,
-                    detail={
-                        "changed": bool(changed),
-                        "check_msg": check_msg,
-                        "payload_status": str((cultivator_payload or {}).get("status") or ""),
-                        "last_rift_explore_time": str((cultivator_payload or {}).get("last_rift_explore_time") or ""),
-                    },
-                )
-                if stop_all_automation_for_rift_failure(
-                    db,
-                    event.chat_id,
-                    cultivator_payload,
-                    profile_id=session.get("profile_id"),
-                ):
-                    try:
-                        import sect_game
-
-                        sect_game.stop_all_automation(
-                            db,
-                            event.chat_id,
-                            get_rift_failure_lock_reason(cultivator_payload),
-                            profile_id=session.get("profile_id"),
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Stopping sect automation for rift failure failed",
-                            exc_info=True,
-                        )
-                    append_rift_execution_log(
-                        storage,
-                        profile_id=session.get("profile_id"),
-                        chat_id=event.chat_id,
-                        thread_id=session.get("thread_id"),
-                        step="stop",
-                        event_type="escaped_soul_stop",
-                        rift_state=get_rift_failure_lock_reason(cultivator_payload),
-                        retry_count=int(session.get("rift_retry_count") or 0),
-                        message_id=int(getattr(event, "id", 0) or 0),
-                        sender_id=int(getattr(event, "sender_id", 0) or 0),
-                        text=raw_text,
-                        detail={"payload_status": str((cultivator_payload or {}).get("status") or "")},
-                    )
-                    return FanrenParseResult(
-                        "rift_escaped_soul",
-                        get_rift_failure_lock_reason(cultivator_payload),
-                    )
-                if changed:
-                    update_session(
-                        db,
-                        event.chat_id,
-                        profile_id=session.get("profile_id"),
-                        rift_next_check_time=now
-                        + (rift_cd or RIFT_EXPLORE_COOLDOWN_SECONDS),
-                        rift_retry_count=0,
-                        rift_state=f"探寻成功 - {check_msg}",
-                        last_summary=f"自动探寻裂缝成功，下次在 {format_duration(rift_cd or RIFT_EXPLORE_COOLDOWN_SECONDS)} 后",
-                        last_event="rift_explore_success",
-                        last_bot_text=raw_text[:1000],
-                        last_bot_msg_id=event.id,
-                    )
-                    append_rift_execution_log(
-                        storage,
-                        profile_id=session.get("profile_id"),
-                        chat_id=event.chat_id,
-                        thread_id=session.get("thread_id"),
-                        step="finalize",
-                        event_type="success",
-                        rift_state=f"探寻成功 - {check_msg}",
-                        retry_count=0,
-                        message_id=int(getattr(event, "id", 0) or 0),
-                        sender_id=int(getattr(event, "sender_id", 0) or 0),
-                        text=raw_text,
-                        detail={"check_msg": check_msg, "cooldown_seconds": rift_cd or RIFT_EXPLORE_COOLDOWN_SECONDS},
-                    )
-                    logger.info(
-                        "Rift explore succeeded in chat %s: %s",
-                        event.chat_id,
-                        check_msg,
-                    )
-                    return FanrenParseResult(
-                        "rift_explore_success", f"探寻裂缝成功", rift_cd
-                    )
-                else:
-                    retry_count = int(session.get("rift_retry_count") or 0) + 1
-                    if retry_count <= RIFT_RETRY_MAX:
-                        update_session(
-                            db,
-                            event.chat_id,
-                            profile_id=session.get("profile_id"),
-                            rift_next_check_time=now
-                            + (rift_cd or RIFT_RETRY_INTERVAL_SECONDS),
-                            rift_retry_count=retry_count,
-                            rift_state=f"将第{retry_count}次重试 - {check_msg}",
-                            last_summary=f"探寻裂缝时间未刷新，将在 {format_duration(RIFT_RETRY_INTERVAL_SECONDS)} 后重试(第{retry_count}次)",
-                            last_event="rift_explore_retry",
-                            last_bot_text=raw_text[:1000],
-                            last_bot_msg_id=event.id,
-                        )
-                        append_rift_execution_log(
-                            storage,
-                            profile_id=session.get("profile_id"),
-                            chat_id=event.chat_id,
-                            thread_id=session.get("thread_id"),
-                            step="finalize",
-                            event_type="retry_scheduled",
-                            rift_state=f"将第{retry_count}次重试 - {check_msg}",
-                            retry_count=retry_count,
-                            message_id=int(getattr(event, "id", 0) or 0),
-                            sender_id=int(getattr(event, "sender_id", 0) or 0),
-                            text=raw_text,
-                            detail={"check_msg": check_msg, "retry_after_seconds": rift_cd or RIFT_RETRY_INTERVAL_SECONDS},
-                        )
-                        logger.info(
-                            "Rift explore will retry in chat %s (attempt %s)",
-                            event.chat_id,
-                            retry_count,
-                        )
-                    else:
-                        update_session(
-                            db,
-                            event.chat_id,
-                            profile_id=session.get("profile_id"),
-                            auto_rift_enabled=0,
-                            rift_state=f"失败已停止 - {check_msg}",
-                            last_summary=f"探寻裂缝失败: {check_msg}，超过最大重试次数已停止自动探寻",
-                            last_event="rift_explore_failed",
-                            last_bot_text=raw_text[:1000],
-                            last_bot_msg_id=event.id,
-                        )
-                        append_rift_execution_log(
-                            storage,
-                            profile_id=session.get("profile_id"),
-                            chat_id=event.chat_id,
-                            thread_id=session.get("thread_id"),
-                            step="stop",
-                            event_type="retry_exhausted_stop",
-                            rift_state=f"失败已停止 - {check_msg}",
-                            retry_count=retry_count,
-                            message_id=int(getattr(event, "id", 0) or 0),
-                            sender_id=int(getattr(event, "sender_id", 0) or 0),
-                            text=raw_text,
-                            detail={"check_msg": check_msg},
-                        )
-                        logger.warning(
-                            "Rift explore stopped in chat %s: %s",
-                            event.chat_id,
-                            check_msg,
-                        )
-                    return FanrenParseResult(
-                        "rift_explore_retry", f"探寻裂缝: {check_msg}"
-                    )
-            else:
-                # 无法调用 ASC API 时，默认视为成功
-                update_session(
-                    db,
-                    event.chat_id,
-                    profile_id=session.get("profile_id"),
-                    rift_next_check_time=now
-                    + (rift_cd or RIFT_EXPLORE_COOLDOWN_SECONDS),
-                    rift_retry_count=0,
-                    rift_state="探寻完成(无法验证)",
-                    last_summary=f"自动探寻裂缝完成(无法验证天机阁)，下次在 {format_duration(rift_cd or RIFT_EXPLORE_COOLDOWN_SECONDS)} 后",
-                    last_event="rift_explore_success",
-                    last_bot_text=raw_text[:1000],
-                    last_bot_msg_id=event.id,
-                )
-                append_rift_execution_log(
-                    storage,
-                    profile_id=session.get("profile_id"),
-                    chat_id=event.chat_id,
-                    thread_id=session.get("thread_id"),
-                    step="finalize",
-                    event_type="success_without_asc",
-                    rift_state="探寻完成(无法验证)",
-                    retry_count=0,
-                    message_id=int(getattr(event, "id", 0) or 0),
-                    sender_id=int(getattr(event, "sender_id", 0) or 0),
-                    text=raw_text,
-                    detail={"cooldown_seconds": rift_cd or RIFT_EXPLORE_COOLDOWN_SECONDS},
-                )
-                return FanrenParseResult("rift_explore_success", "探寻裂缝完成")
         else:
-            retry_count = int(session.get("rift_retry_count") or 0) + 1
-            if retry_count <= RIFT_RETRY_MAX:
-                update_session(
+            refresh_result = {
+                "ok": False,
+                "message": "缺少天机阁上下文，无法刷新探寻裂缝冷却",
+                "payload": {},
+                "last_rift_explore_time": "",
+                "next_due_at": 0.0,
+                "cooldown_ready": False,
+            }
+
+        payload = (refresh_result or {}).get("payload") or {}
+        append_rift_execution_log(
+            storage,
+            profile_id=session.get("profile_id"),
+            chat_id=event.chat_id,
+            thread_id=session.get("thread_id"),
+            step="asc_check",
+            event_type="asc_checked",
+            rift_state=session.get("rift_state") or "",
+            retry_count=int(session.get("rift_retry_count") or 0),
+            message_id=int(getattr(event, "id", 0) or 0),
+            reply_to_msg_id=incoming_reply_to_msg_id,
+            sender_id=int(getattr(event, "sender_id", 0) or 0),
+            sender_username=str(getattr(sender, "username", "") or ""),
+            text=raw_text,
+            detail={
+                "ok": bool((refresh_result or {}).get("ok")),
+                "message": (refresh_result or {}).get("message") or "",
+                "cooldown_ready": bool((refresh_result or {}).get("cooldown_ready")),
+                "next_due_at": float((refresh_result or {}).get("next_due_at") or 0),
+                "payload_status": str(payload.get("status") or ""),
+                "last_rift_explore_time": str(
+                    (refresh_result or {}).get("last_rift_explore_time") or ""
+                ),
+            },
+        )
+        if stop_all_automation_for_rift_failure(
+            db,
+            event.chat_id,
+            payload,
+            profile_id=session.get("profile_id"),
+        ):
+            try:
+                import sect_game
+
+                sect_game.stop_all_automation(
                     db,
                     event.chat_id,
+                    get_rift_failure_lock_reason(payload),
                     profile_id=session.get("profile_id"),
-                    rift_next_check_time=now + RIFT_RETRY_INTERVAL_SECONDS,
-                    rift_retry_count=retry_count,
-                    rift_state=f"回包失败，将重试(第{retry_count}次)",
-                    last_summary=f"探寻裂缝回包异常，将在 {format_duration(RIFT_RETRY_INTERVAL_SECONDS)} 后重试",
-                    last_event="rift_explore_retry",
                 )
-                append_rift_execution_log(
-                    getattr(client, "_tg_game_storage", None) if client is not None else None,
-                    profile_id=session.get("profile_id"),
-                    chat_id=event.chat_id,
-                    thread_id=session.get("thread_id"),
-                    step="finalize",
-                    event_type="reply_retry_scheduled",
-                    rift_state=f"回包失败，将重试(第{retry_count}次)",
-                    retry_count=retry_count,
-                    message_id=int(getattr(event, "id", 0) or 0),
-                    sender_id=int(getattr(event, "sender_id", 0) or 0),
-                    text=raw_text,
-                    detail={"retry_after_seconds": RIFT_RETRY_INTERVAL_SECONDS},
+            except Exception:
+                logger.warning(
+                    "Stopping sect automation for rift failure failed",
+                    exc_info=True,
                 )
-            else:
-                update_session(
-                    db,
-                    event.chat_id,
-                    profile_id=session.get("profile_id"),
-                    auto_rift_enabled=0,
-                    rift_state="失败已停止",
-                    last_summary=f"探寻裂缝连续失败，已停止自动探寻",
-                    last_event="rift_explore_failed",
-                )
-                append_rift_execution_log(
-                    getattr(client, "_tg_game_storage", None) if client is not None else None,
-                    profile_id=session.get("profile_id"),
-                    chat_id=event.chat_id,
-                    thread_id=session.get("thread_id"),
-                    step="stop",
-                    event_type="reply_failure_stop",
-                    rift_state="失败已停止",
-                    retry_count=retry_count,
-                    message_id=int(getattr(event, "id", 0) or 0),
-                    sender_id=int(getattr(event, "sender_id", 0) or 0),
-                    text=raw_text,
-                )
-            return FanrenParseResult("rift_explore_retry", "探寻裂缝回包异常")
+            append_rift_execution_log(
+                storage,
+                profile_id=session.get("profile_id"),
+                chat_id=event.chat_id,
+                thread_id=session.get("thread_id"),
+                step="stop",
+                event_type="escaped_soul_stop",
+                rift_state=get_rift_failure_lock_reason(payload),
+                retry_count=int(session.get("rift_retry_count") or 0),
+                message_id=int(getattr(event, "id", 0) or 0),
+                reply_to_msg_id=incoming_reply_to_msg_id,
+                sender_id=int(getattr(event, "sender_id", 0) or 0),
+                sender_username=str(getattr(sender, "username", "") or ""),
+                text=raw_text,
+                detail={"payload_status": str(payload.get("status") or "")},
+            )
+            return FanrenParseResult(
+                "rift_escaped_soul",
+                get_rift_failure_lock_reason(payload),
+            )
+
+        if not (refresh_result or {}).get("ok"):
+            _schedule_rift_retry_or_stop(
+                db,
+                event.chat_id,
+                session,
+                now=now,
+                retry_state="交互成功，但刷新裂缝冷却失败，将重试",
+                retry_summary=(
+                    f"探寻裂缝已收到机器人回包，但刷新角色信息失败，"
+                    f"将在 {format_duration(RIFT_RETRY_INTERVAL_SECONDS)} 后重试"
+                ),
+                retry_event_type="asc_refresh_retry_scheduled",
+                stop_state=f"失败已停止 - {(refresh_result or {}).get('message') or '刷新裂缝冷却失败'}",
+                stop_summary=(
+                    f"探寻裂缝连续两轮在交互成功后仍无法刷新角色信息："
+                    f"{(refresh_result or {}).get('message') or '刷新裂缝冷却失败'}，已停止自动探寻"
+                ),
+                stop_event_type="asc_refresh_stop",
+                storage=storage,
+                message_id=int(getattr(event, "id", 0) or 0),
+                reply_to_msg_id=incoming_reply_to_msg_id,
+                sender_id=int(getattr(event, "sender_id", 0) or 0),
+                sender_username=str(getattr(sender, "username", "") or ""),
+                text=raw_text,
+                detail={"message": (refresh_result or {}).get("message") or ""},
+            )
+            return FanrenParseResult(
+                "rift_explore_retry",
+                (refresh_result or {}).get("message") or "刷新裂缝冷却失败",
+            )
+
+        next_due_at = float((refresh_result or {}).get("next_due_at") or 0)
+        if next_due_at <= 0 or bool((refresh_result or {}).get("cooldown_ready")):
+            _schedule_rift_retry_or_stop(
+                db,
+                event.chat_id,
+                session,
+                now=now,
+                retry_state="交互成功，但裂缝冷却未进入下一轮，将重试",
+                retry_summary=(
+                    f"探寻裂缝已收到机器人回包，但最新 last_rift_explore_time 仍显示当前可探寻，"
+                    f"将在 {format_duration(RIFT_RETRY_INTERVAL_SECONDS)} 后重试"
+                ),
+                retry_event_type="cooldown_still_ready_retry_scheduled",
+                stop_state="失败已停止 - 交互成功但裂缝冷却未刷新",
+                stop_summary="探寻裂缝连续两轮在交互成功后仍未进入新的冷却，已停止自动探寻",
+                stop_event_type="cooldown_still_ready_stop",
+                storage=storage,
+                message_id=int(getattr(event, "id", 0) or 0),
+                reply_to_msg_id=incoming_reply_to_msg_id,
+                sender_id=int(getattr(event, "sender_id", 0) or 0),
+                sender_username=str(getattr(sender, "username", "") or ""),
+                text=raw_text,
+                detail={
+                    "message": (refresh_result or {}).get("message") or "",
+                    "next_due_at": next_due_at,
+                },
+            )
+            return FanrenParseResult(
+                "rift_explore_retry",
+                "探寻裂缝交互成功，但冷却未刷新",
+            )
+
+        update_session(
+            db,
+            event.chat_id,
+            profile_id=session.get("profile_id"),
+            rift_next_check_time=next_due_at,
+            rift_retry_count=0,
+            rift_state=f"探寻成功 - {(refresh_result or {}).get('message') or ''}",
+            last_summary=f"自动探寻裂缝成功，下次在 {format_timestamp(next_due_at)} 后",
+            last_event="rift_explore_success",
+            last_bot_text=raw_text[:1000],
+            last_bot_msg_id=event.id,
+            last_command_msg_id=0,
+        )
+        append_rift_execution_log(
+            storage,
+            profile_id=session.get("profile_id"),
+            chat_id=event.chat_id,
+            thread_id=session.get("thread_id"),
+            step="finalize",
+            event_type="success",
+            rift_state=f"探寻成功 - {(refresh_result or {}).get('message') or ''}",
+            retry_count=0,
+            message_id=int(getattr(event, "id", 0) or 0),
+            reply_to_msg_id=incoming_reply_to_msg_id,
+            sender_id=int(getattr(event, "sender_id", 0) or 0),
+            sender_username=str(getattr(sender, "username", "") or ""),
+            text=raw_text,
+            detail={
+                "next_due_at": next_due_at,
+                "last_rift_explore_time": str(
+                    (refresh_result or {}).get("last_rift_explore_time") or ""
+                ),
+            },
+        )
+        logger.info(
+            "Rift explore succeeded in chat %s next_due=%s",
+            event.chat_id,
+            format_timestamp(next_due_at),
+        )
+        return FanrenParseResult(
+            "rift_explore_success",
+            "探寻裂缝成功",
+            max(int(next_due_at - now), 0),
+        )
 
     # 处理自动元婴出窍 / 元婴状态 回包
     if session.get("auto_yuanying_enabled") and last_action in {

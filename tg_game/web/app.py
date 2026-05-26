@@ -3296,6 +3296,13 @@ def create_app() -> FastAPI:
                 )
             if verified_session_profile:
                 active_profile = verified_session_profile
+        if not auth_profile and active_profile and active_profile.telegram_verified_at:
+            return _sign_in_profile(
+                request,
+                active_profile.id,
+                redirect_url="/login?success="
+                + quote_plus("会话已续期，请继续使用"),
+            )
         external_account = None
         if active_profile:
             external_account = storage.get_external_account(

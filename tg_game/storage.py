@@ -674,6 +674,8 @@ class Storage:
                     "last_error": "TEXT NOT NULL DEFAULT ''",
                     "created_at": "REAL NOT NULL DEFAULT 0",
                     "updated_at": "REAL NOT NULL DEFAULT 0",
+                    "round_retry_count": "INTEGER NOT NULL DEFAULT 0",
+                    "round_retry_deadline_at": "REAL NOT NULL DEFAULT 0",
                 },
             )
             self._ensure_columns(

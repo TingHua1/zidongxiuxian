@@ -57,6 +57,8 @@ COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE = "await_round1_edit"
 COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE = "await_round2_edit"
 COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE = "await_settlement_edit"
 COMPANION_HEART_TRIBULATION_FAILED_STATE = "failed_stopped"
+COMPANION_HEART_TRIBULATION_ROUND_RETRY_SECONDS = 10
+COMPANION_HEART_TRIBULATION_ROUND_RETRY_MAX = 1
 COMPANION_AUTO_FEATURES = {
     "dream_seek": {
         "command": ".入梦寻图",
@@ -404,9 +406,6 @@ async def _run_companion_heart_tribulation_scheduler(
                     COMPANION_HEART_TRIBULATION_SENDING_PANEL_STATE,
                     COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE,
                     COMPANION_HEART_TRIBULATION_AWAIT_TRIBULATION_STATE,
-                    COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE,
-                    COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE,
-                    COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE,
                 }:
                     if step_deadline_at > 0 and now >= step_deadline_at:
                         _stop_companion_heart_tribulation_task(
@@ -417,6 +416,113 @@ async def _run_companion_heart_tribulation_scheduler(
                             detail={
                                 "step_deadline_at": step_deadline_at,
                                 "now": now,
+                            },
+                        )
+                    continue
+
+                if workflow_state in {
+                    COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE,
+                    COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE,
+                    COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE,
+                }:
+                    round_retry_deadline_at = float(task.get("round_retry_deadline_at") or 0)
+                    round_retry_count = int(task.get("round_retry_count") or 0)
+                    if round_retry_deadline_at > 0 and now >= round_retry_deadline_at:
+                        if round_retry_count < COMPANION_HEART_TRIBULATION_ROUND_RETRY_MAX:
+                            round_map = {
+                                COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE: 1,
+                                COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE: 2,
+                                COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE: 3,
+                            }
+                            round_num = round_map.get(workflow_state, 0)
+                            if round_num <= 0:
+                                _stop_companion_heart_tribulation_task(
+                                    storage,
+                                    task,
+                                    last_error="自动共历心劫重试时无法确定轮次，已停止自动。",
+                                    step=workflow_state,
+                                )
+                                continue
+                            command = _build_companion_heart_tribulation_action_command(task, round_num)
+                            tribulation_msg_id = int(task.get("tribulation_msg_id") or 0)
+                            if tribulation_msg_id <= 0:
+                                _stop_companion_heart_tribulation_task(
+                                    storage,
+                                    task,
+                                    last_error="自动共历心劫重试时缺少心劫消息锚点，已停止自动。",
+                                    step=workflow_state,
+                                )
+                                continue
+                            try:
+                                await _send_companion_heart_tribulation_command(
+                                    client,
+                                    storage,
+                                    task,
+                                    text=command,
+                                    reply_to_msg_id=tribulation_msg_id,
+                                )
+                            except Exception as exc:
+                                _stop_companion_heart_tribulation_task(
+                                    storage,
+                                    task,
+                                    last_error=f"自动共历心劫重试发送第{round_num}轮策略失败，已停止自动。",
+                                    step=workflow_state,
+                                    detail={"error": str(exc), "round": round_num},
+                                )
+                                continue
+                            new_retry_count = round_retry_count + 1
+                            storage.update_companion_heart_tribulation_task(
+                                task_id,
+                                round_retry_count=new_retry_count,
+                                round_retry_deadline_at=now + COMPANION_HEART_TRIBULATION_ROUND_RETRY_SECONDS,
+                                step_deadline_at=now + COMPANION_HEART_TRIBULATION_EDIT_STALL_SECONDS,
+                                last_error="",
+                            )
+                            _append_companion_heart_tribulation_log(
+                                storage,
+                                task,
+                                step=workflow_state,
+                                event_type="round_retry_sent",
+                                text=command,
+                                detail={
+                                    "round": round_num,
+                                    "retry_count": new_retry_count,
+                                    "tribulation_msg_id": tribulation_msg_id,
+                                },
+                            )
+                        else:
+                            tribulation_msg_id = int(task.get("tribulation_msg_id") or 0)
+                            matched_bot_id = int(task.get("matched_bot_id") or 0)
+                            _stop_companion_heart_tribulation_task(
+                                storage,
+                                task,
+                                last_error="自动共历心劫轮次编辑重试耗尽，已停止自动。",
+                                step=workflow_state,
+                                detail={
+                                    "step_deadline_at": step_deadline_at,
+                                    "now": now,
+                                    "tribulation_msg_id": tribulation_msg_id,
+                                    "matched_bot_id": matched_bot_id,
+                                    "round_retry_count": round_retry_count,
+                                    "workflow_state": workflow_state,
+                                },
+                            )
+                        continue
+                    if step_deadline_at > 0 and now >= step_deadline_at:
+                        tribulation_msg_id = int(task.get("tribulation_msg_id") or 0)
+                        matched_bot_id = int(task.get("matched_bot_id") or 0)
+                        _stop_companion_heart_tribulation_task(
+                            storage,
+                            task,
+                            last_error="自动共历心劫等待超时，已停止自动。",
+                            step=workflow_state,
+                            detail={
+                                "step_deadline_at": step_deadline_at,
+                                "now": now,
+                                "tribulation_msg_id": tribulation_msg_id,
+                                "matched_bot_id": matched_bot_id,
+                                "round_retry_count": round_retry_count,
+                                "workflow_state": workflow_state,
                             },
                         )
                     continue
@@ -2197,6 +2303,8 @@ class GeneralGameExecutor(BaseExecutor):
                 last_progress_at=time.time(),
                 last_progress_fingerprint=fingerprint,
                 last_stable_sent_at=time.time(),
+                round_retry_count=0,
+                round_retry_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_ROUND_RETRY_SECONDS,
                 last_error="",
             )
             task = storage.get_companion_heart_tribulation_task(
@@ -2358,6 +2466,8 @@ class GeneralGameExecutor(BaseExecutor):
                 last_progress_at=time.time(),
                 last_progress_fingerprint=current_fingerprint,
                 last_stable_sent_at=time.time(),
+                round_retry_count=0,
+                round_retry_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_ROUND_RETRY_SECONDS,
                 last_error="",
             )
             task = storage.get_companion_heart_tribulation_task(
@@ -2405,6 +2515,8 @@ class GeneralGameExecutor(BaseExecutor):
                 last_progress_at=time.time(),
                 last_progress_fingerprint=current_fingerprint,
                 last_stable_sent_at=time.time(),
+                round_retry_count=0,
+                round_retry_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_ROUND_RETRY_SECONDS,
                 last_error="",
             )
             task = storage.get_companion_heart_tribulation_task(
