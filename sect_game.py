@@ -3705,7 +3705,7 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
         if session.get("auto_luoyun_enabled"):
             own_last_cmd = int(session.get("last_command_msg_id") or 0)
             is_own_reply = bool(own_last_cmd and reply_to_msg_id == own_last_cmd)
-            if not is_own_reply:
+            if not is_own_reply and ".灵树状态" in reply_text:
                 update_fields["luoyun_last_passive_tree_check"] = now
                 if luoyun_state.get("invasion_detected") and not session.get("luoyun_invasion_active"):
                     update_fields["luoyun_invasion_active"] = 1
