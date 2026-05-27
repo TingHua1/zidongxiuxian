@@ -2134,6 +2134,7 @@ def ensure_tables(db):
         "luoyun_force_refresh": "INTEGER DEFAULT 0",
         "luoyun_invasion_active": "INTEGER DEFAULT 0",
         "luoyun_frozen_irrigation_ready_time": "REAL DEFAULT 0",
+        "luoyun_last_passive_tree_check": "REAL DEFAULT 0",
         "yinluo_batch_mode": "TEXT",
         "yinluo_batch_commands": "TEXT",
         "yinluo_batch_index": "INTEGER DEFAULT 0",
@@ -3019,39 +3020,48 @@ def sync_luoyun_state(storage, db, profile_id, chat_id, payload=None, now=None):
             updates["luoyun_next_check_time"] = pending_time
             updates["luoyun_next_check_source"] = "已发送 .灵树状态，等待机器人回包"
         elif not has_active_luoyun_batch(session_for_view):
-            simulated_session = dict(session_for_view)
-            simulated_session.update(updates)
-            auto_commands = build_luoyun_auto_commands(simulated_session)
-            irrigation_ready = float(view.get("irrigation_ready_time") or 0)
-            if irrigation_ready > now:
-                auto_commands = [
-                    cmd for cmd in auto_commands if cmd != ".灵树灌溉"
-                ]
-            if auto_commands:
-                updates["luoyun_pending_commands"] = _save_luoyun_pending_commands(auto_commands)
-                updates["luoyun_pending_index"] = 0
-                updates["luoyun_pending_msg_id"] = 0
-                updates["luoyun_pending_retry"] = 0
-                updates["luoyun_force_refresh"] = 0
+            last_passive = float(session.get("luoyun_last_passive_tree_check") or 0)
+            if last_passive <= 0:
+                updates["luoyun_last_passive_tree_check"] = now
+                last_passive = now
+            if now - last_passive > 3600:
+                updates["luoyun_last_passive_tree_check"] = now
                 updates["luoyun_next_check_time"] = 0
-                updates["luoyun_next_check_source"] = (
-                    f"已根据灵树状态生成 {len(auto_commands)} 条落云宗命令"
-                )
-            elif view.get("next_ready_time") and float(view.get("next_ready_time") or 0) > now:
-                updates["luoyun_next_check_time"] = float(view.get("next_ready_time") or 0)
-                updates["luoyun_next_check_source"] = (
-                    f"灵树状态等待至 {format_timestamp(view.get('next_ready_time') or 0)}"
-                )
-                updates["luoyun_force_refresh"] = 0
-            elif view.get("irrigation_ready_time") and float(view.get("irrigation_ready_time") or 0) > now:
-                updates["luoyun_next_check_time"] = float(view.get("irrigation_ready_time") or 0)
-                updates["luoyun_next_check_source"] = (
-                    f"灵树灌溉冷却至 {format_timestamp(view.get('irrigation_ready_time') or 0)}"
-                )
-                updates["luoyun_force_refresh"] = 0
+                updates["luoyun_next_check_source"] = "被动监听超时1小时，主动发送灵树状态"
             else:
-                updates["luoyun_next_check_time"] = 0
-                updates["luoyun_next_check_source"] = "可发送 .灵树状态 检查当前灵树状态"
+                simulated_session = dict(session_for_view)
+                simulated_session.update(updates)
+                auto_commands = build_luoyun_auto_commands(simulated_session)
+                irrigation_ready = float(view.get("irrigation_ready_time") or 0)
+                if irrigation_ready > now:
+                    auto_commands = [
+                        cmd for cmd in auto_commands if cmd != ".灵树灌溉"
+                    ]
+                if auto_commands:
+                    updates["luoyun_pending_commands"] = _save_luoyun_pending_commands(auto_commands)
+                    updates["luoyun_pending_index"] = 0
+                    updates["luoyun_pending_msg_id"] = 0
+                    updates["luoyun_pending_retry"] = 0
+                    updates["luoyun_force_refresh"] = 0
+                    updates["luoyun_next_check_time"] = 0
+                    updates["luoyun_next_check_source"] = (
+                        f"已根据灵树状态生成 {len(auto_commands)} 条落云宗命令"
+                    )
+                elif view.get("next_ready_time") and float(view.get("next_ready_time") or 0) > now:
+                    updates["luoyun_next_check_time"] = float(view.get("next_ready_time") or 0)
+                    updates["luoyun_next_check_source"] = (
+                        f"灵树状态等待至 {format_timestamp(view.get('next_ready_time') or 0)}"
+                    )
+                    updates["luoyun_force_refresh"] = 0
+                elif view.get("irrigation_ready_time") and float(view.get("irrigation_ready_time") or 0) > now:
+                    updates["luoyun_next_check_time"] = float(view.get("irrigation_ready_time") or 0)
+                    updates["luoyun_next_check_source"] = (
+                        f"灵树灌溉冷却至 {format_timestamp(view.get('irrigation_ready_time') or 0)}"
+                    )
+                    updates["luoyun_force_refresh"] = 0
+                else:
+                    updates["luoyun_next_check_time"] = 0
+                    updates["luoyun_next_check_source"] = "可发送 .灵树状态 检查当前灵树状态"
 
     updates["next_check_time"] = _recompute_overall_next_check(session, updates, now)
     if _has_any_auto_keys(session_for_view):
@@ -3692,6 +3702,21 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
             update_fields["luoyun_next_check_source"] = "检测到古剑门入侵，切换为协同守山"
             update_fields["next_check_time"] = 0
             update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
+        if session.get("auto_luoyun_enabled"):
+            own_last_cmd = int(session.get("last_command_msg_id") or 0)
+            is_own_reply = bool(own_last_cmd and reply_to_msg_id == own_last_cmd)
+            if not is_own_reply:
+                update_fields["luoyun_last_passive_tree_check"] = now
+                if luoyun_state.get("invasion_detected") and not session.get("luoyun_invasion_active"):
+                    update_fields["luoyun_invasion_active"] = 1
+                    update_fields["luoyun_pending_commands"] = None
+                    update_fields["luoyun_pending_index"] = 0
+                    update_fields["luoyun_pending_msg_id"] = 0
+                    update_fields["luoyun_pending_retry"] = 0
+                    update_fields["luoyun_next_check_time"] = 0
+                    update_fields["luoyun_next_check_source"] = "被动监听到古剑门入侵，切换为协同守山"
+                    update_fields["next_check_time"] = 0
+                    update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
         syncing_tree_status = _luoyun_action_still_syncing(
             session, now, command_text=".灵树状态"
         )
