@@ -2534,6 +2534,11 @@ def parse_message(text):
             "summary": "当前无外敌入侵，恢复灵树循环",
         }
 
+    if "地脉灵气尚未恢复" in text:
+        return {
+            "event": "luoyun_tree_water",
+            "summary": "灵树灌溉冷却中",
+        }
     if "灌溉" in text and any(keyword in text for keyword in ["灵树", "浇灌", "灌溉成功"]):
         return {
             "event": "luoyun_tree_water",
@@ -3017,6 +3022,11 @@ def sync_luoyun_state(storage, db, profile_id, chat_id, payload=None, now=None):
             simulated_session = dict(session_for_view)
             simulated_session.update(updates)
             auto_commands = build_luoyun_auto_commands(simulated_session)
+            irrigation_ready = float(view.get("irrigation_ready_time") or 0)
+            if irrigation_ready > now:
+                auto_commands = [
+                    cmd for cmd in auto_commands if cmd != ".灵树灌溉"
+                ]
             if auto_commands:
                 updates["luoyun_pending_commands"] = _save_luoyun_pending_commands(auto_commands)
                 updates["luoyun_pending_index"] = 0
@@ -3734,6 +3744,21 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
         luoyun_pending_commands
         and luoyun_pending_msg_id
         and reply_to_msg_id == luoyun_pending_msg_id
+        and parsed.get("summary") == "灵树灌溉冷却中"
+    ):
+        update_fields["luoyun_pending_commands"] = None
+        update_fields["luoyun_pending_index"] = 0
+        update_fields["luoyun_pending_msg_id"] = 0
+        update_fields["luoyun_pending_retry"] = 0
+        update_fields["luoyun_force_refresh"] = 1
+        update_fields["luoyun_next_check_time"] = 0
+        update_fields["luoyun_next_check_source"] = "灵树尚在灌溉冷却中，准备刷新天机阁后重新判断"
+        update_fields["next_check_time"] = 0
+        update_fields["next_check_source"] = update_fields["luoyun_next_check_source"]
+    elif (
+        luoyun_pending_commands
+        and luoyun_pending_msg_id
+        and reply_to_msg_id == luoyun_pending_msg_id
         and parsed.get("event") in {"luoyun_tree_water", "luoyun_tree_harvest", "luoyun_tree_status", "luoyun_guard", "luoyun_invasion_clear"}
     ):
         next_index = luoyun_pending_index + 1
@@ -3962,6 +3987,7 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
                 )
     elif parsed["event"] in {"luoyun_tree_water", "luoyun_tree_harvest", "luoyun_guard", "luoyun_invasion_clear"}:
         update_fields["next_check_time"] = 0
+        update_fields["luoyun_force_refresh"] = 1
     elif parsed["event"] not in {"sect_panel_pending", "unknown"}:
         update_fields["next_check_time"] = now + session["interval_seconds"]
     if _has_any_auto_keys(session):
