@@ -70,6 +70,9 @@
             <div class="kv-row"><span>播种种子</span><strong>{{ sect_session.huangfeng_seed_name or '-' if sect_session else '-' }}</strong></div>
             <div class="kv-row"><span>自动宗门兑换</span><strong>{{ '开启' if sect_session and sect_session.auto_huangfeng_exchange_enabled else '关闭' }}</strong></div>
             {% endif %}
+            {% if current_sect_feature and current_sect_feature.name == '星宫' %}
+            <div class="kv-row"><span>侍妾问安</span><strong>{{ '自动' if sect_session and sect_session.auto_companion_greet_enabled else '手动' }}</strong></div>
+            {% endif %}
             {% if current_sect_feature and current_sect_feature.name == '落云宗' %}
             <div class="kv-row"><span>灵树自动</span><strong>{{ '自动' if sect_session and sect_session.auto_luoyun_enabled else '手动' }}</strong></div>
             <div class="kv-row"><span>灵树冷却</span><strong style="font-family: var(--font-mono);">{{ format_timestamp(luoyun_state.frozen_irrigation_ready_time) if luoyun_state and luoyun_state.invasion_active and luoyun_state.frozen_irrigation_ready_time else format_timestamp(luoyun_state.irrigation_ready_time) if luoyun_state and luoyun_state.irrigation_ready_time else '已就绪' }}</strong></div>
@@ -98,6 +101,13 @@
                 <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
                 <input type="hidden" name="enabled" value="{{ '0' if sect_session and sect_session.auto_luoyun_enabled else '1' }}">
                 <button type="submit">{{ '关闭灵树自动' if sect_session and sect_session.auto_luoyun_enabled else '开启灵树自动' }}</button>
+            </form>
+            {% endif %}
+            {% if current_sect_feature and current_sect_feature.name == '星宫' %}
+            <form method="post" action="/runtime/sect/companion-greet-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if sect_session and sect_session.auto_companion_greet_enabled else '1' }}">
+                <button type="submit">{{ '关闭自动问安' if sect_session and sect_session.auto_companion_greet_enabled else '开启自动问安' }}</button>
             </form>
             {% endif %}
         </div>
@@ -262,56 +272,168 @@
             <h2>观星台 · 引星盘</h2>
         </div>
         {% if xinggong_state.plots %}
-        <div class="stack-list compact-stack top-gap">
+        <div class="xinggong-plots" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px;">
             {% for plot in xinggong_state.plots %}
-            <div class="kv-row" style="align-items: flex-start; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle);">
-                <span style="flex-shrink: 0; width: 50px; text-align: center;">
-                    <strong style="font-size: 1.1em;">#{{ plot.plot_id }}</strong>
-                </span>
-                <span style="display: flex; flex-direction: column; gap: 4px; min-width: 0;">
-                    <strong>{{ plot.star_name }}</strong>
-                    <span class="muted" style="font-size: 0.85em;">
-                        {% if plot.status %}{{ plot.status }}{% endif %}
-                        {% if plot.start_time_text %} · {{ plot.start_time_text }}{% endif %}
-                    </span>
-                </span>
-                <span style="flex-shrink: 0; margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">
-                    {% if plot.is_ready %}
-                    <span style="color: var(--accent-green);">可牵引</span>
-                    {% else %}
-                    <span class="muted" style="font-size: 0.9em;">CD</span>
-                    <strong style="font-family: var(--font-mono); font-size: 0.85em;">
-                        {% set rh = (plot.cooldown_remaining / 3600)|int %}
-                        {% set rm = ((plot.cooldown_remaining % 3600) / 60)|int %}
-                        {{ rh }}时{{ rm }}分
-                    </strong>
-                    {% endif %}
-                </span>
-            </div>
+            {% set cooldown_remaining = plot.cooldown_remaining or 0 %}
+            {% set cooldown_total = plot.cooldown_total or 0 %}
+            {% set raw_pct = (((cooldown_total - cooldown_remaining) / cooldown_total) * 100)|int if cooldown_total else 0 %}
+            {% set pct = 0 if raw_pct < 0 else 100 if raw_pct > 100 else raw_pct %}
+            <article class="xinggong-plot-card"
+                     data-plot-id="{{ plot.plot_id }}"
+                     data-remaining-seconds="{{ cooldown_remaining }}"
+                     data-total-seconds="{{ cooldown_total }}"
+                     data-is-ready="{{ '1' if plot.is_ready else '0' }}"
+                     style="position: relative; overflow: hidden; padding: 18px; border: 1px solid {% if plot.is_ready %}rgba(91, 213, 155, 0.45){% else %}var(--border-subtle){% endif %}; border-radius: 18px; background: radial-gradient(circle at 82% 12%, {% if plot.is_ready %}rgba(91, 213, 155, 0.18){% else %}rgba(219, 180, 103, 0.16){% endif %}, transparent 34%), linear-gradient(135deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)); box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18); transition: border-color 0.35s, background 0.35s;">
+                <div style="position: absolute; inset: auto -28px -34px auto; width: 110px; height: 110px; border: 1px solid rgba(219, 180, 103, 0.16); border-radius: 999px;"></div>
+                <div style="position: relative; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;">
+                    <div>
+                        <div style="display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px; border: 1px solid var(--border-subtle); border-radius: 999px; color: var(--text-muted); font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.04em; background: rgba(0, 0, 0, 0.12);">
+                            <span style="color: var(--accent-gold);">#{{ plot.plot_id }}</span>
+                            <span>引星盘</span>
+                        </div>
+                        <h3 style="margin: 14px 0 0; color: var(--accent-gold); font-size: clamp(1.15rem, 2vw, 1.45rem); line-height: 1.15; font-weight: 700;">
+                            {{ plot.star_name or '未知星曜' }}
+                        </h3>
+                    </div>
+                    <div class="xinggong-status-badge" style="flex: 0 0 auto; padding: 7px 11px; border-radius: 999px; color: {% if plot.is_ready %}var(--accent-green){% else %}var(--text-muted){% endif %}; background: {% if plot.is_ready %}rgba(91, 213, 155, 0.13){% else %}rgba(255, 255, 255, 0.055){% endif %}; border: 1px solid {% if plot.is_ready %}rgba(91, 213, 155, 0.35){% else %}var(--border-subtle){% endif %}; font-size: 0.84rem; font-weight: 700; white-space: nowrap; transition: color 0.35s, background 0.35s, border-color 0.35s;">
+                        {{ '可牵引' if plot.is_ready else '冷却中' }}
+                    </div>
+                </div>
+
+                {% if plot.status %}
+                <p style="position: relative; margin: 10px 0 0; color: var(--text-muted); font-size: 0.92rem;">{{ plot.status }}</p>
+                {% endif %}
+
+                <div style="position: relative; margin-top: 18px; display: grid; gap: 9px;">
+                    <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px;">
+                        {% if plot.is_ready %}
+                        <strong class="xinggong-time-text" style="color: var(--accent-green); font-size: 1.02rem;">星轨已校准</strong>
+                        <span class="xinggong-pct-text" style="color: var(--text-muted); font-family: var(--font-mono); font-size: 0.82rem;">READY</span>
+                        {% else %}
+                        {% set rh = (cooldown_remaining / 3600)|int %}
+                        {% set rm = ((cooldown_remaining % 3600) / 60)|int %}
+                        {% set rs = (cooldown_remaining % 60)|int %}
+                        <strong class="xinggong-time-text" style="color: var(--accent-gold); font-size: 1.02rem;">剩余 {% if rh > 0 %}{{ rh }}时{% endif %}{% if rm > 0 or rh > 0 %}{{ rm }}分{% endif %}{{ rs }}秒</strong>
+                        <span class="xinggong-pct-text" style="color: var(--text-muted); font-family: var(--font-mono); font-size: 0.82rem;">{{ pct }}%</span>
+                        {% endif %}
+                    </div>
+                    <div style="height: 8px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.07); border: 1px solid var(--border-subtle);">
+                        <div class="xinggong-progress-bar" style="height: 100%; width: {% if plot.is_ready %}100%{% else %}{{ pct }}{% endif %}%; border-radius: inherit; background: linear-gradient(90deg, {% if plot.is_ready %}var(--accent-green), var(--accent-gold){% else %}rgba(219, 180, 103, 0.38), var(--accent-gold){% endif %}); box-shadow: 0 0 18px {% if plot.is_ready %}rgba(91, 213, 155, 0.35){% else %}rgba(219, 180, 103, 0.24){% endif %}; transition: width 0.9s, background 0.5s, box-shadow 0.5s;"></div>
+                    </div>
+                </div>
+
+                {% if plot.start_time_text %}
+                <div style="position: relative; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border-subtle); color: var(--text-muted); font-size: 0.82rem; font-family: var(--font-mono);">
+                    {{ plot.start_time_text }}
+                </div>
+                {% endif %}
+            </article>
             {% endfor %}
+        </div>
+        <script>
+        (function() {
+            var plots = document.querySelectorAll('.xinggong-plot-card');
+            function fmtTime(s) {
+                if (s <= 0) return '星轨已校准';
+                var h = Math.floor(s / 3600);
+                var m = Math.floor((s % 3600) / 60);
+                var sec = s % 60;
+                var parts = [];
+                if (h > 0) parts.push(h + '时');
+                if (m > 0 || h > 0) parts.push(m + '分');
+                parts.push(sec + '秒');
+                return '剩余 ' + parts.join('');
+            }
+            function updateCard(card) {
+                var remaining = parseInt(card.getAttribute('data-remaining-seconds') || '0', 10);
+                var total = parseInt(card.getAttribute('data-total-seconds') || '0', 10);
+                var isReady = card.getAttribute('data-is-ready') === '1';
+                if (isReady) return;
+                remaining = Math.max(remaining - 1, 0);
+                card.setAttribute('data-remaining-seconds', remaining);
+                var timeEl = card.querySelector('.xinggong-time-text');
+                var pctEl = card.querySelector('.xinggong-pct-text');
+                var barEl = card.querySelector('.xinggong-progress-bar');
+                var badgeEl = card.querySelector('.xinggong-status-badge');
+                if (timeEl) timeEl.textContent = fmtTime(remaining);
+                var pct = total > 0 ? Math.min(100, Math.max(0, Math.round(((total - remaining) / total) * 100))) : 0;
+                if (pctEl) pctEl.textContent = pct + '%';
+                if (barEl) barEl.style.width = pct + '%';
+                if (remaining <= 0) {
+                    card.setAttribute('data-is-ready', '1');
+                    if (badgeEl) badgeEl.textContent = '可牵引';
+                    card.style.borderColor = 'rgba(91, 213, 155, 0.45)';
+                    card.style.background = 'radial-gradient(circle at 82% 12%, rgba(91, 213, 155, 0.18), transparent 34%), linear-gradient(135deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018))';
+                    if (badgeEl) {
+                        badgeEl.style.color = 'var(--accent-green)';
+                        badgeEl.style.background = 'rgba(91, 213, 155, 0.13)';
+                        badgeEl.style.borderColor = 'rgba(91, 213, 155, 0.35)';
+                    }
+                }
+            }
+            function tickAll() {
+                for (var i = 0; i < plots.length; i++) {
+                    updateCard(plots[i]);
+                }
+            }
+            setInterval(tickAll, 1000);
+        })();
+        </script>
+        <div class="top-gap" style="display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+            <form method="post" action="/runtime/sect/action" style="display: contents;">
+                <input type="hidden" name="sect_name" value="{{ current_sect_feature.name }}">
+                <input type="hidden" name="action_key" value="expand">
+                <input type="hidden" name="redirect_to" value="/modules/sect">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ sect_bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ sect_bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ sect_bound_bot_username or 'luoxueyao_bot' }}">
+                <button type="submit" {% if not sect_command_chat_ready %}disabled{% endif %} class="small-btn">扩建星台</button>
+            </form>
+            <form method="post" action="/runtime/sect/action" style="display: contents;">
+                <input type="hidden" name="sect_name" value="{{ current_sect_feature.name }}">
+                <input type="hidden" name="action_key" value="pull">
+                <input type="hidden" name="redirect_to" value="/modules/sect">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ sect_bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ sect_bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ sect_bound_bot_username or 'luoxueyao_bot' }}">
+                <input type="hidden" name="slot" value="">
+                <select name="star" id="quick-pull-star" style="width: 130px;" {% if not sect_command_chat_ready %}disabled{% endif %}>
+                    <option value="">牵引—选星辰</option>
+                    {% if xinggong_state and xinggong_state.star_options %}
+                    {% for option in xinggong_state.star_options %}
+                    <option value="{{ option.value }}" {% if option.disabled %}disabled{% endif %}>{{ option.value }}</option>
+                    {% endfor %}
+                    {% endif %}
+                </select>
+                <button type="submit" onclick="var s=document.getElementById('quick-pull-star');if(!s||!s.value)return!1;" {% if not sect_command_chat_ready %}disabled{% endif %} class="small-btn">牵引</button>
+            </form>
+            <form method="post" action="/runtime/sect/action" style="display: contents;">
+                <input type="hidden" name="sect_name" value="{{ current_sect_feature.name }}">
+                <input type="hidden" name="action_key" value="soothe">
+                <input type="hidden" name="redirect_to" value="/modules/sect">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ sect_bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ sect_bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ sect_bound_bot_username or 'luoxueyao_bot' }}">
+                <input type="hidden" name="slot" value="">
+                <button type="submit" {% if not sect_command_chat_ready %}disabled{% endif %} class="small-btn">安抚星辰</button>
+            </form>
+            <form method="post" action="/runtime/sect/action" style="display: contents;">
+                <input type="hidden" name="sect_name" value="{{ current_sect_feature.name }}">
+                <input type="hidden" name="action_key" value="collect">
+                <input type="hidden" name="redirect_to" value="/modules/sect">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id or '' }}">
+                <input type="hidden" name="thread_id" value="{{ sect_bound_thread_id or '' }}">
+                <input type="hidden" name="chat_type" value="{{ sect_bound_chat_type or 'group' }}">
+                <input type="hidden" name="bot_username" value="{{ sect_bound_bot_username or 'luoxueyao_bot' }}">
+                <input type="hidden" name="slot" value="">
+                <button type="submit" {% if not sect_command_chat_ready %}disabled{% endif %} class="small-btn">收集精华</button>
+            </form>
         </div>
         {% else %}
         <p class="muted">暂无引星盘数据，请先使用 .观星台 或等待天机阁同步。</p>
-        {% endif %}
-    </div>
-
-    <div class="detail-card">
-        <div class="section-header compact">
-            <p>星宫</p>
-            <h2>星辰参考</h2>
-        </div>
-        {% if xinggong_state.star_table %}
-        <div class="stack-list compact-stack top-gap">
-            {% for star in xinggong_state.star_table %}
-            <div class="kv-row">
-                <span>{{ star.name }}</span>
-                <strong><span style="font-family: var(--font-mono);">{{ star.duration }}</span>{% if star.requirement != '无' %} · {{ star.requirement }}{% endif %}</strong>
-            </div>
-            {% endfor %}
-        </div>
-        {% if xinggong_state.has_bottle %}
-        <p class="muted top-gap" style="color: var(--accent-gold);">持有【掌天瓶】，可无视天雷星与帝魂星身份限制。</p>
-        {% endif %}
         {% endif %}
     </div>
 </section>
@@ -326,6 +448,12 @@
             <h2>{{ action.title }}</h2>
         </div>
         <p class="muted">{{ action.description }}</p>
+        {% if action.key == 'greet' and xinggong_state %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>侍妾</span><strong>{{ xinggong_state.companion_name or '无' }}</strong></div>
+            <div class="kv-row"><span>情缘值</span><strong style="color: var(--accent-gold);">{{ xinggong_state.companion_affection }}</strong></div>
+        </div>
+        {% endif %}
         <form class="form-grid top-gap" method="post" action="/runtime/sect/action">
             <input type="hidden" name="sect_name" value="{{ current_sect_feature.name }}">
             <input type="hidden" name="action_key" value="{{ action.key }}">
@@ -340,6 +468,24 @@
                     {{ field.label }}
                     <select name="{{ field.name }}" {% if field.required %}required{% endif %}>
                         {% for option in field.options or [] %}
+                        <option value="{{ option.value }}" {% if option.disabled %}disabled{% endif %}>{{ option.label }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                {% elif action.key == 'pull' and field.name == 'star' and xinggong_state and xinggong_state.star_options %}
+                <label>
+                    {{ field.label }}
+                    <select name="{{ field.name }}" {% if field.required %}required{% endif %}>
+                        {% for option in xinggong_state.star_options %}
+                        <option value="{{ option.value }}" {% if option.disabled %}disabled{% endif %}>{{ option.label }}</option>
+                        {% endfor %}
+                    </select>
+                </label>
+                {% elif action.key == 'gift' and field.name == 'item' and xinggong_state and xinggong_state.companion_gift_items %}
+                <label>
+                    {{ field.label }}
+                    <select name="{{ field.name }}" {% if field.required %}required{% endif %}>
+                        {% for option in xinggong_state.companion_gift_items %}
                         <option value="{{ option.value }}">{{ option.label }}</option>
                         {% endfor %}
                     </select>

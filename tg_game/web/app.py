@@ -2545,15 +2545,9 @@ def create_app() -> FastAPI:
                 "is_ready": cooldown_remaining <= 0 and start_ts > 0,
             })
 
-        star_table = []
-        for name, info in STAR_DURATIONS.items():
-            star_table.append({
-                "name": name,
-                "duration": f"{info['hours']} 小时",
-                "requirement": info["requirement"],
-            })
-
         sect_position = getattr(active_profile, "sect_position", "") or ""
+        is_elder = "长老" in (sect_position or "") or "双圣" in (sect_position or "")
+        is_shuangsheng = "双圣" in (sect_position or "")
         has_bottle = False
         inventory = payload.get("inventory") if isinstance(payload, dict) else None
         if isinstance(inventory, dict):
@@ -2562,15 +2556,77 @@ def create_app() -> FastAPI:
                 if isinstance(item, dict) and (item.get("item_id") == "zhangtianping"):
                     has_bottle = True
                     break
+        STAR_DURATIONS_ORDERED = [
+            ("赤血星", 4, "无"),
+            ("庚金星", 6, "无"),
+            ("建木星", 8, "无"),
+            ("天雷星", 36, "星宫长老"),
+            ("帝魂星", 48, "星宫双圣"),
+        ]
+        star_options = []
+        for name, hours, req in STAR_DURATIONS_ORDERED:
+            disabled = False
+            disabled_reason = ""
+            if req == "星宫长老" and not is_elder and not has_bottle:
+                disabled = True
+                disabled_reason = "需要星宫长老或掌天瓶"
+            elif req == "星宫双圣" and not is_shuangsheng and not has_bottle:
+                disabled = True
+                disabled_reason = "需要星宫双圣或掌天瓶"
+            label = f"{name}（{hours}小时）"
+            if disabled:
+                label += f" — {disabled_reason}"
+            star_options.append({
+                "value": name,
+                "label": label,
+                "disabled": disabled,
+            })
 
         return {
             "platform_size": int(star_platform.get("size") or 0),
             "plots": plots,
-            "star_table": star_table,
-            "sect_position": sect_position,
-            "has_bottle": has_bottle,
-            "updated_at": now,
+            "star_options": star_options,
+            "companion_name": str(
+                (payload.get("companion") or {}).get("name") or ""
+            ).strip() or "无",
+            "companion_affection": int(
+                (payload.get("companion") or {}).get("affection") or 0
+            ),
+            "companion_gift_items": _build_companion_gift_items(payload),
         }
+
+    def _build_companion_gift_items(payload: dict) -> list[dict]:
+        items = []
+        if not isinstance(payload, dict):
+            return items
+        game_items_dict = storage.get_game_items()
+        inventory = payload.get("inventory") or {}
+        if not isinstance(inventory, dict):
+            return items
+        materials = inventory.get("materials") or {}
+        bag_items = inventory.get("items") or []
+        if isinstance(materials, dict):
+            for mat_key, qty in materials.items():
+                name = _resolve_payload_display_name(mat_key, game_items_dict)
+                items.append({
+                    "value": name,
+                    "label": "{}（{}个）".format(name, qty),
+                    "quantity": qty,
+                })
+        if isinstance(bag_items, list):
+            for item in bag_items:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or "").strip()
+                if not name:
+                    continue
+                qty = item.get("quantity") or 1
+                items.append({
+                    "value": name,
+                    "label": "{}（{}个）".format(name, qty),
+                    "quantity": qty,
+                })
+        return items
 
     def _build_sect_treasury_items(active_profile) -> list[dict]:
         if not active_profile:
@@ -2965,6 +3021,8 @@ def create_app() -> FastAPI:
                         status_code=400, detail="Invalid sect action option"
                     )
             values[field_name] = raw_value
+        if str(action.get("key") or "").strip() == "gift" and not values.get("count", "").strip():
+            values["count"] = "1"
         return template.format(**values).strip()
 
     def _load_profile_card_state(active_profile, refresh_external: bool = True) -> dict:
@@ -5514,6 +5572,34 @@ def create_app() -> FastAPI:
             session = sect_game.get_session(
                 db, chat_id, profile_id=active_profile.id if active_profile else None
             )
+        finally:
+            db.close()
+        if not session:
+            raise HTTPException(status_code=404, detail="Sect session not found")
+        return RedirectResponse(url="/modules/sect", status_code=303)
+
+    @application.post("/runtime/sect/companion-greet-toggle")
+    async def toggle_companion_greet_auto(
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
+    ) -> RedirectResponse:
+        active_profile = _get_request_profile(request)
+        if not active_profile:
+            return RedirectResponse(url="/login", status_code=303)
+        if str(active_profile.sect_name or "").strip() != "星宫":
+            raise HTTPException(status_code=400, detail="仅星宫角色可用")
+        db = CompatDb(storage)
+        try:
+            sect_game.ensure_tables(db)
+            sect_game.configure_companion_greet_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id,
+            )
+            if enabled == "1":
+                sect_game.set_enabled(db, chat_id, True, profile_id=active_profile.id)
+                sect_game.sync_common_sect_state(storage, db, active_profile.id, chat_id)
+            session = sect_game.get_session(db, chat_id, profile_id=active_profile.id)
         finally:
             db.close()
         if not session:

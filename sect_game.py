@@ -33,6 +33,7 @@ SECT_DAILY_TEACH_LIMIT = 3
 SECT_AUTO_WINDOW_START_TIME = "02:00"
 SECT_AUTO_WINDOW_END_TIME = "05:00"
 YINLUO_AUTO_SACRIFICE_TIME = "02:20"
+COMPANION_GREET_WINDOW_END = "03:00"
 SECT_AUTO_TEACH_REPLY_RECHECK_SECONDS = 30
 HUANGFENG_AUTO_CHECK_SECONDS = 30 * 60
 LUOYUN_IRRIGATION_COOLDOWN_SECONDS = 2 * 3600
@@ -108,6 +109,7 @@ HUANGFENG_SECT_NAME = "黄枫谷"
 YINLUO_SECT_NAME = "阴罗宗"
 LINGXIAO_SECT_NAME = "凌霄宫"
 LUOYUN_SECT_NAME = "落云宗"
+XINGGONG_SECT_NAME = "星宫"
 
 
 def _normalize_bool(value):
@@ -143,6 +145,7 @@ def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
                 "auto_huangfeng_enabled",
                 "auto_huangfeng_exchange_enabled",
                 "auto_luoyun_enabled",
+                "auto_companion_greet_enabled",
                 "auto_lingxiao_enabled",
                 "auto_lingxiao_gangfeng_enabled",
                 "auto_lingxiao_borrow_enabled",
@@ -220,7 +223,9 @@ def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
             reasons.append(f"当前宗门已不是{LUOYUN_SECT_NAME}，已关闭落云宗自动")
             updates.update(
                 {
-                    "auto_luoyun_enabled": 0,
+                "auto_luoyun_enabled": 0,
+                "auto_companion_greet_enabled": 0,
+                "companion_greet_next_check_time": 0,
                     "luoyun_pending_commands": None,
                     "luoyun_pending_index": 0,
                     "luoyun_pending_msg_id": 0,
@@ -230,6 +235,16 @@ def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
                     "luoyun_invasion_active": 0,
                     "luoyun_frozen_irrigation_ready_time": 0,
                     "luoyun_next_check_time": 0,
+                }
+            )
+        if session.get("auto_companion_greet_enabled") and not _is_same_sect_name(
+            normalized_sect_name, XINGGONG_SECT_NAME
+        ):
+            reasons.append(f"当前宗门已不是{XINGGONG_SECT_NAME}，已关闭自动问安")
+            updates.update(
+                {
+                    "auto_companion_greet_enabled": 0,
+                    "companion_greet_next_check_time": 0,
                 }
             )
         if (
@@ -1540,6 +1555,7 @@ def _has_any_auto_keys(session):
         or _active_huangfeng_auto_keys(session)
         or _active_luoyun_auto_keys(session)
         or _active_lingxiao_auto_keys(session)
+        or bool(session.get("auto_companion_greet_enabled"))
     )
 
 
@@ -1559,6 +1575,7 @@ def _recompute_overall_next_check(session, updates, now=None):
         ("auto_lingxiao_gangfeng_enabled", "lingxiao_gangfeng_next_check_time"),
         ("auto_lingxiao_borrow_enabled", "lingxiao_borrow_next_check_time"),
         ("auto_lingxiao_question_enabled", "lingxiao_question_next_check_time"),
+        ("auto_companion_greet_enabled", "companion_greet_next_check_time"),
     ]:
         if not merged.get(enabled_key):
             continue
@@ -2074,6 +2091,9 @@ def ensure_tables(db):
             sect_common_force_refresh INTEGER DEFAULT 0,
             last_yinluo_sacrifice_date TEXT,
             last_command_msg_id INTEGER DEFAULT 0,
+            auto_companion_greet_enabled INTEGER DEFAULT 0,
+            companion_greet_next_check_time REAL DEFAULT 0,
+            companion_greet_next_check_source TEXT,
             PRIMARY KEY (profile_id, chat_id, bot_username)
         )
         """
@@ -2151,6 +2171,9 @@ def ensure_tables(db):
         "sect_common_force_refresh": "INTEGER DEFAULT 0",
         "last_yinluo_sacrifice_date": "TEXT",
         "last_command_msg_id": "INTEGER DEFAULT 0",
+        "auto_companion_greet_enabled": "INTEGER DEFAULT 0",
+        "companion_greet_next_check_time": "REAL DEFAULT 0",
+        "companion_greet_next_check_source": "TEXT",
         "profile_id": "INTEGER NOT NULL DEFAULT 0",
     }
     for column_name, column_type in alter_columns.items():
@@ -2729,6 +2752,28 @@ def configure_lingxiao_auto(db, chat_id, enabled, profile_id=None):
     )
 
 
+def configure_companion_greet_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        auto_companion_greet_enabled=_normalize_bool(enabled),
+        companion_greet_next_check_time=0,
+        companion_greet_next_check_source=(
+            "已开启自动问安，等待首轮同步" if enabled else None
+        ),
+        next_check_time=(
+            0
+            if enabled
+            else _recompute_overall_next_check(
+                session, {"auto_companion_greet_enabled": 0}, time.time()
+            )
+        ),
+        next_check_source=("已开启自动问安，等待首轮同步" if enabled else None),
+    )
+
+
 def configure_sect_checkin_auto(db, chat_id, enabled, profile_id=None):
     session = get_session(db, chat_id, profile_id=profile_id)
     update_session(
@@ -3111,7 +3156,9 @@ async def maybe_run_luoyun_batch(client, db, session, *, storage=None, profile_i
                 db,
                 chat_id,
                 profile_id=session.get("profile_id"),
-                auto_luoyun_enabled=0,
+        auto_luoyun_enabled=0,
+        auto_companion_greet_enabled=0,
+        companion_greet_next_check_time=0,
                 luoyun_pending_retry=0,
                 next_check_source="灵树指令连续超时，已停止落云宗自动",
                 next_check_time=time.time() + LUOYUN_IRRIGATION_COOLDOWN_SECONDS,
@@ -3431,6 +3478,17 @@ def build_auto_command(session, now=None):
                 "next_field": "luoyun_next_check_time",
                 "source_field": "luoyun_next_check_source",
                 "pending_source": "已发送 .灵树状态，等待机器人回包",
+                "pending_delay_seconds": LUOYUN_COMMAND_REFRESH_SECONDS,
+            }
+            return None
+    if session.get("auto_companion_greet_enabled"):
+        next_time = float(session.get("companion_greet_next_check_time") or 0)
+        if not next_time or now >= next_time:
+            return {
+                "command": ".每日问安",
+                "next_field": "companion_greet_next_check_time",
+                "source_field": "companion_greet_next_check_source",
+                "pending_source": "已发送 .每日问安，等待回复",
                 "pending_delay_seconds": LUOYUN_COMMAND_REFRESH_SECONDS,
             }
         return None
@@ -4018,6 +4076,13 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
     if _has_any_auto_keys(session):
         update_fields["next_check_time"] = _recompute_overall_next_check(
             session, update_fields, now
+        )
+    if session.get("auto_companion_greet_enabled") and str(session.get("last_action") or "").strip() == ".每日问安":
+        update_fields["companion_greet_next_check_time"] = _next_daily_random_window_timestamp(
+            session, "companion_greet", now
+        )
+        update_fields["companion_greet_next_check_source"] = (
+            f"今日已问安，等待次日 {SECT_AUTO_WINDOW_START_TIME}-{COMPANION_GREET_WINDOW_END} 随机执行"
         )
     update_session(
         db,

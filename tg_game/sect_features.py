@@ -179,6 +179,9 @@ SECT_FEATURES = [
             _button_action(
                 "companion", "我的侍妾", ".我的侍妾", "先确认侍妾和情缘状态。"
             ),
+            _button_action(
+                "greet", "每日问安", ".每日问安", "问候侍妾，可提升微薄情缘。"
+            ),
             _button_action("matrix", "启阵", ".启阵", "开阵吃星力加持。"),
             _button_action("assist", "助阵", ".助阵", "协助阵法，补队伍联动。"),
             _button_action(
@@ -186,12 +189,38 @@ SECT_FEATURES = [
             ),
             _button_action("divine", "观星", ".观星", "每日基础观星动作。"),
             _form_action(
+                "gift",
+                "赠予侍妾",
+                ".赠予侍妾 {item}*{count}",
+                "从储物袋取出物品赠予侍妾。",
+                [
+                    _text_field("item", "物品", "例如 灵石", required=True),
+                    _text_field("count", "数量", "1", required=False),
+                ],
+            ),
+            _button_action(
+                "feed", "灵力反哺", ".灵力反哺", "将自身灵力反哺给侍妾。"
+            ),
+            _button_action(
+                "divine_companion", "侍妾卜算", ".侍妾卜算", "请侍妾为你的天机代卜。"
+            ),
+            _button_action(
+                "expand", "扩建星台", ".扩建星台", "消耗资源扩建引星盘数量。"
+            ),
+            _form_action(
+                "soothe",
+                "安抚星辰",
+                ".安抚星辰 {slot}",
+                "安抚狂暴星力。可指定编号，不填则安抚全部。",
+                [_optional_text_field("slot", "编号", "例如 1（可选）")],
+            ),
+            _form_action(
                 "pull",
                 "牵引星辰",
                 ".牵引星辰 {slot} {star}",
                 "按槽位和目标星辰做定向牵引。",
                 [
-                    _text_field("slot", "编号", "例如 1"),
+                    _optional_text_field("slot", "编号", "例如 1（可选）"),
                     _text_field("star", "星辰", "例如 天雷星"),
                 ],
             ),
@@ -200,7 +229,7 @@ SECT_FEATURES = [
                 "收集精华",
                 ".收集精华 {slot}",
                 "按编号收取可用精华。",
-                [_text_field("slot", "编号", "例如 1")],
+                [_optional_text_field("slot", "编号", "例如 1（可选）")],
             ),
         ],
         "commands": [
@@ -212,6 +241,11 @@ SECT_FEATURES = [
             ".观星台",
             ".牵引星辰",
             ".收集精华",
+            ".安抚星辰",
+            ".每日问安",
+            ".赠予侍妾",
+            ".灵力反哺",
+            ".侍妾卜算",
         ],
         "notes": [
             "启阵强力联动深度闭关",
