@@ -1,6 +1,7 @@
 import asyncio
 import math
 import json
+import time
 import logging
 import subprocess
 import re
@@ -2482,6 +2483,95 @@ def create_app() -> FastAPI:
             ),
         }
 
+    def _build_xinggong_state(payload: dict, active_profile) -> dict:
+        star_platform_raw = (payload or {}).get("star_platform")
+        if isinstance(star_platform_raw, str) and star_platform_raw.strip():
+            try:
+                star_platform = json.loads(star_platform_raw)
+            except (json.JSONDecodeError, TypeError):
+                star_platform = {}
+        elif isinstance(star_platform_raw, dict):
+            star_platform = star_platform_raw
+        else:
+            star_platform = {}
+        plots_raw = star_platform.get("plots") or {}
+        if isinstance(plots_raw, str):
+            try:
+                plots_raw = json.loads(plots_raw)
+            except (json.JSONDecodeError, TypeError):
+                plots_raw = {}
+        if not isinstance(plots_raw, dict):
+            plots_raw = {}
+
+        STAR_DURATIONS = {
+            "赤血星": {"hours": 4, "requirement": "无"},
+            "庚金星": {"hours": 6, "requirement": "无"},
+            "建木星": {"hours": 8, "requirement": "无"},
+            "天雷星": {"hours": 36, "requirement": "星宫长老"},
+            "帝魂星": {"hours": 48, "requirement": "星宫双圣"},
+        }
+
+        now = time.time()
+        plots = []
+        for plot_id in sorted(plots_raw.keys(), key=lambda k: int(k) if k.isdigit() else 0):
+            plot = plots_raw[plot_id]
+            if not isinstance(plot, dict):
+                continue
+            star_name = str(plot.get("star_name") or "").strip()
+            status = str(plot.get("status") or "").strip()
+            start_time_raw = plot.get("start_time")
+            start_ts = 0
+            cooldown_remaining = 0
+            cooldown_total = 0
+            if start_time_raw:
+                from datetime import datetime, timezone
+                try:
+                    dt = datetime.fromisoformat(str(start_time_raw).replace("Z", "+00:00"))
+                    start_ts = dt.timestamp()
+                    star_info = STAR_DURATIONS.get(star_name, {"hours": 0, "requirement": "未知"})
+                    cooldown_total = star_info["hours"] * 3600
+                    elapsed = now - start_ts
+                    cooldown_remaining = max(cooldown_total - elapsed, 0)
+                except (ValueError, OverflowError):
+                    pass
+            plots.append({
+                "plot_id": plot_id,
+                "star_name": star_name or "未牵引",
+                "status": status or "空闲",
+                "start_time_text": datetime.fromtimestamp(start_ts, tz=timezone.utc).astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M") if start_ts > 0 else "",
+                "cooldown_remaining": cooldown_remaining,
+                "cooldown_total": cooldown_total,
+                "cooldown_pct": int(100 * (cooldown_total - cooldown_remaining) / cooldown_total) if cooldown_total > 0 else 0,
+                "is_ready": cooldown_remaining <= 0 and start_ts > 0,
+            })
+
+        star_table = []
+        for name, info in STAR_DURATIONS.items():
+            star_table.append({
+                "name": name,
+                "duration": f"{info['hours']} 小时",
+                "requirement": info["requirement"],
+            })
+
+        sect_position = getattr(active_profile, "sect_position", "") or ""
+        has_bottle = False
+        inventory = payload.get("inventory") if isinstance(payload, dict) else None
+        if isinstance(inventory, dict):
+            items = inventory.get("items") or []
+            for item in items:
+                if isinstance(item, dict) and (item.get("item_id") == "zhangtianping"):
+                    has_bottle = True
+                    break
+
+        return {
+            "platform_size": int(star_platform.get("size") or 0),
+            "plots": plots,
+            "star_table": star_table,
+            "sect_position": sect_position,
+            "has_bottle": has_bottle,
+            "updated_at": now,
+        }
+
     def _build_sect_treasury_items(active_profile) -> list[dict]:
         if not active_profile:
             return []
@@ -2931,6 +3021,7 @@ def create_app() -> FastAPI:
         yinluo_state = None
         huangfeng_state = None
         luoyun_state = None
+        xinggong_state = None
         if current_sect_feature and current_sect_feature["name"] == "凌霄宫":
             if sect_chat:
                 db = CompatDb(storage)
@@ -3018,6 +3109,8 @@ def create_app() -> FastAPI:
                     payload,
                     session=sect_session,
                 )
+        if current_sect_feature and current_sect_feature["name"] == "星宫":
+            xinggong_state = _build_xinggong_state(payload, profile)
 
         return {
             "active_profile": profile,
@@ -3032,6 +3125,7 @@ def create_app() -> FastAPI:
             "yinluo_state": yinluo_state,
             "huangfeng_state": huangfeng_state,
             "luoyun_state": luoyun_state,
+            "xinggong_state": xinggong_state,
         }
 
     def _get_or_create_profile_for_telegram(
@@ -4312,6 +4406,7 @@ def create_app() -> FastAPI:
                 "yinluo_state": yinluo_state,
                 "huangfeng_state": huangfeng_state,
                 "luoyun_state": profile_state.get("luoyun_state"),
+                "xinggong_state": profile_state.get("xinggong_state"),
                 "character_state": character_state,
                 "taiyi_state": taiyi_state,
                 "other_play_definitions": OTHER_PLAY_DEFINITIONS,

@@ -254,6 +254,69 @@
 </section>
 {% endif %}
 
+{% if xinggong_state and current_sect_feature and current_sect_feature.name == '星宫' %}
+<section class="detail-grid two-column-grid">
+    <div class="detail-card" style="grid-column: 1 / -1;">
+        <div class="section-header compact">
+            <p>星宫</p>
+            <h2>观星台 · 引星盘</h2>
+        </div>
+        {% if xinggong_state.plots %}
+        <div class="stack-list compact-stack top-gap">
+            {% for plot in xinggong_state.plots %}
+            <div class="kv-row" style="align-items: flex-start; gap: 14px; padding: 10px 0; border-bottom: 1px solid var(--border-subtle);">
+                <span style="flex-shrink: 0; width: 50px; text-align: center;">
+                    <strong style="font-size: 1.1em;">#{{ plot.plot_id }}</strong>
+                </span>
+                <span style="display: flex; flex-direction: column; gap: 4px; min-width: 0;">
+                    <strong>{{ plot.star_name }}</strong>
+                    <span class="muted" style="font-size: 0.85em;">
+                        {% if plot.status %}{{ plot.status }}{% endif %}
+                        {% if plot.start_time_text %} · {{ plot.start_time_text }}{% endif %}
+                    </span>
+                </span>
+                <span style="flex-shrink: 0; margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 2px;">
+                    {% if plot.is_ready %}
+                    <span style="color: var(--accent-green);">可牵引</span>
+                    {% else %}
+                    <span class="muted" style="font-size: 0.9em;">CD</span>
+                    <strong style="font-family: var(--font-mono); font-size: 0.85em;">
+                        {% set rh = (plot.cooldown_remaining / 3600)|int %}
+                        {% set rm = ((plot.cooldown_remaining % 3600) / 60)|int %}
+                        {{ rh }}时{{ rm }}分
+                    </strong>
+                    {% endif %}
+                </span>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="muted">暂无引星盘数据，请先使用 .观星台 或等待天机阁同步。</p>
+        {% endif %}
+    </div>
+
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>星宫</p>
+            <h2>星辰参考</h2>
+        </div>
+        {% if xinggong_state.star_table %}
+        <div class="stack-list compact-stack top-gap">
+            {% for star in xinggong_state.star_table %}
+            <div class="kv-row">
+                <span>{{ star.name }}</span>
+                <strong><span style="font-family: var(--font-mono);">{{ star.duration }}</span>{% if star.requirement != '无' %} · {{ star.requirement }}{% endif %}</strong>
+            </div>
+            {% endfor %}
+        </div>
+        {% if xinggong_state.has_bottle %}
+        <p class="muted top-gap" style="color: var(--accent-gold);">持有【掌天瓶】，可无视天雷星与帝魂星身份限制。</p>
+        {% endif %}
+        {% endif %}
+    </div>
+</section>
+{% endif %}
+
 {% if current_sect_feature and current_sect_feature.actions %}
 <section class="detail-grid">
     {% for action in current_sect_feature.actions %}
