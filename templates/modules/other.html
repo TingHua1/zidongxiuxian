@@ -198,9 +198,15 @@
             <div class="kv-row"><span>入梦寻图</span><strong {% if companion_state.dream_seek_cooldown_target %}class="countdown-text" data-countdown-target="{{ companion_state.dream_seek_cooldown_target }}"{% endif %}>{{ companion_state.dream_seek_display }}</strong></div>
             <div class="kv-row"><span>共历心劫</span><strong {% if companion_state.heart_tribulation_cooldown_target %}class="countdown-text" data-countdown-target="{{ companion_state.heart_tribulation_cooldown_target }}"{% endif %}>{{ companion_state.heart_tribulation_display }}</strong></div>
             <div class="kv-row"><span>天机代卜</span><strong {% if companion_state.divination_chain_cooldown_target %}class="countdown-text" data-countdown-target="{{ companion_state.divination_chain_cooldown_target }}"{% endif %}>{{ companion_state.divination_chain_display }}</strong></div>
-            <div class="kv-row"><span>残图进展</span><strong>{{ companion_state.fragment_progress }}</strong></div>
+            <div class="kv-row"><span>虚天残图</span><strong>{{ companion_state.fragment_progress }}</strong></div>
         </div>
         <p class="muted top-gap">碎片袋：{{ companion_state.fragment_detail }}</p>
+        {% if companion_state.cangkun_fragment_detail %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>苍坤残图</span><strong>{{ companion_state.cangkun_fragment_progress }}</strong></div>
+        </div>
+        <p class="muted top-gap">碎片袋：{{ companion_state.cangkun_fragment_detail }}</p>
+        {% endif %}
 
         <form class="top-gap" method="post" action="/runtime/commands/send-raw" id="companion-command-form">
             <input type="hidden" name="chat_id" value="{{ bound_chat_id or '' }}">

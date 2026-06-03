@@ -237,6 +237,20 @@ def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict
         f"{label}{int(fragment_bag.get(key) or 0)}" for key, label in fragment_entries
     )
 
+    cangkun_bag = _coerce_json_dict(companion_payload.get("cangkun_fragment_bag"))
+    cangkun_entries = [
+        ("cangkun_chart_gate", "门"),
+        ("cangkun_chart_jade", "玉"),
+        ("cangkun_chart_mulan", "木"),
+        ("cangkun_chart_taimiao", "太"),
+    ]
+    cangkun_count = sum(
+        1 for key, _label in cangkun_entries if int(cangkun_bag.get(key) or 0) > 0
+    )
+    cangkun_detail = " / ".join(
+        f"{label}{int(cangkun_bag.get(key) or 0)}" for key, label in cangkun_entries
+    )
+
     reply_divination_chain = _extract_reply_field(companion_reply_text, "天机代卜链")
     reply_abyss_guard = _extract_reply_field(companion_reply_text, "坠魔谷护持")
 
@@ -299,6 +313,8 @@ def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict
         "divination_chain_cooldown_target": float(divination_chain_target or 0),
         "fragment_progress": f"{fragment_count}/4",
         "fragment_detail": fragment_detail,
+        "cangkun_fragment_progress": f"{cangkun_count}/4",
+        "cangkun_fragment_detail": cangkun_detail,
         "heart_tribulation_command": ".共历心劫",
     }
 
