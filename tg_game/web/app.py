@@ -2534,15 +2534,24 @@ def create_app() -> FastAPI:
                     cooldown_remaining = max(cooldown_total - elapsed, 0)
                 except (ValueError, OverflowError):
                     pass
+            cd_expired = cooldown_remaining <= 0 and start_ts > 0
+            collectable = status in ("可收集", "精华已成")
+            condensing = status in ("凝聚中",)
+            is_ready = cd_expired and not collectable and not condensing and status not in ("元磁紊乱",)
+            display_status = status or "空闲"
+            if collectable:
+                display_status = "精华已成 · 待收集"
             plots.append({
                 "plot_id": plot_id,
                 "star_name": star_name or "未牵引",
-                "status": status or "空闲",
+                "status": display_status,
+                "raw_status": status,
                 "start_time_text": datetime.fromtimestamp(start_ts, tz=timezone.utc).astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M") if start_ts > 0 else "",
                 "cooldown_remaining": cooldown_remaining,
                 "cooldown_total": cooldown_total,
                 "cooldown_pct": int(100 * (cooldown_total - cooldown_remaining) / cooldown_total) if cooldown_total > 0 else 0,
-                "is_ready": cooldown_remaining <= 0 and start_ts > 0,
+                "is_ready": is_ready,
+                "collectable": collectable,
             })
 
         sect_position = getattr(active_profile, "sect_position", "") or ""

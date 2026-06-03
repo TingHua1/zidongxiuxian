@@ -283,7 +283,8 @@
                      data-remaining-seconds="{{ cooldown_remaining }}"
                      data-total-seconds="{{ cooldown_total }}"
                      data-is-ready="{{ '1' if plot.is_ready else '0' }}"
-                     style="position: relative; overflow: hidden; padding: 18px; border: 1px solid {% if plot.is_ready %}rgba(91, 213, 155, 0.45){% else %}var(--border-subtle){% endif %}; border-radius: 18px; background: radial-gradient(circle at 82% 12%, {% if plot.is_ready %}rgba(91, 213, 155, 0.18){% else %}rgba(219, 180, 103, 0.16){% endif %}, transparent 34%), linear-gradient(135deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)); box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18); transition: border-color 0.35s, background 0.35s;">
+                     data-is-collectable="{{ '1' if plot.collectable else '0' }}"
+                     style="position: relative; overflow: hidden; padding: 18px; border: 1px solid {% if plot.collectable %}rgba(99, 179, 237, 0.45){% elif plot.is_ready %}rgba(91, 213, 155, 0.45){% else %}var(--border-subtle){% endif %}; border-radius: 18px; background: radial-gradient(circle at 82% 12%, {% if plot.collectable %}rgba(99, 179, 237, 0.14){% elif plot.is_ready %}rgba(91, 213, 155, 0.18){% else %}rgba(219, 180, 103, 0.16){% endif %}, transparent 34%), linear-gradient(135deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)); box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18); transition: border-color 0.35s, background 0.35s;">
                 <div style="position: absolute; inset: auto -28px -34px auto; width: 110px; height: 110px; border: 1px solid rgba(219, 180, 103, 0.16); border-radius: 999px;"></div>
                 <div style="position: relative; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;">
                     <div>
@@ -295,8 +296,8 @@
                             {{ plot.star_name or '未知星曜' }}
                         </h3>
                     </div>
-                    <div class="xinggong-status-badge" style="flex: 0 0 auto; padding: 7px 11px; border-radius: 999px; color: {% if plot.is_ready %}var(--accent-green){% else %}var(--text-muted){% endif %}; background: {% if plot.is_ready %}rgba(91, 213, 155, 0.13){% else %}rgba(255, 255, 255, 0.055){% endif %}; border: 1px solid {% if plot.is_ready %}rgba(91, 213, 155, 0.35){% else %}var(--border-subtle){% endif %}; font-size: 0.84rem; font-weight: 700; white-space: nowrap; transition: color 0.35s, background 0.35s, border-color 0.35s;">
-                        {{ '可牵引' if plot.is_ready else '冷却中' }}
+                    <div class="xinggong-status-badge" style="flex: 0 0 auto; padding: 7px 11px; border-radius: 999px; color: {% if plot.collectable %}rgba(99, 179, 237, 0.95){% elif plot.is_ready %}var(--accent-green){% else %}var(--text-muted){% endif %}; background: {% if plot.collectable %}rgba(99, 179, 237, 0.13){% elif plot.is_ready %}rgba(91, 213, 155, 0.13){% else %}rgba(255, 255, 255, 0.055){% endif %}; border: 1px solid {% if plot.collectable %}rgba(99, 179, 237, 0.45){% elif plot.is_ready %}rgba(91, 213, 155, 0.35){% else %}var(--border-subtle){% endif %}; font-size: 0.84rem; font-weight: 700; white-space: nowrap; transition: color 0.35s, background 0.35s, border-color 0.35s;">
+                        {{ '待收集' if plot.collectable else '可牵引' if plot.is_ready else '冷却中' }}
                     </div>
                 </div>
 
@@ -306,7 +307,10 @@
 
                 <div style="position: relative; margin-top: 18px; display: grid; gap: 9px;">
                     <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px;">
-                        {% if plot.is_ready %}
+                        {% if plot.collectable %}
+                        <strong class="xinggong-time-text" style="color: rgba(99, 179, 237, 0.95); font-size: 1.02rem;">精华已成</strong>
+                        <span class="xinggong-pct-text" style="color: var(--text-muted); font-family: var(--font-mono); font-size: 0.82rem;">DONE</span>
+                        {% elif plot.is_ready %}
                         <strong class="xinggong-time-text" style="color: var(--accent-green); font-size: 1.02rem;">星轨已校准</strong>
                         <span class="xinggong-pct-text" style="color: var(--text-muted); font-family: var(--font-mono); font-size: 0.82rem;">READY</span>
                         {% else %}
@@ -318,7 +322,7 @@
                         {% endif %}
                     </div>
                     <div style="height: 8px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.07); border: 1px solid var(--border-subtle);">
-                        <div class="xinggong-progress-bar" style="height: 100%; width: {% if plot.is_ready %}100%{% else %}{{ pct }}{% endif %}%; border-radius: inherit; background: linear-gradient(90deg, {% if plot.is_ready %}var(--accent-green), var(--accent-gold){% else %}rgba(219, 180, 103, 0.38), var(--accent-gold){% endif %}); box-shadow: 0 0 18px {% if plot.is_ready %}rgba(91, 213, 155, 0.35){% else %}rgba(219, 180, 103, 0.24){% endif %}; transition: width 0.9s, background 0.5s, box-shadow 0.5s;"></div>
+                        <div class="xinggong-progress-bar" style="height: 100%; width: {% if plot.collectable or plot.is_ready %}100%{% else %}{{ pct }}{% endif %}%; border-radius: inherit; background: linear-gradient(90deg, {% if plot.collectable %}rgba(99, 179, 237, 0.7), rgba(99, 179, 237, 0.3){% elif plot.is_ready %}var(--accent-green), var(--accent-gold){% else %}rgba(219, 180, 103, 0.38), var(--accent-gold){% endif %}); box-shadow: 0 0 18px {% if plot.collectable %}rgba(99, 179, 237, 0.25){% elif plot.is_ready %}rgba(91, 213, 155, 0.35){% else %}rgba(219, 180, 103, 0.24){% endif %}; transition: width 0.9s, background 0.5s, box-shadow 0.5s;"></div>
                     </div>
                 </div>
 
