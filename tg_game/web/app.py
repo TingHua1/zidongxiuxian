@@ -230,9 +230,6 @@ def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict
         ("xutian_chart_west", "西"),
         ("xutian_chart_north", "北"),
     ]
-    fragment_count = sum(
-        1 for key, _label in fragment_entries if int(fragment_bag.get(key) or 0) > 0
-    )
     fragment_detail = " / ".join(
         f"{label}{int(fragment_bag.get(key) or 0)}" for key, label in fragment_entries
     )
@@ -244,9 +241,6 @@ def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict
         ("cangkun_chart_mulan", "木"),
         ("cangkun_chart_taimiao", "太"),
     ]
-    cangkun_count = sum(
-        1 for key, _label in cangkun_entries if int(cangkun_bag.get(key) or 0) > 0
-    )
     cangkun_detail = " / ".join(
         f"{label}{int(cangkun_bag.get(key) or 0)}" for key, label in cangkun_entries
     )
@@ -311,9 +305,7 @@ def _build_companion_view(payload: dict, companion_reply_text: str = "") -> dict
             divination_chain_target
         ),
         "divination_chain_cooldown_target": float(divination_chain_target or 0),
-        "fragment_progress": f"{fragment_count}/4",
         "fragment_detail": fragment_detail,
-        "cangkun_fragment_progress": f"{cangkun_count}/4",
         "cangkun_fragment_detail": cangkun_detail,
         "heart_tribulation_command": ".共历心劫",
     }
@@ -4081,8 +4073,8 @@ def create_app() -> FastAPI:
             "heart_tribulation_cooldown_target": 0.0,
             "divination_chain_display": "接口未提供",
             "divination_chain_cooldown_target": 0.0,
-            "fragment_progress": "0/4",
             "fragment_detail": "东0 / 南0 / 西0 / 北0",
+            "cangkun_fragment_detail": "",
             "heart_tribulation_command": ".共历心劫",
         }
         companion_auto_state = {
