@@ -349,10 +349,13 @@
                 return '剩余 ' + parts.join('');
             }
             function updateCard(card) {
+                var isCollectable = card.getAttribute('data-is-collectable') === '1';
+                if (isCollectable) return;
                 var remaining = parseInt(card.getAttribute('data-remaining-seconds') || '0', 10);
                 var total = parseInt(card.getAttribute('data-total-seconds') || '0', 10);
                 var isReady = card.getAttribute('data-is-ready') === '1';
                 if (isReady) return;
+                if (remaining <= 0 && total > 0) return;
                 remaining = Math.max(remaining - 1, 0);
                 card.setAttribute('data-remaining-seconds', remaining);
                 var timeEl = card.querySelector('.xinggong-time-text');
