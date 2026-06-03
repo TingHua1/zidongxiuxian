@@ -2515,6 +2515,20 @@ def create_app() -> FastAPI:
         plots = []
         for plot_id in sorted(plots_raw.keys(), key=lambda k: int(k) if k.isdigit() else 0):
             plot = plots_raw[plot_id]
+            if plot is None:
+                plots.append({
+                    "plot_id": plot_id,
+                    "star_name": "",
+                    "status": "空闲",
+                    "raw_status": "",
+                    "start_time_text": "",
+                    "cooldown_remaining": 0,
+                    "cooldown_total": 0,
+                    "cooldown_pct": 0,
+                    "is_ready": True,
+                    "collectable": False,
+                })
+                continue
             if not isinstance(plot, dict):
                 continue
             star_name = str(plot.get("star_name") or "").strip()

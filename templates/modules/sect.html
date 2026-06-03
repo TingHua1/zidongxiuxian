@@ -293,7 +293,7 @@
                             <span>引星盘</span>
                         </div>
                         <h3 style="margin: 14px 0 0; color: var(--accent-gold); font-size: clamp(1.15rem, 2vw, 1.45rem); line-height: 1.15; font-weight: 700;">
-                            {{ plot.star_name or '未知星曜' }}
+                            {{ plot.star_name if plot.star_name else '空闲' }}
                         </h3>
                     </div>
                     <div class="xinggong-status-badge" style="flex: 0 0 auto; padding: 7px 11px; border-radius: 999px; color: {% if plot.collectable %}rgba(99, 179, 237, 0.95){% elif plot.is_ready %}var(--accent-green){% else %}var(--text-muted){% endif %}; background: {% if plot.collectable %}rgba(99, 179, 237, 0.13){% elif plot.is_ready %}rgba(91, 213, 155, 0.13){% else %}rgba(255, 255, 255, 0.055){% endif %}; border: 1px solid {% if plot.collectable %}rgba(99, 179, 237, 0.45){% elif plot.is_ready %}rgba(91, 213, 155, 0.35){% else %}var(--border-subtle){% endif %}; font-size: 0.84rem; font-weight: 700; white-space: nowrap; transition: color 0.35s, background 0.35s, border-color 0.35s;">
