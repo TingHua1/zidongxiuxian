@@ -2324,9 +2324,57 @@ class GeneralGameExecutor(BaseExecutor):
             return True
 
         tribulation_msg_id = int(task.get("tribulation_msg_id") or 0)
+        if workflow_state == COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE and not is_edited_event:
+            if COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORD in current_text and current_sender_id in ALLOWED_GAME_BOT_IDS:
+                _append_companion_heart_tribulation_log(
+                    storage,
+                    task,
+                    step=workflow_state,
+                    event_type="settlement_received",
+                    message_id=current_message_id,
+                    reply_to_msg_id=current_reply_to_msg_id,
+                    sender_id=current_sender_id,
+                    sender_username=sender_username,
+                    text=current_text,
+                )
+                previous_settlement_text = str(task.get("last_settlement_text") or "")
+                previous_settlement_at = float(task.get("last_settlement_at") or 0)
+                updated_task = storage.update_companion_heart_tribulation_task(
+                    task_id,
+                    workflow_state=COMPANION_HEART_TRIBULATION_IDLE_STATE,
+                    step_deadline_at=0,
+                    matched_bot_id=0,
+                    anchor_command_msg_id=0,
+                    anchor_bot_msg_id=0,
+                    tribulation_command_msg_id=0,
+                    tribulation_msg_id=0,
+                    panel_reply_msg_id=0,
+                    last_action_round_sent=0,
+                    last_tribulation_command_at=0,
+                    last_progress_at=time.time(),
+                    last_progress_fingerprint="",
+                    last_stable_sent_at=0,
+                    last_settlement_text=current_text,
+                    last_settlement_at=time.time(),
+                    previous_settlement_text=previous_settlement_text,
+                    previous_settlement_at=previous_settlement_at,
+                    last_error="",
+                )
+                task = updated_task or task
+                _append_companion_heart_tribulation_log(
+                    storage,
+                    task,
+                    step="completed",
+                    event_type="settlement_recorded",
+                    message_id=current_message_id,
+                    sender_id=current_sender_id,
+                    sender_username=sender_username,
+                    text=current_text,
+                )
+                return True
+            return False
         if tribulation_msg_id <= 0 or current_message_id != tribulation_msg_id or not is_edited_event:
             return False
-        matched_bot_id = int(task.get("matched_bot_id") or 0)
         if matched_bot_id > 0 and current_sender_id != matched_bot_id:
             return False
 
