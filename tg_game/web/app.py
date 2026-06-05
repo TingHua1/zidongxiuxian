@@ -2557,8 +2557,8 @@ def create_app() -> FastAPI:
                 except (ValueError, OverflowError):
                     pass
             cd_expired = cooldown_remaining <= 0 and start_ts > 0
-            collectable = status in ("可收集", "精华已成")
-            condensing = status in ("凝聚中",)
+            collectable = status in ("可收集", "精华已成") or (status in ("凝聚中",) and cd_expired)
+            condensing = status in ("凝聚中",) and not cd_expired
             is_ready = cd_expired and not collectable and not condensing and status not in ("元磁紊乱",)
             display_status = status or "空闲"
             if collectable:
