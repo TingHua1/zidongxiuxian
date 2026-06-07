@@ -7,7 +7,6 @@ import time
 from datetime import datetime, timedelta
 
 from tg_game.clients.asc_client import AscAuthError
-from tg_game.config import ALLOWED_GAME_BOT_IDS
 from tg_game.services.external_sync import (
     ASC_PROVIDER,
     get_cultivator_lookup_candidates,
@@ -24,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 SECT_BOT_USERNAME = "fanrenxiuxian_bot"
-SECT_BOT_IDS = set(ALLOWED_GAME_BOT_IDS)
+SECT_BOT_IDS = set()
 SECT_CHECK_COMMAND = ".我的宗门"
 SECT_DEFAULT_INTERVAL = 1800
 SECT_COMMAND_COOLDOWN = 15
@@ -53,6 +52,8 @@ YINLUO_BLOOD_WASH_SECONDS = 4 * 3600
 HUANGFENG_BATCH_TIMEOUT_SECONDS = 10 * 60
 HUANGFENG_BATCH_MAX_RETRIES = 2
 HUANGFENG_PAYLOAD_REFRESH_MAX_RETRIES = 2
+COMPANION_ASSIST_REPLY_WINDOW_SECONDS = 60
+COMPANION_ASSIST_COOLDOWN_SECONDS = 12 * 3600
 
 HUANGFENG_PLOT_PATTERN = re.compile(
     r"(?P<plot>\d+)\s*(?:号)?(?:药田|地块|灵田|田)", re.IGNORECASE
@@ -146,6 +147,7 @@ def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
                 "auto_huangfeng_exchange_enabled",
                 "auto_luoyun_enabled",
                 "auto_companion_greet_enabled",
+                "auto_companion_assist_enabled",
                 "auto_lingxiao_enabled",
                 "auto_lingxiao_gangfeng_enabled",
                 "auto_lingxiao_borrow_enabled",
@@ -165,6 +167,7 @@ def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
                 "auto_lingxiao_gangfeng_enabled": 0,
                 "auto_lingxiao_borrow_enabled": 0,
                 "auto_lingxiao_question_enabled": 0,
+                "auto_companion_assist_enabled": 0,
                 "yinluo_batch_mode": None,
                 "yinluo_batch_commands": None,
                 "yinluo_batch_index": 0,
@@ -185,6 +188,13 @@ def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
                 "luoyun_force_refresh": 0,
                 "luoyun_invasion_active": 0,
                 "luoyun_frozen_irrigation_ready_time": 0,
+                "companion_assist_pending_reply_msg_id": 0,
+                "companion_assist_pending_at": 0,
+                "companion_assist_pending_target_sender_id": 0,
+                "companion_assist_pending_target_username": None,
+                "companion_assist_next_check_time": 0,
+                "companion_assist_next_check_source": None,
+                "last_companion_assist_time": 0,
                 "sect_checkin_next_check_time": 0,
                 "sect_teach_next_check_time": 0,
                 "yinluo_sacrifice_next_check_time": 0,
@@ -245,6 +255,21 @@ def _build_sect_auto_guard_updates(session, sect_name: str, now=None) -> dict:
                 {
                     "auto_companion_greet_enabled": 0,
                     "companion_greet_next_check_time": 0,
+                }
+            )
+        if session.get("auto_companion_assist_enabled") and not _is_same_sect_name(
+            normalized_sect_name, XINGGONG_SECT_NAME
+        ):
+            reasons.append(f"当前宗门已不是{XINGGONG_SECT_NAME}，已关闭自动助阵")
+            updates.update(
+                {
+                    "auto_companion_assist_enabled": 0,
+                    "companion_assist_next_check_time": 0,
+                    "companion_assist_next_check_source": None,
+                    "companion_assist_pending_reply_msg_id": 0,
+                    "companion_assist_pending_at": 0,
+                    "companion_assist_pending_target_sender_id": 0,
+                    "companion_assist_pending_target_username": None,
                 }
             )
         if (
@@ -1556,6 +1581,7 @@ def _has_any_auto_keys(session):
         or _active_luoyun_auto_keys(session)
         or _active_lingxiao_auto_keys(session)
         or bool(session.get("auto_companion_greet_enabled"))
+        or bool(session.get("auto_companion_assist_enabled"))
     )
 
 
@@ -1576,6 +1602,7 @@ def _recompute_overall_next_check(session, updates, now=None):
         ("auto_lingxiao_borrow_enabled", "lingxiao_borrow_next_check_time"),
         ("auto_lingxiao_question_enabled", "lingxiao_question_next_check_time"),
         ("auto_companion_greet_enabled", "companion_greet_next_check_time"),
+        ("auto_companion_assist_enabled", "companion_assist_next_check_time"),
     ]:
         if not merged.get(enabled_key):
             continue
@@ -2092,7 +2119,15 @@ def ensure_tables(db):
             last_yinluo_sacrifice_date TEXT,
             last_command_msg_id INTEGER DEFAULT 0,
             auto_companion_greet_enabled INTEGER DEFAULT 0,
+            auto_companion_assist_enabled INTEGER DEFAULT 0,
             companion_greet_next_check_time REAL DEFAULT 0,
+            companion_assist_next_check_time REAL DEFAULT 0,
+            companion_assist_next_check_source TEXT,
+            companion_assist_pending_reply_msg_id INTEGER DEFAULT 0,
+            companion_assist_pending_at REAL DEFAULT 0,
+            companion_assist_pending_target_sender_id INTEGER DEFAULT 0,
+            companion_assist_pending_target_username TEXT,
+            last_companion_assist_time REAL DEFAULT 0,
             companion_greet_next_check_source TEXT,
             PRIMARY KEY (profile_id, chat_id, bot_username)
         )
@@ -2172,7 +2207,15 @@ def ensure_tables(db):
         "last_yinluo_sacrifice_date": "TEXT",
         "last_command_msg_id": "INTEGER DEFAULT 0",
         "auto_companion_greet_enabled": "INTEGER DEFAULT 0",
+        "auto_companion_assist_enabled": "INTEGER DEFAULT 0",
         "companion_greet_next_check_time": "REAL DEFAULT 0",
+        "companion_assist_next_check_time": "REAL DEFAULT 0",
+        "companion_assist_next_check_source": "TEXT",
+        "companion_assist_pending_reply_msg_id": "INTEGER DEFAULT 0",
+        "companion_assist_pending_at": "REAL DEFAULT 0",
+        "companion_assist_pending_target_sender_id": "INTEGER DEFAULT 0",
+        "companion_assist_pending_target_username": "TEXT",
+        "last_companion_assist_time": "REAL DEFAULT 0",
         "companion_greet_next_check_source": "TEXT",
         "profile_id": "INTEGER NOT NULL DEFAULT 0",
     }
@@ -2581,6 +2624,18 @@ def parse_message(text):
             "summary": "灵果采摘完成",
         }
 
+    if "【周天星斗大阵-启】" in text:
+        return {
+            "event": "xinggong_star_array_open",
+            "summary": "收到星宫启阵回包",
+        }
+
+    if "【周天星斗大阵-成】" in text:
+        return {
+            "event": "xinggong_star_array_complete",
+            "summary": "星宫大阵已成",
+        }
+
     return {
         "event": "unknown",
         "summary": text[:80],
@@ -2615,6 +2670,12 @@ def build_status_text(session):
             f"自动问心台: {'开启' if session.get('auto_lingxiao_question_enabled') else '关闭'}",
             f"下次问心检查: {format_timestamp(session.get('lingxiao_question_next_check_time') or 0)}",
             f"问心倒计时来源: {session.get('lingxiao_question_next_check_source') or '-'}",
+            f"自动问安: {'开启' if session.get('auto_companion_greet_enabled') else '关闭'}",
+            f"问安下次检查: {format_timestamp(session.get('companion_greet_next_check_time') or 0)}",
+            f"问安倒计时来源: {session.get('companion_greet_next_check_source') or '-'}",
+            f"自动助阵: {'开启' if session.get('auto_companion_assist_enabled') else '关闭'}",
+            f"助阵冷却至: {format_timestamp(session.get('companion_assist_next_check_time') or 0)}",
+            f"助阵检查来源: {session.get('companion_assist_next_check_source') or '-'}",
             f"自动宗门点卯: {'开启' if session.get('auto_sect_checkin_enabled') else '关闭'}",
             f"下次点卯检查: {format_timestamp(session.get('sect_checkin_next_check_time') or 0)}",
             f"点卯倒计时来源: {session.get('sect_checkin_next_check_source') or '-'}",
@@ -2688,6 +2749,14 @@ def stop_all_automation(db, chat_id, reason="", profile_id=None):
         yinluo_blood_wash_next_check_time=0,
         huangfeng_next_check_time=0,
         luoyun_next_check_time=0,
+        auto_companion_assist_enabled=0,
+        companion_assist_next_check_time=0,
+        companion_assist_next_check_source=None,
+        companion_assist_pending_reply_msg_id=0,
+        companion_assist_pending_at=0,
+        companion_assist_pending_target_sender_id=0,
+        companion_assist_pending_target_username=None,
+        last_companion_assist_time=0,
         last_summary=reason or None,
     )
 
@@ -2771,6 +2840,32 @@ def configure_companion_greet_auto(db, chat_id, enabled, profile_id=None):
             )
         ),
         next_check_source=("已开启自动问安，等待首轮同步" if enabled else None),
+    )
+
+
+def configure_companion_assist_auto(db, chat_id, enabled, profile_id=None):
+    session = get_session(db, chat_id, profile_id=profile_id)
+    update_session(
+        db,
+        chat_id,
+        profile_id=profile_id,
+        auto_companion_assist_enabled=_normalize_bool(enabled),
+        companion_assist_next_check_time=0,
+        companion_assist_next_check_source=(
+            "已开启自动助阵，等待启阵回包" if enabled else None
+        ),
+        companion_assist_pending_reply_msg_id=0,
+        companion_assist_pending_at=0,
+        companion_assist_pending_target_sender_id=0,
+        companion_assist_pending_target_username=None,
+        next_check_time=(
+            0
+            if enabled
+            else _recompute_overall_next_check(
+                session, {"auto_companion_assist_enabled": 0}, time.time()
+            )
+        ),
+        next_check_source=("已开启自动助阵，等待启阵回包" if enabled else None),
     )
 
 
@@ -3372,8 +3467,53 @@ def configure_lingxiao_question_auto(db, chat_id, enabled, profile_id=None):
     )
 
 
+def build_companion_assist_auto_command(session, now=None):
+    now = now or time.time()
+    if not session.get("auto_companion_assist_enabled"):
+        return None
+    pending_msg_id = int(session.get("companion_assist_pending_reply_msg_id") or 0)
+    pending_at = float(session.get("companion_assist_pending_at") or 0)
+    last_assist_time = float(session.get("last_companion_assist_time") or 0)
+    cooldown_ready_time = (
+        last_assist_time + COMPANION_ASSIST_COOLDOWN_SECONDS if last_assist_time > 0 else 0
+    )
+    if not pending_msg_id or not pending_at:
+        return None
+    if now > pending_at + COMPANION_ASSIST_REPLY_WINDOW_SECONDS:
+        return None
+    if cooldown_ready_time and now < cooldown_ready_time:
+        return None
+    return {
+        "command": ".助阵",
+        "next_field": "companion_assist_next_check_time",
+        "source_field": "companion_assist_next_check_source",
+        "pending_source": "已发送 .助阵，进入12小时冷却",
+        "pending_delay_seconds": COMPANION_ASSIST_COOLDOWN_SECONDS,
+        "reply_to_msg_id": pending_msg_id,
+    }
+
+
+def build_companion_greet_auto_command(session, now=None):
+    now = now or time.time()
+    if not session.get("auto_companion_greet_enabled"):
+        return None
+    next_time = float(session.get("companion_greet_next_check_time") or 0)
+    if next_time and now < next_time:
+        return None
+    return {
+        "command": ".每日问安",
+        "next_field": "companion_greet_next_check_time",
+        "source_field": "companion_greet_next_check_source",
+        "pending_source": "已发送 .每日问安，等待回复",
+        "pending_delay_seconds": LUOYUN_COMMAND_REFRESH_SECONDS,
+    }
+
+
 def build_auto_command(session, now=None):
     now = now or time.time()
+    companion_assist_command = build_companion_assist_auto_command(session, now)
+    if companion_assist_command:
+        return companion_assist_command
     if session.get("auto_sect_checkin_enabled"):
         next_time = float(session.get("sect_checkin_next_check_time") or 0)
         if _parse_date_key(session.get("sect_checkin_pending_date")) == current_date_key(
@@ -3481,18 +3621,49 @@ def build_auto_command(session, now=None):
                 "pending_delay_seconds": LUOYUN_COMMAND_REFRESH_SECONDS,
             }
             return None
-    if session.get("auto_companion_greet_enabled"):
-        next_time = float(session.get("companion_greet_next_check_time") or 0)
-        if not next_time or now >= next_time:
-            return {
-                "command": ".每日问安",
-                "next_field": "companion_greet_next_check_time",
-                "source_field": "companion_greet_next_check_source",
-                "pending_source": "已发送 .每日问安，等待回复",
-                "pending_delay_seconds": LUOYUN_COMMAND_REFRESH_SECONDS,
-            }
-        return None
+    companion_greet_command = build_companion_greet_auto_command(session, now)
+    if companion_greet_command:
+        return companion_greet_command
     return None
+
+
+def clear_expired_companion_assist_pending(db, session, now=None):
+    now = now or time.time()
+    if not session or not session.get("auto_companion_assist_enabled"):
+        return session
+    pending_msg_id = int(session.get("companion_assist_pending_reply_msg_id") or 0)
+    pending_at = float(session.get("companion_assist_pending_at") or 0)
+    if not pending_msg_id or not pending_at:
+        return session
+    if now <= pending_at + COMPANION_ASSIST_REPLY_WINDOW_SECONDS:
+        return session
+    last_assist_time = float(session.get("last_companion_assist_time") or 0)
+    cooldown_ready_time = (
+        last_assist_time + COMPANION_ASSIST_COOLDOWN_SECONDS if last_assist_time > 0 else 0
+    )
+    update_fields = {
+        "companion_assist_pending_reply_msg_id": 0,
+        "companion_assist_pending_at": 0,
+        "companion_assist_pending_target_sender_id": 0,
+        "companion_assist_pending_target_username": None,
+    }
+    if cooldown_ready_time and now < cooldown_ready_time:
+        update_fields["companion_assist_next_check_time"] = cooldown_ready_time
+        update_fields["companion_assist_next_check_source"] = (
+            f"助阵冷却中，解锁于 {format_timestamp(cooldown_ready_time)}"
+        )
+    else:
+        update_fields["companion_assist_next_check_time"] = 0
+        update_fields["companion_assist_next_check_source"] = "启阵回包已超时，等待下一次回包"
+    update_session(
+        db,
+        session["chat_id"],
+        profile_id=session.get("profile_id"),
+        **update_fields,
+    )
+    updated = dict(session)
+    updated.update(update_fields)
+    return updated
 
 
 async def maybe_send_check(
@@ -3650,6 +3821,22 @@ async def maybe_send_check(
             luoyun_next_check_time=now + LUOYUN_COMMAND_REFRESH_SECONDS,
             luoyun_next_check_source=f"已发送 {command_text}，等待机器人回包",
         )
+    elif command_text == ".助阵":
+        update_session(
+            db,
+            chat_id,
+            profile_id=session.get("profile_id"),
+            companion_assist_pending_reply_msg_id=0,
+            companion_assist_pending_at=0,
+            companion_assist_pending_target_sender_id=0,
+            companion_assist_pending_target_username=None,
+            last_companion_assist_time=now,
+            companion_assist_next_check_time=now + COMPANION_ASSIST_COOLDOWN_SECONDS,
+            companion_assist_next_check_source="已发送 .助阵，进入12小时冷却",
+            next_check_time=now + COMPANION_ASSIST_COOLDOWN_SECONDS,
+            next_check_source="已发送 .助阵，进入12小时冷却",
+            last_summary="已发送星宫助阵指令",
+        )
     return True, "sent", getattr(sent_message, "id", 0)
 
 
@@ -3692,10 +3879,10 @@ async def maybe_run_yinluo_batch(client, db, session, *, storage=None, profile_i
     return True
 
 
-async def handle_bot_message(event, db, client=None, profile_id=None):
+async def handle_bot_message(event, db, client=None, profile_id=None, profile=None):
     sender = await event.get_sender()
     sender_id = getattr(sender, "id", None)
-    if sender_id not in SECT_BOT_IDS:
+    if sender_id is None:
         return None
 
     session = get_session(db, event.chat_id, profile_id=profile_id)
@@ -3731,6 +3918,79 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
             update_fields["huangfeng_last_garden_text"] = raw_text[:4000]
             update_fields["huangfeng_last_garden_state"] = json.dumps(
                 garden_state, ensure_ascii=False
+            )
+    if parsed.get("event") == "xinggong_star_array_open" and session.get(
+        "auto_companion_assist_enabled"
+    ):
+        reply_message = None
+        if getattr(event, "is_reply", False):
+            try:
+                reply_message = await event.get_reply_message()
+            except Exception:
+                reply_message = None
+        reply_message_text = (getattr(reply_message, "raw_text", "") or "").strip()
+        reply_sender_id = int(getattr(reply_message, "sender_id", 0) or 0)
+        reply_sender_username = (
+            str(getattr(getattr(reply_message, "sender", None), "username", "") or "")
+            .strip()
+            .lstrip("@")
+        )
+        profile_user_id = str(getattr(profile, "telegram_user_id", "") or "").strip()
+        if (
+            reply_message
+            and reply_message_text.startswith(".启阵")
+            and str(reply_sender_id or "").strip()
+            and profile_user_id
+            and str(reply_sender_id) != profile_user_id
+        ):
+            last_assist_time = float(session.get("last_companion_assist_time") or 0)
+            cooldown_ready_time = (
+                last_assist_time + COMPANION_ASSIST_COOLDOWN_SECONDS
+                if last_assist_time > 0
+                else 0
+            )
+            if not cooldown_ready_time or now >= cooldown_ready_time:
+                update_fields["companion_assist_pending_reply_msg_id"] = int(event.id)
+                update_fields["companion_assist_pending_at"] = now
+                update_fields["companion_assist_pending_target_sender_id"] = (
+                    reply_sender_id
+                )
+                update_fields["companion_assist_pending_target_username"] = (
+                    reply_sender_username or None
+                )
+                update_fields["companion_assist_next_check_time"] = now
+                update_fields["companion_assist_next_check_source"] = (
+                    "收到星宫启阵回包，60秒内可自动助阵"
+                )
+                update_fields["next_check_time"] = now
+                update_fields["next_check_source"] = update_fields[
+                    "companion_assist_next_check_source"
+                ]
+            else:
+                update_fields["companion_assist_pending_reply_msg_id"] = 0
+                update_fields["companion_assist_pending_at"] = 0
+                update_fields["companion_assist_pending_target_sender_id"] = 0
+                update_fields["companion_assist_pending_target_username"] = None
+                update_fields["companion_assist_next_check_time"] = cooldown_ready_time
+                update_fields["companion_assist_next_check_source"] = (
+                    f"助阵冷却中，解锁于 {format_timestamp(cooldown_ready_time)}"
+                )
+                update_fields["next_check_time"] = cooldown_ready_time
+                update_fields["next_check_source"] = update_fields[
+                    "companion_assist_next_check_source"
+                ]
+    if parsed.get("event") == "xinggong_star_array_complete" and session.get(
+        "auto_companion_assist_enabled"
+    ):
+        pending_msg_id = int(session.get("companion_assist_pending_reply_msg_id") or 0)
+        if pending_msg_id and pending_msg_id == int(event.id or 0):
+            update_fields["companion_assist_pending_reply_msg_id"] = 0
+            update_fields["companion_assist_pending_at"] = 0
+            update_fields["companion_assist_pending_target_sender_id"] = 0
+            update_fields["companion_assist_pending_target_username"] = None
+            update_fields["companion_assist_next_check_time"] = 0
+            update_fields["companion_assist_next_check_source"] = (
+                "星宫大阵已成，等待下一次启阵回包"
             )
     luoyun_pending_commands = _load_luoyun_pending_commands(session)
     luoyun_pending_msg_id = int(session.get("luoyun_pending_msg_id") or 0)
@@ -4084,6 +4344,41 @@ async def handle_bot_message(event, db, client=None, profile_id=None):
         update_fields["companion_greet_next_check_source"] = (
             f"今日已问安，等待次日 {SECT_AUTO_WINDOW_START_TIME}-{COMPANION_GREET_WINDOW_END} 随机执行"
         )
+    if session.get("auto_companion_assist_enabled"):
+        pending_msg_id = int(
+            update_fields.get("companion_assist_pending_reply_msg_id")
+            if "companion_assist_pending_reply_msg_id" in update_fields
+            else session.get("companion_assist_pending_reply_msg_id") or 0
+        )
+        pending_at = float(
+            update_fields.get("companion_assist_pending_at")
+            if "companion_assist_pending_at" in update_fields
+            else session.get("companion_assist_pending_at") or 0
+        )
+        last_assist_time = float(session.get("last_companion_assist_time") or 0)
+        cooldown_ready_time = (
+            last_assist_time + COMPANION_ASSIST_COOLDOWN_SECONDS if last_assist_time > 0 else 0
+        )
+        if pending_msg_id and pending_at:
+            if now > pending_at + COMPANION_ASSIST_REPLY_WINDOW_SECONDS:
+                update_fields["companion_assist_pending_reply_msg_id"] = 0
+                update_fields["companion_assist_pending_at"] = 0
+                update_fields["companion_assist_pending_target_sender_id"] = 0
+                update_fields["companion_assist_pending_target_username"] = None
+                if cooldown_ready_time and now < cooldown_ready_time:
+                    update_fields["companion_assist_next_check_time"] = cooldown_ready_time
+                    update_fields["companion_assist_next_check_source"] = (
+                        f"助阵冷却中，解锁于 {format_timestamp(cooldown_ready_time)}"
+                    )
+                else:
+                    update_fields["companion_assist_next_check_time"] = 0
+                    update_fields["companion_assist_next_check_source"] = "启阵回包已超时，等待下一次回包"
+            elif not cooldown_ready_time or now >= cooldown_ready_time:
+                update_fields.setdefault("companion_assist_next_check_time", now)
+                update_fields.setdefault(
+                    "companion_assist_next_check_source",
+                    "收到星宫启阵回包，60秒内可自动助阵",
+                )
     update_session(
         db,
         event.chat_id,
@@ -4255,10 +4550,11 @@ async def runner(client, storage, profile_id=None):
                             payload=None,
                         )
                         now = time.time()
+                    session = clear_expired_companion_assist_pending(db, session, now)
                     command_info = build_auto_command(session, now)
                     if not command_info:
                         continue
-                    reply_to_msg_id = None
+                    reply_to_msg_id = int(command_info.get("reply_to_msg_id") or 0) or None
                     if command_info.get("requires_reply_target") and session_profile_id:
                         latest_command = storage.get_latest_outgoing_command_message(
                             session_profile_id,

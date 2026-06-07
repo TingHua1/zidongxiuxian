@@ -59,9 +59,11 @@ class ChatBinding:
     chat_type: str
     bot_username: str
     bot_id: Optional[int]
-    telegram_user_id: str
-    is_active: bool
-    created_at: float
+    bot_ids: list[int] = field(default_factory=list)
+    bot_usernames: dict[int, str] = field(default_factory=dict)
+    telegram_user_id: str = ""
+    is_active: bool = True
+    created_at: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)

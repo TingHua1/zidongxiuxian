@@ -26,26 +26,45 @@ class EventContext:
         return getattr(self.event, "sender_id", None)
 
     @property
+    def allowed_bot_ids(self) -> list[int]:
+        if not self.chat_binding:
+            return []
+        bot_ids = list(getattr(self.chat_binding, "bot_ids", None) or [])
+        primary_bot_id = getattr(self.chat_binding, "bot_id", None)
+        try:
+            normalized_primary = int(primary_bot_id) if primary_bot_id is not None else None
+        except (TypeError, ValueError):
+            normalized_primary = None
+        if not bot_ids and normalized_primary is not None and normalized_primary not in bot_ids:
+            bot_ids = [normalized_primary, *bot_ids]
+        deduped = []
+        for bot_id in bot_ids:
+            try:
+                normalized = int(bot_id)
+            except (TypeError, ValueError):
+                continue
+            if normalized not in deduped:
+                deduped.append(normalized)
+        return deduped
+
+    def has_allowed_bot(self, sender_id: Optional[int]) -> bool:
+        try:
+            return int(sender_id or 0) in self.allowed_bot_ids
+        except (TypeError, ValueError):
+            return False
+
+    @property
     def is_private(self) -> bool:
         return bool(getattr(self.event, "is_private", False))
 
     @property
     def is_bot_sender(self) -> bool:
         sender = getattr(self.event, "sender", None)
-        if sender and getattr(sender, "bot", False):
+        if self.has_allowed_bot(self.sender_id):
             return True
-        binding_bot_id = self.chat_binding.bot_id if self.chat_binding else None
-        if binding_bot_id is not None and str(self.sender_id or "") == str(
-            binding_bot_id
-        ):
+        if not self.chat_binding and sender and getattr(sender, "bot", False):
             return True
-        binding_bot = (
-            (self.chat_binding.bot_username or "").strip().lower().lstrip("@")
-            if self.chat_binding
-            else ""
-        )
-        sender_username = (getattr(sender, "username", "") or "").strip().lower()
-        return bool(binding_bot and sender_username.lstrip("@") == binding_bot)
+        return False
 
     @property
     def thread_id(self) -> Optional[int]:
@@ -59,6 +78,8 @@ class EventContext:
         ]:
             if candidate:
                 return candidate
+        if self.chat_binding and getattr(self.chat_binding, "thread_id", None) is not None:
+            return self.chat_binding.thread_id
         return None
 
     @property

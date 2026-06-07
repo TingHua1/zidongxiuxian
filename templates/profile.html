@@ -121,10 +121,63 @@
             <div class="kv-row"><span>神识锚点 (Chat ID)</span><strong style="font-family: var(--font-mono);">{{ bound_chat_id or '未锁定' }}</strong></div>
             <div class="kv-row"><span>分支因果 (Thread)</span><strong style="font-family: var(--font-mono);">{{ bound_thread_id or '主干道' }}</strong></div>
             <div class="kv-row"><span>秘境类型</span><strong>{{ bound_chat_type or 'group' }}</strong></div>
-            <div class="kv-row"><span>接引仙使 (Bot)</span><strong>{{ bound_bot_username or '未寻见' }}</strong></div>
-            <div class="kv-row"><span>仙使印记 (Bot ID)</span><strong style="font-family: var(--font-mono);">{{ bound_bot_id or '未知' }}</strong></div>
         </div>
-        <p class="muted top-gap">此为代码中固定的神识锚点，无法在界面篡改。</p>
+        <div class="top-gap" style="border-top: 1px dashed var(--border-color); padding-top: 18px;">
+            <p class="muted" style="margin-bottom: 10px; color: var(--accent-gold);">当前群绑定的 Bot 列表</p>
+            {% set bot_rows = current_chat_binding_bot_rows or [] %}
+            {% if bot_rows %}
+            <div class="stack-list compact-stack">
+                {% for bot in bot_rows %}
+                <div class="kv-row" style="align-items: center; gap: 14px;">
+                    <span>
+                        <strong style="font-family: var(--font-mono);">{{ bot.value }}</strong>
+                        <span class="muted" style="margin-left: 10px;">{{ bot.username_label }}</span>
+                    </span>
+                    <form method="post" action="/profiles/{{ active_profile.id }}/chat-bindings/{{ current_chat_binding.chat_id if current_chat_binding else bound_chat_id }}/bot-ids/remove" style="margin: 0;">
+                        <input type="hidden" name="bot_id" value="{{ bot.value }}">
+                        <input type="hidden" name="thread_id" value="{{ current_chat_binding.thread_id if current_chat_binding and current_chat_binding.thread_id is not none else '' }}">
+                        <input type="hidden" name="redirect_to" value="/profile?bot_page={{ current_chat_binding_bot_page }}">
+                        <button type="submit" class="inline-button small-btn">删除</button>
+                    </form>
+                </div>
+                {% endfor %}
+            </div>
+            {% if current_chat_binding_bot_total_pages > 1 %}
+            <div class="result-pagination top-gap">
+                <div class="result-pagination-links">
+                    {% if current_chat_binding_bot_page > 1 %}
+                    <a class="pagination-chip" href="/profile?bot_page={{ current_chat_binding_bot_page - 1 }}#chats">上一页</a>
+                    {% endif %}
+                    {% for page_number in current_chat_binding_bot_pagination_numbers %}
+                        {% if page_number %}
+                        <a class="pagination-chip {% if page_number == current_chat_binding_bot_page %}active{% endif %}" href="/profile?bot_page={{ page_number }}#chats">{{ page_number }}</a>
+                        {% else %}
+                        <span class="pagination-chip disabled">...</span>
+                        {% endif %}
+                    {% endfor %}
+                    {% if current_chat_binding_bot_page < current_chat_binding_bot_total_pages %}
+                    <a class="pagination-chip" href="/profile?bot_page={{ current_chat_binding_bot_page + 1 }}#chats">下一页</a>
+                    {% endif %}
+                </div>
+                <p class="muted">共 {{ current_chat_binding_bot_total }} 个 bot，每页 5 个</p>
+            </div>
+            {% endif %}
+            {% else %}
+            <p class="muted">当前绑定尚未配置 bot id，系统将尝试使用代码仓默认值。</p>
+            {% endif %}
+            <form class="form-grid top-gap" method="post" action="/profiles/{{ active_profile.id }}/chat-bindings/{{ current_chat_binding.chat_id if current_chat_binding else bound_chat_id }}/bot-ids/add">
+                <input type="hidden" name="thread_id" value="{{ current_chat_binding.thread_id if current_chat_binding and current_chat_binding.thread_id is not none else '' }}">
+                <input type="hidden" name="redirect_to" value="/profile?bot_page={{ current_chat_binding_bot_page }}">
+                <label>
+                    新增 bot id / 用户名
+                    <input name="bot_identity" placeholder="例如：8388633812 或 @fanrenxiuxian_bot" required>
+                </label>
+                <div class="full-span">
+                    <button type="submit" class="button" style="width: 100%;">加入到当前群绑定</button>
+                </div>
+            </form>
+        </div>
+        <p class="muted top-gap">此为代码中固定的神识锚点，无法在界面篡改；Bot ID 列表可在此页继续增删。</p>
 
         <div class="section-header compact top-gap" style="margin-top: 32px; border-top: 1px dashed var(--border-color); padding-top: 24px;">
             <p>TG 认证</p>

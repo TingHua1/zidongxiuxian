@@ -26,6 +26,22 @@ _current_profile_id: contextvars.ContextVar[int] = contextvars.ContextVar(
 _admin_profile_id: int = 0
 DIVINATION_COMMAND = ".卜筮问天"
 WORKER_RECONCILE_SECONDS = 5
+XINGGONG_TIANJI_REFRESH_DEBOUNCE_SECONDS = 8
+XINGGONG_TIANJI_REFRESH_COMMAND_PREFIXES = (
+    ".我的侍妾",
+    ".每日问安",
+    ".启阵",
+    ".助阵",
+    ".观星台",
+    ".观星",
+    ".扩建星台",
+    ".牵引星辰",
+    ".收集精华",
+    ".安抚星辰",
+    ".赠予侍妾",
+    ".灵力反哺",
+    ".侍妾卜算",
+)
 
 
 class _AdminLogFilter(logging.Filter):
@@ -41,6 +57,103 @@ class _AdminLogFilter(logging.Filter):
 def _has_expired_external_session(storage: Storage, profile_id: int) -> bool:
     external_account = storage.get_external_account(int(profile_id), ASC_PROVIDER)
     return is_external_account_expired(external_account)
+
+
+def _is_xinggong_tianji_refresh_command(text: str) -> bool:
+    normalized = str(text or "").strip()
+    if not normalized.startswith("."):
+        return False
+    return any(
+        normalized == prefix or normalized.startswith(f"{prefix} ")
+        for prefix in XINGGONG_TIANJI_REFRESH_COMMAND_PREFIXES
+    )
+
+
+async def _refresh_tianji_payload_once(storage: Storage, profile_id: int) -> None:
+    external_account = storage.get_external_account(int(profile_id), ASC_PROVIDER) or {}
+    cookie_text = (
+        (external_account or {}).get("cookie_text") or get_effective_external_cookie(storage)
+    ).strip()
+    if not cookie_text:
+        logger.warning(
+            "Xinggong Tianji refresh skipped profile=%s reason=no_cookie", profile_id
+        )
+        return
+    try:
+        await asyncio.to_thread(
+            sync_external_account,
+            storage,
+            int(profile_id),
+            cookie_text=cookie_text,
+        )
+        logger.info("Xinggong Tianji payload refreshed profile=%s", profile_id)
+    except Exception as exc:
+        mark_external_account_failure(storage, int(profile_id), exc, cookie_text=cookie_text)
+        logger.warning(
+            "Xinggong Tianji refresh failed profile=%s error=%s", profile_id, exc
+        )
+
+
+async def _run_xinggong_tianji_refresh_worker(
+    storage: Storage,
+    profile_id: int,
+    state: dict,
+) -> None:
+    entry = state.setdefault(int(profile_id), {"version": 0, "task": None})
+    try:
+        while True:
+            target_version = int(entry.get("version") or 0)
+            await asyncio.sleep(XINGGONG_TIANJI_REFRESH_DEBOUNCE_SECONDS)
+            if int(entry.get("version") or 0) != target_version:
+                continue
+            await _refresh_tianji_payload_once(storage, int(profile_id))
+            if int(entry.get("version") or 0) == target_version:
+                break
+    except asyncio.CancelledError:
+        raise
+    finally:
+        if entry.get("task") is asyncio.current_task():
+            entry["task"] = None
+
+
+def _schedule_xinggong_tianji_refresh(
+    client: TelegramClient,
+    storage: Storage,
+    profile_id: int,
+    command_text: str,
+) -> None:
+    if not _is_xinggong_tianji_refresh_command(command_text):
+        return
+    state = getattr(client, "_tg_game_xinggong_tianji_refresh_state", None)
+    if state is None:
+        state = {}
+        setattr(client, "_tg_game_xinggong_tianji_refresh_state", state)
+    entry = state.setdefault(int(profile_id), {"version": 0, "task": None})
+    entry["version"] = int(entry.get("version") or 0) + 1
+    task = entry.get("task")
+    if task and not task.done():
+        logger.info(
+            "Xinggong Tianji refresh rescheduled profile=%s version=%s",
+            profile_id,
+            entry["version"],
+        )
+        return
+    task = asyncio.create_task(
+        _run_xinggong_tianji_refresh_worker(storage, int(profile_id), state)
+    )
+    entry["task"] = task
+    background_tasks = getattr(client, "_tg_game_background_tasks", None)
+    if background_tasks is None:
+        background_tasks = set()
+        setattr(client, "_tg_game_background_tasks", background_tasks)
+    background_tasks.add(task)
+    task.add_done_callback(background_tasks.discard)
+    logger.info(
+        "Xinggong Tianji refresh scheduled profile=%s version=%s command=%s",
+        profile_id,
+        entry["version"],
+        command_text,
+    )
 
 
 async def _refresh_external_sessions(storage: Storage) -> None:
@@ -153,6 +266,7 @@ async def _dispatch_outgoing_commands(
                             pending_command_msg_id=int(message.id),
                         )
             storage.mark_outgoing_command_sent(command["id"])
+            _schedule_xinggong_tianji_refresh(client, storage, profile_id, text)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

@@ -278,13 +278,43 @@
             {% set cooldown_total = plot.cooldown_total or 0 %}
             {% set raw_pct = (((cooldown_total - cooldown_remaining) / cooldown_total) * 100)|int if cooldown_total else 0 %}
             {% set pct = 0 if raw_pct < 0 else 100 if raw_pct > 100 else raw_pct %}
+            {% if plot.collectable %}
+                {% set state_fg = 'var(--accent-green)' %}
+                {% set state_bg = 'rgba(91, 213, 155, 0.13)' %}
+                {% set state_border = 'rgba(91, 213, 155, 0.45)' %}
+                {% set state_glow = 'rgba(91, 213, 155, 0.18)' %}
+                {% set state_bar = 'rgba(91, 213, 155, 0.78), rgba(91, 213, 155, 0.34)' %}
+                {% set state_shadow = 'rgba(91, 213, 155, 0.28)' %}
+            {% elif plot.is_ready %}
+                {% set state_fg = 'rgba(72, 202, 228, 0.96)' %}
+                {% set state_bg = 'rgba(72, 202, 228, 0.13)' %}
+                {% set state_border = 'rgba(72, 202, 228, 0.42)' %}
+                {% set state_glow = 'rgba(72, 202, 228, 0.16)' %}
+                {% set state_bar = 'rgba(72, 202, 228, 0.72), rgba(91, 213, 155, 0.30)' %}
+                {% set state_shadow = 'rgba(72, 202, 228, 0.28)' %}
+            {% elif plot.needs_comfort %}
+                {% set state_fg = 'rgba(245, 158, 11, 0.96)' %}
+                {% set state_bg = 'rgba(245, 158, 11, 0.14)' %}
+                {% set state_border = 'rgba(245, 158, 11, 0.42)' %}
+                {% set state_glow = 'rgba(245, 158, 11, 0.15)' %}
+                {% set state_bar = 'rgba(245, 158, 11, 0.70), rgba(219, 180, 103, 0.30)' %}
+                {% set state_shadow = 'rgba(245, 158, 11, 0.26)' %}
+            {% else %}
+                {% set state_fg = 'var(--text-muted)' %}
+                {% set state_bg = 'rgba(255, 255, 255, 0.055)' %}
+                {% set state_border = 'var(--border-subtle)' %}
+                {% set state_glow = 'rgba(219, 180, 103, 0.16)' %}
+                {% set state_bar = 'rgba(219, 180, 103, 0.38), var(--accent-gold)' %}
+                {% set state_shadow = 'rgba(219, 180, 103, 0.24)' %}
+            {% endif %}
             <article class="xinggong-plot-card"
                      data-plot-id="{{ plot.plot_id }}"
                      data-remaining-seconds="{{ cooldown_remaining }}"
                      data-total-seconds="{{ cooldown_total }}"
                      data-is-ready="{{ '1' if plot.is_ready else '0' }}"
                      data-is-collectable="{{ '1' if plot.collectable else '0' }}"
-                     style="position: relative; overflow: hidden; padding: 18px; border: 1px solid {% if plot.collectable %}rgba(99, 179, 237, 0.45){% elif plot.is_ready %}rgba(91, 213, 155, 0.45){% else %}var(--border-subtle){% endif %}; border-radius: 18px; background: radial-gradient(circle at 82% 12%, {% if plot.collectable %}rgba(99, 179, 237, 0.14){% elif plot.is_ready %}rgba(91, 213, 155, 0.18){% else %}rgba(219, 180, 103, 0.16){% endif %}, transparent 34%), linear-gradient(135deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)); box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18); transition: border-color 0.35s, background 0.35s;">
+                     data-needs-comfort="{{ '1' if plot.needs_comfort else '0' }}"
+                     style="position: relative; overflow: hidden; padding: 18px; border: 1px solid {{ state_border }}; border-radius: 18px; background: radial-gradient(circle at 82% 12%, {{ state_glow }}, transparent 34%), linear-gradient(135deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018)); box-shadow: 0 16px 42px rgba(0, 0, 0, 0.18); transition: border-color 0.35s, background 0.35s;">
                 <div style="position: absolute; inset: auto -28px -34px auto; width: 110px; height: 110px; border: 1px solid rgba(219, 180, 103, 0.16); border-radius: 999px;"></div>
                 <div style="position: relative; display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;">
                     <div>
@@ -296,8 +326,8 @@
                             {{ plot.star_name if plot.star_name else '空闲' }}
                         </h3>
                     </div>
-                    <div class="xinggong-status-badge" style="flex: 0 0 auto; padding: 7px 11px; border-radius: 999px; color: {% if plot.collectable %}rgba(99, 179, 237, 0.95){% elif plot.is_ready %}var(--accent-green){% else %}var(--text-muted){% endif %}; background: {% if plot.collectable %}rgba(99, 179, 237, 0.13){% elif plot.is_ready %}rgba(91, 213, 155, 0.13){% else %}rgba(255, 255, 255, 0.055){% endif %}; border: 1px solid {% if plot.collectable %}rgba(99, 179, 237, 0.45){% elif plot.is_ready %}rgba(91, 213, 155, 0.35){% else %}var(--border-subtle){% endif %}; font-size: 0.84rem; font-weight: 700; white-space: nowrap; transition: color 0.35s, background 0.35s, border-color 0.35s;">
-                        {{ '待收集' if plot.collectable else '可牵引' if plot.is_ready else '冷却中' }}
+                    <div class="xinggong-status-badge" style="flex: 0 0 auto; padding: 7px 11px; border-radius: 999px; color: {{ state_fg }}; background: {{ state_bg }}; border: 1px solid {{ state_border }}; font-size: 0.84rem; font-weight: 700; white-space: nowrap; transition: color 0.35s, background 0.35s, border-color 0.35s;">
+                        {{ '待收集' if plot.collectable else '可牵引' if plot.is_ready else '需安抚' if plot.needs_comfort else '冷却中' }}
                     </div>
                 </div>
 
@@ -308,21 +338,21 @@
                 <div style="position: relative; margin-top: 18px; display: grid; gap: 9px;">
                     <div style="display: flex; align-items: baseline; justify-content: space-between; gap: 12px;">
                         {% if plot.collectable %}
-                        <strong class="xinggong-time-text" style="color: rgba(99, 179, 237, 0.95); font-size: 1.02rem;">精华已成</strong>
+                        <strong class="xinggong-time-text" style="color: var(--accent-green); font-size: 1.02rem;">精华已成</strong>
                         <span class="xinggong-pct-text" style="color: var(--text-muted); font-family: var(--font-mono); font-size: 0.82rem;">DONE</span>
                         {% elif plot.is_ready %}
-                        <strong class="xinggong-time-text" style="color: var(--accent-green); font-size: 1.02rem;">星轨已校准</strong>
+                        <strong class="xinggong-time-text" style="color: rgba(72, 202, 228, 0.96); font-size: 1.02rem;">星轨已校准</strong>
                         <span class="xinggong-pct-text" style="color: var(--text-muted); font-family: var(--font-mono); font-size: 0.82rem;">READY</span>
                         {% else %}
                         {% set rh = (cooldown_remaining / 3600)|int %}
                         {% set rm = ((cooldown_remaining % 3600) / 60)|int %}
                         {% set rs = (cooldown_remaining % 60)|int %}
-                        <strong class="xinggong-time-text" style="color: var(--accent-gold); font-size: 1.02rem;">剩余 {% if rh > 0 %}{{ rh }}时{% endif %}{% if rm > 0 or rh > 0 %}{{ rm }}分{% endif %}{{ rs }}秒</strong>
+                        <strong class="xinggong-time-text" style="color: {% if plot.needs_comfort %}rgba(245, 158, 11, 0.96){% else %}var(--accent-gold){% endif %}; font-size: 1.02rem;">剩余{% if rh > 0 %}{{ rh }}时{% endif %}{% if rm > 0 or rh > 0 %}{{ rm }}分{% endif %}{{ rs }}秒</strong>
                         <span class="xinggong-pct-text" style="color: var(--text-muted); font-family: var(--font-mono); font-size: 0.82rem;">{{ pct }}%</span>
                         {% endif %}
                     </div>
                     <div style="height: 8px; overflow: hidden; border-radius: 999px; background: rgba(255, 255, 255, 0.07); border: 1px solid var(--border-subtle);">
-                        <div class="xinggong-progress-bar" style="height: 100%; width: {% if plot.collectable or plot.is_ready %}100%{% else %}{{ pct }}{% endif %}%; border-radius: inherit; background: linear-gradient(90deg, {% if plot.collectable %}rgba(99, 179, 237, 0.7), rgba(99, 179, 237, 0.3){% elif plot.is_ready %}var(--accent-green), var(--accent-gold){% else %}rgba(219, 180, 103, 0.38), var(--accent-gold){% endif %}); box-shadow: 0 0 18px {% if plot.collectable %}rgba(99, 179, 237, 0.25){% elif plot.is_ready %}rgba(91, 213, 155, 0.35){% else %}rgba(219, 180, 103, 0.24){% endif %}; transition: width 0.9s, background 0.5s, box-shadow 0.5s;"></div>
+                        <div class="xinggong-progress-bar" style="height: 100%; width: {% if plot.collectable or plot.is_ready %}100%{% else %}{{ pct }}{% endif %}%; border-radius: inherit; background: linear-gradient(90deg, {{ state_bar }}); box-shadow: 0 0 18px {{ state_shadow }}; transition: width 0.9s, background 0.5s, box-shadow 0.5s;"></div>
                     </div>
                 </div>
 
@@ -338,7 +368,7 @@
         (function() {
             var plots = document.querySelectorAll('.xinggong-plot-card');
             function fmtTime(s) {
-                if (s <= 0) return '星轨已校准';
+                if (s <= 0) return '剩余0秒';
                 var h = Math.floor(s / 3600);
                 var m = Math.floor((s % 3600) / 60);
                 var sec = s % 60;
@@ -346,7 +376,7 @@
                 if (h > 0) parts.push(h + '时');
                 if (m > 0 || h > 0) parts.push(m + '分');
                 parts.push(sec + '秒');
-                return '剩余 ' + parts.join('');
+                return '剩余' + parts.join('');
             }
             function updateCard(card) {
                 var isCollectable = card.getAttribute('data-is-collectable') === '1';
@@ -355,6 +385,7 @@
                 var total = parseInt(card.getAttribute('data-total-seconds') || '0', 10);
                 var isReady = card.getAttribute('data-is-ready') === '1';
                 if (isReady) return;
+                var needsComfort = card.getAttribute('data-needs-comfort') === '1';
                 if (remaining <= 0 && total > 0) return;
                 remaining = Math.max(remaining - 1, 0);
                 card.setAttribute('data-remaining-seconds', remaining);
@@ -367,14 +398,15 @@
                 if (pctEl) pctEl.textContent = pct + '%';
                 if (barEl) barEl.style.width = pct + '%';
                 if (remaining <= 0) {
+                    if (needsComfort) return;
                     card.setAttribute('data-is-ready', '1');
                     if (badgeEl) badgeEl.textContent = '可牵引';
-                    card.style.borderColor = 'rgba(91, 213, 155, 0.45)';
-                    card.style.background = 'radial-gradient(circle at 82% 12%, rgba(91, 213, 155, 0.18), transparent 34%), linear-gradient(135deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018))';
+                    card.style.borderColor = 'rgba(72, 202, 228, 0.42)';
+                    card.style.background = 'radial-gradient(circle at 82% 12%, rgba(72, 202, 228, 0.16), transparent 34%), linear-gradient(135deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.018))';
                     if (badgeEl) {
-                        badgeEl.style.color = 'var(--accent-green)';
-                        badgeEl.style.background = 'rgba(91, 213, 155, 0.13)';
-                        badgeEl.style.borderColor = 'rgba(91, 213, 155, 0.35)';
+                        badgeEl.style.color = 'rgba(72, 202, 228, 0.96)';
+                        badgeEl.style.background = 'rgba(72, 202, 228, 0.13)';
+                        badgeEl.style.borderColor = 'rgba(72, 202, 228, 0.42)';
                     }
                 }
             }
@@ -444,6 +476,53 @@
         {% endif %}
     </div>
 </section>
+
+<section class="detail-grid two-column-grid">
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>星宫</p>
+            <h2>星宫助阵</h2>
+        </div>
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>自动状态</span><strong>{{ '自动' if xinggong_state.auto_companion_assist_enabled else '手动' }}</strong></div>
+            <div class="kv-row"><span>状态文案</span><strong style="font-family: var(--font-mono);">{{ xinggong_state.companion_assist_status_display or '可助阵' }}</strong></div>
+            <div class="kv-row"><span>助阵CD</span><strong style="font-family: var(--font-mono);">{{ xinggong_state.companion_assist_cooldown_display or '可助阵' }}</strong></div>
+            <div class="kv-row"><span>待助阵窗</span><strong style="font-family: var(--font-mono);">{{ xinggong_state.companion_assist_pending_window_display or '-' }}</strong></div>
+            <div class="kv-row"><span>星力加持</span><strong>{{ '已同步' if xinggong_state.star_formation_view.available else '未提供' }}</strong></div>
+        </div>
+        <div class="action-row top-gap" style="flex-wrap: wrap; gap: 10px;">
+            <form method="post" action="/runtime/sect/companion-assist-toggle">
+                <input type="hidden" name="chat_id" value="{{ sect_bound_chat_id }}">
+                <input type="hidden" name="enabled" value="{{ '0' if sect_session and sect_session.auto_companion_assist_enabled else '1' }}">
+                <button type="submit">{{ '关闭自动助阵' if sect_session and sect_session.auto_companion_assist_enabled else '开启自动助阵' }}</button>
+            </form>
+        </div>
+        <p class="muted top-gap">自动助阵会监听启阵回包，在 60 秒窗口内对原消息 reply 发送 <code>.助阵</code>；冷却以最近一次星力加持时间为准。</p>
+    </div>
+    <div class="detail-card">
+        <div class="section-header compact">
+            <p>星宫</p>
+            <h2>星力加持</h2>
+        </div>
+        {% if xinggong_state.star_formation_view and xinggong_state.star_formation_view.available %}
+        <div class="stack-list compact-stack">
+            {% if xinggong_state.star_formation_view.entries %}
+            {% for item in xinggong_state.star_formation_view.entries %}
+            <div class="kv-row" style="align-items: flex-start; gap: 14px;">
+                <span>{{ item.label }}</span>
+                <strong style="text-align: right; font-family: var(--font-mono);">{{ item.value }}</strong>
+            </div>
+            {% endfor %}
+            {% else %}
+            <div class="kv-row"><span>加持明细</span><strong>接口未提供</strong></div>
+            {% endif %}
+            <div class="kv-row"><span>上次星力加持</span><strong style="font-family: var(--font-mono);">{{ xinggong_state.last_star_formation_time_display or '-' }}</strong></div>
+        </div>
+        {% else %}
+        <p class="muted">当前星宫回包未提供星力加持信息，可能是接口尚未同步或字段缺失。</p>
+        {% endif %}
+    </div>
+</section>
 {% endif %}
 
 {% if current_sect_feature and current_sect_feature.actions %}
@@ -455,10 +534,15 @@
             <h2>{{ action.title }}</h2>
         </div>
         <p class="muted">{{ action.description }}</p>
-        {% if action.key == 'greet' and xinggong_state %}
+        {% if action.key == 'companion' and xinggong_state %}
         <div class="stack-list compact-stack">
             <div class="kv-row"><span>侍妾</span><strong>{{ xinggong_state.companion_name or '无' }}</strong></div>
             <div class="kv-row"><span>情缘值</span><strong style="color: var(--accent-gold);">{{ xinggong_state.companion_affection }}</strong></div>
+        </div>
+        {% elif action.key == 'greet' and xinggong_state %}
+        <div class="stack-list compact-stack">
+            <div class="kv-row"><span>今日问安</span><strong style="color: {% if xinggong_state.companion_greeted_today %}var(--accent-green){% else %}var(--text-muted){% endif %};">{{ '已问安' if xinggong_state.companion_greeted_today else '未问安' }}</strong></div>
+            <div class="kv-row"><span>上次问安</span><strong>{{ xinggong_state.last_companion_greet_date or '-' }}</strong></div>
         </div>
         {% endif %}
         <form class="form-grid top-gap" method="post" action="/runtime/sect/action">

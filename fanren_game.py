@@ -11,7 +11,6 @@ from tg_game.services.external_sync import (
     get_external_keepalive_poll_seconds,
     is_external_account_expired,
 )
-from tg_game.config import ALLOWED_GAME_BOT_IDS
 from tg_game.storage import CompatDb as RuntimeDb
 from tg_game.telegram.send_utils import send_message_with_thread_fallback
 
@@ -20,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 FANREN_BOT_USERNAME = "fanrenxiuxian_bot"
-FANREN_BOT_IDS = set(ALLOWED_GAME_BOT_IDS)
+FANREN_BOT_IDS = set()
 FANREN_CHECK_COMMAND = ".查看闭关"
 FANREN_NORMAL_COMMAND = ".闭关修炼"
 FANREN_DEEP_COMMAND = ".深度闭关"
@@ -1719,8 +1718,11 @@ async def send_retreat_command(
 async def handle_bot_message(event, db, client=None, profile_id=None):
     sender = await event.get_sender()
     sender_id = getattr(sender, "id", None)
-    if sender_id not in FANREN_BOT_IDS:
+    if sender_id is None:
         return None
+    profile = None
+    if client is not None:
+        profile = getattr(client, "_tg_game_profile", None)
 
     session = get_session(db, event.chat_id, profile_id=profile_id)
     if not session:

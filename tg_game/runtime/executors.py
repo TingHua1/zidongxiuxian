@@ -23,7 +23,6 @@ import shop_game
 import stock_trade_game
 import inventory_feature_game
 
-from tg_game.config import ALLOWED_GAME_BOT_IDS
 from tg_game.runtime.context import EventContext
 from tg_game.services.cultivation_sync import sync_cultivation_session
 from tg_game.services.external_sync import read_cached_external_payload
@@ -41,9 +40,7 @@ COMPANION_AUTO_POLL_SECONDS = 5
 COMPANION_AUTO_POST_SEND_GRACE_SECONDS = 1800
 COMPANION_PANEL_COMMAND = ".我的侍妾"
 COMPANION_HEART_TRIBULATION_COMMAND = ".共历心劫"
-COMPANION_HEART_TRIBULATION_ALLOWED_BOT_IDS = {
-    *ALLOWED_GAME_BOT_IDS,
-}
+COMPANION_HEART_TRIBULATION_ALLOWED_BOT_IDS = set()
 COMPANION_HEART_TRIBULATION_STEP_TIMEOUT_SECONDS = 300
 COMPANION_HEART_TRIBULATION_EDIT_STALL_SECONDS = 600
 COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORD = "【坠魔心劫·结算】"
@@ -164,6 +161,45 @@ def _refresh_divination_payload(storage: Storage, profile_id: int):
         return None
 
 
+def _binding_bot_ids(context: EventContext) -> list[int]:
+    bot_ids = list(getattr(context.chat_binding, "bot_ids", None) or [])
+    primary_bot_id = getattr(context.chat_binding, "bot_id", None)
+    try:
+        normalized_primary = int(primary_bot_id) if primary_bot_id is not None else None
+    except (TypeError, ValueError):
+        normalized_primary = None
+    if not bot_ids and normalized_primary is not None and normalized_primary not in bot_ids:
+        bot_ids = [normalized_primary, *bot_ids]
+    deduped = []
+    for bot_id in bot_ids:
+        try:
+            normalized = int(bot_id)
+        except (TypeError, ValueError):
+            continue
+        if normalized not in deduped:
+            deduped.append(normalized)
+    return deduped
+
+
+def _is_context_sender_allowed_bot(context: EventContext) -> bool:
+    try:
+        return int(context.sender_id or 0) in _binding_bot_ids(context)
+    except (TypeError, ValueError):
+        return False
+
+
+def _is_edited_event(context: EventContext) -> bool:
+    if context.is_outgoing:
+        return False
+    if getattr(context.event, "edit_date", None):
+        return True
+    message = getattr(context.event, "message", None)
+    if message is not None and getattr(message, "edit_date", None):
+        return True
+    event_type = type(context.event).__name__.lower()
+    return "edited" in event_type
+
+
 def _has_pending_outgoing_command(
     storage: Storage,
     *,
@@ -206,10 +242,7 @@ def _queue_companion_command(
 
 
 def _is_allowed_companion_heart_tribulation_bot_id(sender_id: object) -> bool:
-    try:
-        return int(sender_id or 0) in COMPANION_HEART_TRIBULATION_ALLOWED_BOT_IDS
-    except (TypeError, ValueError):
-        return False
+    return False
 
 
 def _normalize_companion_heart_tribulation_action(value: object) -> str:
@@ -376,6 +409,214 @@ async def _send_companion_heart_tribulation_command(
     )
 
 
+async def _poll_companion_heart_tribulation_message(
+    client: object,
+    storage: Storage,
+    task: dict,
+) -> bool:
+    workflow_state = str(task.get("workflow_state") or "").strip()
+    if workflow_state not in {
+        COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE,
+        COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE,
+        COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE,
+    }:
+        return False
+    task_id = int(task.get("id") or 0)
+    profile_id = int(task.get("profile_id") or 0)
+    chat_id = int(task.get("chat_id") or 0)
+    thread_id = int(task.get("thread_id")) if task.get("thread_id") else None
+    tribulation_msg_id = int(task.get("tribulation_msg_id") or 0)
+    if not task_id or not profile_id or not chat_id or tribulation_msg_id <= 0:
+        return False
+
+    try:
+        message = await client.get_messages(chat_id, ids=tribulation_msg_id)
+    except Exception as exc:
+        _append_companion_heart_tribulation_log(
+            storage,
+            task,
+            step=workflow_state,
+            event_type="poll_message_failed",
+            message_id=tribulation_msg_id,
+            detail={"error": str(exc)},
+        )
+        return False
+    if not message:
+        return False
+    current_text = (
+        getattr(message, "raw_text", "") or getattr(message, "text", "") or ""
+    ).strip()
+    if not current_text:
+        return False
+
+    last_fingerprint = str(task.get("last_progress_fingerprint") or "")
+    if any(
+        _build_companion_heart_tribulation_event_fingerprint(
+            message_id=tribulation_msg_id,
+            text=current_text,
+            event_kind=kind,
+        )
+        == last_fingerprint
+        for kind in {"tribulation_reply", "edited", "polled_edit"}
+    ):
+        return False
+
+    sender_id = int(getattr(message, "sender_id", None) or task.get("matched_bot_id") or 0)
+    if sender_id:
+        allowed_bot_ids = storage.get_chat_binding_bot_ids(
+            profile_id, chat_id, thread_id=thread_id
+        )
+        if sender_id not in allowed_bot_ids:
+            return False
+    sender_username = ""
+    try:
+        sender = await message.get_sender()
+        sender_username = (getattr(sender, "username", "") or "").strip()
+    except Exception:
+        existing_message = storage.get_bound_message(
+            chat_id, tribulation_msg_id, profile_id=profile_id
+        )
+        sender_username = str((existing_message or {}).get("sender_username") or "")
+
+    current_fingerprint = _build_companion_heart_tribulation_event_fingerprint(
+        message_id=tribulation_msg_id,
+        text=current_text,
+        event_kind="polled_edit",
+    )
+    storage.upsert_bound_message(
+        profile_id=profile_id,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        message_id=tribulation_msg_id,
+        reply_to_msg_id=int(task.get("tribulation_command_msg_id") or 0),
+        sender_id=sender_id,
+        sender_username=sender_username,
+        direction="incoming",
+        is_bot=True,
+        text=current_text,
+    )
+    _append_companion_heart_tribulation_log(
+        storage,
+        task,
+        step=workflow_state,
+        event_type="message_polled_edited",
+        message_id=tribulation_msg_id,
+        reply_to_msg_id=int(task.get("tribulation_command_msg_id") or 0),
+        sender_id=sender_id,
+        sender_username=sender_username,
+        text=current_text,
+    )
+    storage.update_companion_heart_tribulation_task(
+        task_id,
+        step_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_EDIT_STALL_SECONDS,
+        last_progress_at=time.time(),
+        last_progress_fingerprint=current_fingerprint,
+    )
+    task = storage.get_companion_heart_tribulation_task(
+        profile_id,
+        chat_id,
+        thread_id=thread_id,
+    ) or task
+
+    if COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORD in current_text:
+        previous_settlement_text = str(task.get("last_settlement_text") or "")
+        previous_settlement_at = float(task.get("last_settlement_at") or 0)
+        updated_task = storage.update_companion_heart_tribulation_task(
+            task_id,
+            workflow_state=COMPANION_HEART_TRIBULATION_IDLE_STATE,
+            step_deadline_at=0,
+            matched_bot_id=0,
+            anchor_command_msg_id=0,
+            anchor_bot_msg_id=0,
+            tribulation_command_msg_id=0,
+            tribulation_msg_id=0,
+            panel_reply_msg_id=0,
+            last_action_round_sent=0,
+            last_tribulation_command_at=0,
+            last_progress_at=time.time(),
+            last_progress_fingerprint=current_fingerprint,
+            last_stable_sent_at=0,
+            last_settlement_text=current_text,
+            last_settlement_at=time.time(),
+            previous_settlement_text=previous_settlement_text,
+            previous_settlement_at=previous_settlement_at,
+            last_error="",
+        )
+        _append_companion_heart_tribulation_log(
+            storage,
+            updated_task or task,
+            step="completed",
+            event_type="settlement_recorded",
+            message_id=tribulation_msg_id,
+            sender_id=sender_id,
+            sender_username=sender_username,
+            text=current_text,
+            detail={"source": "poll"},
+        )
+        return True
+
+    if workflow_state == COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE:
+        if COMPANION_HEART_TRIBULATION_ROUND1_LOCK_KEYWORD not in current_text:
+            return True
+        next_state = COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE
+        next_round = 2
+    elif workflow_state == COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE:
+        if COMPANION_HEART_TRIBULATION_ROUND2_LOCK_KEYWORD not in current_text:
+            return True
+        next_state = COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE
+        next_round = 3
+    else:
+        return True
+
+    command = _build_companion_heart_tribulation_action_command(task, next_round)
+    try:
+        action_message = await _send_companion_heart_tribulation_command(
+            client,
+            storage,
+            task,
+            text=command,
+            reply_to_msg_id=tribulation_msg_id,
+        )
+    except Exception as exc:
+        _stop_companion_heart_tribulation_task(
+            storage,
+            task,
+            last_error=f"发送第{next_round}轮心劫策略失败，已停止自动共历心劫。",
+            step=f"send_round{next_round}",
+            detail={"error": str(exc), "command": command, "source": "poll"},
+        )
+        return True
+
+    storage.update_companion_heart_tribulation_task(
+        task_id,
+        workflow_state=next_state,
+        step_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_EDIT_STALL_SECONDS,
+        last_action_round_sent=next_round,
+        last_progress_at=time.time(),
+        last_progress_fingerprint=current_fingerprint,
+        last_stable_sent_at=time.time(),
+        round_retry_count=0,
+        round_retry_deadline_at=time.time() + COMPANION_HEART_TRIBULATION_ROUND_RETRY_SECONDS,
+        last_error="",
+    )
+    updated_task = storage.get_companion_heart_tribulation_task(
+        profile_id,
+        chat_id,
+        thread_id=thread_id,
+    ) or task
+    _append_companion_heart_tribulation_log(
+        storage,
+        updated_task,
+        step=next_state,
+        event_type=f"send_round{next_round}",
+        message_id=int(getattr(action_message, "id", 0) or 0),
+        reply_to_msg_id=tribulation_msg_id,
+        text=command,
+        detail={"source": "poll"},
+    )
+    return True
+
+
 async def _run_companion_heart_tribulation_scheduler(
     client: object, storage: Storage
 ) -> None:
@@ -425,6 +666,8 @@ async def _run_companion_heart_tribulation_scheduler(
                     COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE,
                     COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE,
                 }:
+                    if await _poll_companion_heart_tribulation_message(client, storage, task):
+                        continue
                     round_retry_deadline_at = float(task.get("round_retry_deadline_at") or 0)
                     round_retry_count = int(task.get("round_retry_count") or 0)
                     if round_retry_deadline_at > 0 and now >= round_retry_deadline_at:
@@ -1224,20 +1467,21 @@ class FanrenExecutor(BaseExecutor):
         try:
             if context.text.startswith(".fanren") and context.is_profile_owner():
                 if context.profile:
-                    storage.set_chat_binding_thread_id(
-                        context.profile.id, context.chat_id, context.thread_id
-                    )
-                    fanren_game.update_session(
-                        db,
-                        context.chat_id,
-                        profile_id=context.profile.id if context.profile else None,
-                        thread_id=context.thread_id,
-                    )
+                    if context.thread_id is not None:
+                        storage.set_chat_binding_thread_id(
+                            context.profile.id, context.chat_id, context.thread_id
+                        )
+                        fanren_game.update_session(
+                            db,
+                            context.chat_id,
+                            profile_id=context.profile.id if context.profile else None,
+                            thread_id=context.thread_id,
+                        )
                 return await self._handle_command(context, db)
 
             if (
                 context.is_bot_sender
-                and context.sender_id in fanren_game.FANREN_BOT_IDS
+                and _is_context_sender_allowed_bot(context)
                 and await self._bot_message_targets_profile(context, storage)
             ):
                 session = fanren_game.get_session(
@@ -1297,7 +1541,7 @@ class FanrenExecutor(BaseExecutor):
                 return parsed is not None
             if (
                 context.is_bot_sender
-                and context.sender_id in fanren_game.FANREN_BOT_IDS
+                and _is_context_sender_allowed_bot(context)
                 and await context.bot_message_targets_profile()
             ):
                 reply_text = await self._get_reply_message_text(context, storage)
@@ -1689,23 +1933,43 @@ class SectExecutor(BaseExecutor):
         try:
             if context.text.startswith(".sect") and context.is_profile_owner():
                 if context.profile:
-                    storage.set_chat_binding_thread_id(
-                        context.profile.id, context.chat_id, context.thread_id
-                    )
-                    sect_game.update_session(
-                        db,
-                        context.chat_id,
-                        profile_id=context.profile.id if context.profile else None,
-                        thread_id=context.thread_id,
-                    )
+                    if context.thread_id is not None:
+                        storage.set_chat_binding_thread_id(
+                            context.profile.id, context.chat_id, context.thread_id
+                        )
+                        sect_game.update_session(
+                            db,
+                            context.chat_id,
+                            profile_id=context.profile.id if context.profile else None,
+                            thread_id=context.thread_id,
+                        )
                 return await self._handle_command(context, db)
 
-            if (
-                context.is_bot_sender
-                and context.sender_id in sect_game.SECT_BOT_IDS
-                and await self._bot_message_targets_profile(context, storage)
-            ):
+            if context.is_bot_sender and _is_context_sender_allowed_bot(context):
                 preview_parsed = sect_game.parse_message(context.text)
+                bot_targets_profile = await self._bot_message_targets_profile(
+                    context, storage
+                )
+                allow_companion_assist_observation = False
+                if (
+                    not bot_targets_profile
+                    and preview_parsed.get("event")
+                    in {"xinggong_star_array_open", "xinggong_star_array_complete"}
+                    and context.profile
+                    and context.chat_id is not None
+                ):
+                    session = sect_game.get_session(
+                        db,
+                        context.chat_id,
+                        profile_id=context.profile.id,
+                    )
+                    allow_companion_assist_observation = bool(
+                        session
+                        and session.get("enabled")
+                        and session.get("auto_companion_assist_enabled")
+                    )
+                if not bot_targets_profile and not allow_companion_assist_observation:
+                    return False
                 reply_text = await self._get_reply_message_text(context, storage)
                 if reply_text:
                     if (
@@ -1728,6 +1992,7 @@ class SectExecutor(BaseExecutor):
                     db,
                     client=context.client,
                     profile_id=context.profile.id if context.profile else None,
+                    profile=context.profile,
                 )
                 if parsed is not None:
                     return True
@@ -2159,10 +2424,14 @@ class GeneralGameExecutor(BaseExecutor):
             return False
 
         task_thread_id = int(task.get("thread_id")) if task.get("thread_id") else None
-        if task_thread_id is not None and context.thread_id != task_thread_id:
+        if (
+            task_thread_id is not None
+            and context.thread_id is not None
+            and context.thread_id != task_thread_id
+        ):
             return False
 
-        if not _is_allowed_companion_heart_tribulation_bot_id(context.sender_id):
+        if not _is_context_sender_allowed_bot(context):
             return False
 
         sender = getattr(context.event, "sender", None)
@@ -2171,7 +2440,7 @@ class GeneralGameExecutor(BaseExecutor):
         current_reply_to_msg_id = int(context.reply_to_msg_id or 0)
         current_sender_id = int(context.sender_id or 0)
         current_text = context.text or ""
-        is_edited_event = bool(getattr(context.event, "edit_date", None)) and not context.is_outgoing
+        is_edited_event = _is_edited_event(context)
 
         if workflow_state == COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE:
             expected_reply_to = int(task.get("anchor_command_msg_id") or 0)
@@ -2325,7 +2594,7 @@ class GeneralGameExecutor(BaseExecutor):
 
         tribulation_msg_id = int(task.get("tribulation_msg_id") or 0)
         if workflow_state == COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE and not is_edited_event:
-            if COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORD in current_text and current_sender_id in ALLOWED_GAME_BOT_IDS:
+            if COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORD in current_text and current_sender_id in _binding_bot_ids(context):
                 _append_companion_heart_tribulation_log(
                     storage,
                     task,
@@ -2376,7 +2645,10 @@ class GeneralGameExecutor(BaseExecutor):
         if tribulation_msg_id <= 0 or current_message_id != tribulation_msg_id or not is_edited_event:
             return False
         if matched_bot_id > 0 and current_sender_id != matched_bot_id:
-            return False
+            # 星宫/心劫链路里不同阶段的回包可能由不同的允许 bot 发出，
+            # 编辑阶段只要求仍然是允许的星宫 bot，避免把真实的成功编辑误过滤。
+            if current_sender_id not in _binding_bot_ids(context):
+                return False
 
         current_fingerprint = _build_companion_heart_tribulation_event_fingerprint(
             message_id=current_message_id,
@@ -2407,19 +2679,6 @@ class GeneralGameExecutor(BaseExecutor):
         task = storage.update_companion_heart_tribulation_task(task_id) or task
 
         if COMPANION_HEART_TRIBULATION_SETTLEMENT_KEYWORD in current_text:
-            if workflow_state != COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE:
-                _stop_companion_heart_tribulation_task(
-                    storage,
-                    task,
-                    last_error="共历心劫流程顺序异常：未完成全部轮次前提前进入结算，已停止自动。",
-                    step=workflow_state,
-                    detail={
-                        "message_id": current_message_id,
-                        "workflow_state": workflow_state,
-                        "text": current_text[:1000],
-                    },
-                )
-                return True
             previous_settlement_text = str(task.get("last_settlement_text") or "")
             previous_settlement_at = float(task.get("last_settlement_at") or 0)
             completed_run_id = str(task.get("run_id") or "")

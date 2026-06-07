@@ -114,6 +114,16 @@ def _coerce_json_dict(value) -> dict:
     return {}
 
 
+def _parse_optional_int(raw_value) -> Optional[int]:
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_iso_datetime(raw_value) -> Optional[datetime]:
     text = str(raw_value or "").strip()
     if not text:
@@ -133,6 +143,19 @@ def _format_datetime_display(raw_value) -> str:
     if not parsed:
         return "-"
     return parsed.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M")
+
+
+def _format_datetime_display_seconds(raw_value) -> str:
+    if raw_value is None:
+        return "-"
+    if isinstance(raw_value, (int, float)):
+        if float(raw_value or 0) <= 0:
+            return "-"
+        return datetime.fromtimestamp(float(raw_value), tz=timezone.utc).astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    parsed = _parse_iso_datetime(raw_value)
+    if not parsed:
+        return "-"
+    return parsed.astimezone(SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _format_remaining_delta(end_time: Optional[datetime]) -> str:
@@ -2491,7 +2514,7 @@ def create_app() -> FastAPI:
             ),
         }
 
-    def _build_xinggong_state(payload: dict, active_profile) -> dict:
+    def _build_xinggong_state(payload: dict, active_profile, sect_session=None) -> dict:
         star_platform_raw = (payload or {}).get("star_platform")
         if isinstance(star_platform_raw, str) and star_platform_raw.strip():
             try:
@@ -2510,6 +2533,114 @@ def create_app() -> FastAPI:
                 plots_raw = {}
         if not isinstance(plots_raw, dict):
             plots_raw = {}
+
+        def _coerce_json_value(value):
+            if isinstance(value, dict):
+                return value
+            if isinstance(value, str) and value.strip():
+                try:
+                    parsed = json.loads(value)
+                except (json.JSONDecodeError, TypeError):
+                    return {}
+                return parsed if isinstance(parsed, dict) else {}
+            return {}
+
+        def _format_time_value(value) -> str:
+            return _format_datetime_display_seconds(value)
+
+        def _coerce_time_timestamp(value) -> float:
+            if value is None:
+                return 0.0
+            if isinstance(value, (int, float)):
+                return float(value or 0)
+            text = str(value or "").strip()
+            if not text:
+                return 0.0
+            try:
+                return float(text)
+            except (TypeError, ValueError):
+                pass
+            parsed = _parse_iso_datetime(text)
+            if not parsed:
+                return 0.0
+            return parsed.astimezone(timezone.utc).timestamp()
+
+        def _friendly_title(key: str) -> str:
+            mapping = {
+                "last_star_formation_time": "上次星力加持",
+                "star_name": "星辰名称",
+                "effect": "加持效果",
+                "status": "状态",
+            }
+            key_text = str(key or "").strip()
+            if key_text in mapping:
+                return mapping[key_text]
+            return "星力属性"
+
+        def _friendly_value(key: str, value):
+            if value is None:
+                return "-"
+            if isinstance(value, (int, float)):
+                if key and "time" in key:
+                    return _format_time_value(value)
+                return str(value)
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return "-"
+                if key and "time" in key:
+                    return _format_time_value(text)
+                return text
+            return str(value)
+
+        star_formation_raw = (payload or {}).get("star_formation")
+        star_formation = _coerce_json_value(star_formation_raw)
+        star_formation_items = []
+        if isinstance(star_formation, dict):
+            for key, value in star_formation.items():
+                if key == "last_star_formation_time":
+                    continue
+                if isinstance(value, (dict, list)):
+                    continue
+                star_formation_items.append(
+                    {
+                        "key": key,
+                        "label": _friendly_title(key),
+                        "value": _friendly_value(key, value),
+                    }
+                )
+        nested_last_star_formation_time = (
+            star_formation.get("last_star_formation_time")
+            if isinstance(star_formation, dict)
+            else None
+        )
+        root_last_star_formation_time = (
+            (payload or {}).get("last_star_formation_time")
+            if isinstance(payload, dict)
+            else None
+        )
+        session_last_companion_assist_time = (
+            (sect_session or {}).get("last_companion_assist_time")
+            if sect_session
+            else None
+        )
+        last_star_formation_time_ts = max(
+            _coerce_time_timestamp(nested_last_star_formation_time),
+            _coerce_time_timestamp(root_last_star_formation_time),
+            _coerce_time_timestamp(session_last_companion_assist_time),
+        )
+        last_star_formation_time = (
+            last_star_formation_time_ts if last_star_formation_time_ts > 0 else None
+        )
+        star_formation_view = {
+            "available": bool(star_formation_items or star_formation or last_star_formation_time),
+            "raw": star_formation,
+            "entries": star_formation_items,
+            "last_star_formation_time": last_star_formation_time,
+            "last_star_formation_time_display": _format_time_value(
+                last_star_formation_time
+            ),
+        }
 
         STAR_DURATIONS = {
             "赤血星": {"hours": 4, "requirement": "无"},
@@ -2535,18 +2666,19 @@ def create_app() -> FastAPI:
                     "cooldown_pct": 0,
                     "is_ready": True,
                     "collectable": False,
+                    "needs_comfort": False,
                 })
                 continue
             if not isinstance(plot, dict):
                 continue
             star_name = str(plot.get("star_name") or "").strip()
-            status = str(plot.get("status") or "").strip()
+            raw_status_value = plot.get("status")
+            status = str(raw_status_value or "").strip()
             start_time_raw = plot.get("start_time")
             start_ts = 0
             cooldown_remaining = 0
             cooldown_total = 0
             if start_time_raw:
-                from datetime import datetime, timezone
                 try:
                     dt = datetime.fromisoformat(str(start_time_raw).replace("Z", "+00:00"))
                     start_ts = dt.timestamp()
@@ -2557,9 +2689,16 @@ def create_app() -> FastAPI:
                 except (ValueError, OverflowError):
                     pass
             cd_expired = cooldown_remaining <= 0 and start_ts > 0
+            status_is_empty = raw_status_value is None or status == ""
+            needs_comfort = status in ("元磁紊乱", "星光黯淡")
             collectable = status in ("可收集", "精华已成") or (status in ("凝聚中",) and cd_expired)
             condensing = status in ("凝聚中",) and not cd_expired
-            is_ready = cd_expired and not collectable and not condensing and status not in ("元磁紊乱",)
+            is_ready = (
+                status_is_empty
+                and cooldown_remaining <= 0
+                and not collectable
+                and not condensing
+            )
             display_status = status or "空闲"
             if collectable:
                 display_status = "精华已成 · 待收集"
@@ -2574,6 +2713,7 @@ def create_app() -> FastAPI:
                 "cooldown_pct": int(100 * (cooldown_total - cooldown_remaining) / cooldown_total) if cooldown_total > 0 else 0,
                 "is_ready": is_ready,
                 "collectable": collectable,
+                "needs_comfort": needs_comfort,
             })
 
         sect_position = getattr(active_profile, "sect_position", "") or ""
@@ -2613,6 +2753,27 @@ def create_app() -> FastAPI:
                 "disabled": disabled,
             })
 
+        last_companion_greet_date = sect_game._parse_date_key(
+            payload.get("last_companion_greet_date") if isinstance(payload, dict) else None
+        )
+        greeted_today = bool(
+            last_companion_greet_date
+            and last_companion_greet_date == sect_game.current_date_key(now)
+        )
+        assist_next_time = float((sect_session or {}).get("companion_assist_next_check_time") or 0)
+        assist_pending_msg_id = int((sect_session or {}).get("companion_assist_pending_reply_msg_id") or 0)
+        assist_pending_at = float((sect_session or {}).get("companion_assist_pending_at") or 0)
+        if last_star_formation_time_ts > 0:
+            assist_cd_end = last_star_formation_time_ts + sect_game.COMPANION_ASSIST_COOLDOWN_SECONDS
+        else:
+            assist_cd_end = 0
+        if assist_cd_end and assist_cd_end > now:
+            assist_status = "冷却中"
+        elif assist_pending_msg_id and assist_pending_at and now <= assist_pending_at + sect_game.COMPANION_ASSIST_REPLY_WINDOW_SECONDS:
+            assist_status = "待助阵"
+        else:
+            assist_status = "可助阵"
+
         return {
             "platform_size": int(star_platform.get("size") or 0),
             "plots": plots,
@@ -2623,7 +2784,25 @@ def create_app() -> FastAPI:
             "companion_affection": int(
                 (payload.get("companion") or {}).get("affection") or 0
             ),
+            "last_companion_greet_date": last_companion_greet_date,
+            "companion_greeted_today": greeted_today,
             "companion_gift_items": _build_companion_gift_items(payload),
+            "star_formation_view": star_formation_view,
+            "auto_companion_assist_enabled": bool((sect_session or {}).get("auto_companion_assist_enabled")),
+            "companion_assist_next_check_time": assist_next_time,
+            "companion_assist_next_check_display": (
+                fanren_game.format_timestamp(assist_next_time) if assist_next_time else "未设置"
+            ),
+            "companion_assist_status_display": assist_status,
+            "companion_assist_pending_at": assist_pending_at,
+            "companion_assist_pending_window_display": (
+                f"{fanren_game.format_timestamp(assist_pending_at)} 起 60 秒" if assist_pending_at else "-"
+            ),
+            "companion_assist_cooldown_display": (
+                _format_datetime_display_seconds(assist_cd_end) if assist_cd_end else "可助阵"
+            ),
+            "last_star_formation_time": last_star_formation_time_ts,
+            "last_star_formation_time_display": _format_datetime_display_seconds(last_star_formation_time),
         }
 
     def _build_companion_gift_items(payload: dict) -> list[dict]:
@@ -2703,12 +2882,31 @@ def create_app() -> FastAPI:
             ),
         )
 
-    def _build_shared_template_context(active_profile) -> dict:
+    def _build_shared_template_context(active_profile, bot_page: int = 1) -> dict:
         external_account = (
             storage.get_external_account(active_profile.id, ASC_PROVIDER)
             if active_profile
             else None
         )
+        chats = storage.list_chat_bindings(active_profile.id) if active_profile else []
+        for chat in chats:
+            _ensure_chat_binding_bot_ids(active_profile.id, chat.chat_id, chat.thread_id)
+        if active_profile:
+            chats = storage.list_chat_bindings(active_profile.id)
+        current_binding = None
+        current_binding_bot_rows = []
+        if active_profile:
+            current_binding = storage.get_chat_binding(
+                active_profile.id,
+                settings.bound_chat_id,
+                thread_id=settings.bound_thread_id,
+            ) or storage.get_primary_chat_binding(active_profile.id)
+            current_binding_bot_rows = _build_chat_binding_bot_ids_view(current_binding)
+        bot_total = len(current_binding_bot_rows)
+        bot_total_pages = max((bot_total + 4) // 5, 1)
+        bot_page = min(max(int(bot_page or 1), 1), bot_total_pages)
+        bot_start = (bot_page - 1) * 5
+        current_binding_bot_page_rows = current_binding_bot_rows[bot_start : bot_start + 5]
         return {
             **_build_command_target_context(active_profile),
             "current_sect_name": active_profile.sect_name if active_profile else "",
@@ -2716,7 +2914,60 @@ def create_app() -> FastAPI:
             "external_account": external_account,
             "is_admin_profile": _is_admin_profile(active_profile),
             "authorized_user_id": _get_authorized_user_id_text(),
+            "chats": chats,
+            "current_chat_binding_bot_rows": current_binding_bot_page_rows,
+            "current_chat_binding_bot_total": bot_total,
+            "current_chat_binding_bot_page": bot_page,
+            "current_chat_binding_bot_total_pages": bot_total_pages,
+            "current_chat_binding_bot_pagination_numbers": _build_pagination_numbers(bot_page, bot_total_pages),
+            "current_chat_binding": current_binding,
         }
+
+    def _get_current_binding(active_profile, chat_id: int):
+        if not active_profile:
+            return None
+        return storage.get_chat_binding(active_profile.id, chat_id)
+
+    def _build_chat_binding_bot_ids_view(binding) -> list[dict]:
+        if not binding:
+            return []
+        bot_ids = list(getattr(binding, "bot_ids", None) or [])
+        primary_bot_id = getattr(binding, "bot_id", None)
+        try:
+            normalized_primary = int(primary_bot_id) if primary_bot_id is not None else None
+        except (TypeError, ValueError):
+            normalized_primary = None
+        if not bot_ids and normalized_primary is not None and normalized_primary not in bot_ids:
+            bot_ids = [normalized_primary, *bot_ids]
+        rows = []
+        username_map = {}
+        if binding:
+            username_map = storage.get_chat_binding_bot_usernames(
+                binding.profile_id,
+                binding.chat_id,
+                thread_id=binding.thread_id,
+            )
+        for bot_id in bot_ids:
+            username = str(username_map.get(int(bot_id)) or "").strip().lstrip("@")
+            rows.append(
+                {
+                    "value": int(bot_id),
+                    "label": str(bot_id),
+                    "username": username,
+                    "username_label": f"@{username}" if username else "未知",
+                }
+            )
+        return rows
+
+    def _ensure_chat_binding_bot_ids(profile_id: int, chat_id: int, thread_id=None) -> None:
+        binding = storage.get_chat_binding(profile_id, chat_id, thread_id=thread_id)
+        if not binding:
+            return
+        current = _normalize_chat_binding_bot_ids(binding)
+        if current:
+            return
+        default_ids = storage.get_chat_binding_bot_ids(profile_id, chat_id, thread_id=thread_id)
+        storage.set_chat_binding_bot_ids(profile_id, chat_id, default_ids, thread_id=thread_id)
 
     def _is_public_path(path: str) -> bool:
         if path.startswith("/static"):
@@ -2900,6 +3151,27 @@ def create_app() -> FastAPI:
             profile_id, bot_username=bot_username
         ) or storage.get_primary_chat_binding(profile_id)
 
+    def _normalize_chat_binding_bot_ids(binding) -> list[int]:
+        if not binding:
+            return []
+        bot_ids = list(getattr(binding, "bot_ids", None) or [])
+        primary_bot_id = getattr(binding, "bot_id", None)
+        try:
+            normalized_primary = int(primary_bot_id) if primary_bot_id is not None else None
+        except (TypeError, ValueError):
+            normalized_primary = None
+        if not bot_ids and normalized_primary is not None and normalized_primary not in bot_ids:
+            bot_ids = [normalized_primary, *bot_ids]
+        deduped = []
+        for bot_id in bot_ids:
+            try:
+                normalized = int(bot_id)
+            except (TypeError, ValueError):
+                continue
+            if normalized not in deduped:
+                deduped.append(normalized)
+        return deduped
+
     def _load_cached_page_state(
         request: Request,
         *,
@@ -2935,6 +3207,9 @@ def create_app() -> FastAPI:
                 profile_state["active_profile"] = active_profile
                 profile_state["external_account"] = external_account
             if include_chats:
+                chats = storage.list_chat_bindings(active_profile.id)
+                for chat in chats:
+                    _ensure_chat_binding_bot_ids(active_profile.id, chat.chat_id, chat.thread_id)
                 chats = storage.list_chat_bindings(active_profile.id)
         return {
             "active_profile": active_profile,
@@ -3199,7 +3474,7 @@ def create_app() -> FastAPI:
                     session=sect_session,
                 )
         if current_sect_feature and current_sect_feature["name"] == "星宫":
-            xinggong_state = _build_xinggong_state(payload, profile)
+            xinggong_state = _build_xinggong_state(payload, profile, sect_session)
 
         return {
             "active_profile": profile,
@@ -3815,7 +4090,11 @@ def create_app() -> FastAPI:
                     primary_chat.chat_id, profile_id=active_profile.id
                 )
         external_session_notice = _build_external_session_notice(external_account)
-        shared_template_context = _build_shared_template_context(active_profile)
+        try:
+            bot_page = int(request.query_params.get("bot_page") or 1)
+        except (TypeError, ValueError):
+            bot_page = 1
+        shared_template_context = _build_shared_template_context(active_profile, bot_page=bot_page)
         return templates.TemplateResponse(
             request,
             "index.html",
@@ -4703,6 +4982,65 @@ def create_app() -> FastAPI:
                 storage, profile_id, exc, cookie_text=cookie_text
             )
         return RedirectResponse(url="/profile", status_code=303)
+
+    @application.post("/profiles/{profile_id}/chat-bindings/{chat_id}/bot-ids/add")
+    async def add_chat_binding_bot_id(
+        request: Request,
+        profile_id: int,
+        chat_id: int,
+        bot_identity: str = Form(...),
+        thread_id: str = Form(""),
+        redirect_to: str = Form("/profile"),
+    ) -> RedirectResponse:
+        if not _profile_belongs_to_session(request, profile_id):
+            raise HTTPException(status_code=403, detail="Profile not available in current session")
+        profile = storage.get_profile(profile_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        identity = str(bot_identity or "").strip()
+        if not identity:
+            return RedirectResponse(url=redirect_to or "/profile", status_code=303)
+        normalized_thread_id = _parse_optional_int(thread_id)
+        binding = storage.get_chat_binding(profile_id, chat_id, thread_id=normalized_thread_id)
+        if not binding:
+            raise HTTPException(status_code=404, detail="Chat binding not found")
+        bot_id = int(identity) if identity.lstrip("-").isdigit() else None
+        bot_username = ""
+        if bot_id is None:
+            bot_username = identity.lstrip("@").strip()
+            bot_id = storage.resolve_bot_id_from_username(identity)
+            if bot_id is None:
+                try:
+                    resolved_account = await get_authorized_account_info(identity, allow_fallback=True)
+                    bot_id = int(resolved_account.get("id") or 0) or None
+                    bot_username = str(resolved_account.get("username") or bot_username).strip().lstrip("@")
+                except Exception:
+                    bot_id = None
+            if bot_id is None:
+                raise HTTPException(status_code=400, detail="无法解析该 bot 用户名对应的 bot id")
+        storage.add_chat_binding_bot_id(profile_id, chat_id, bot_id, bot_username=bot_username, thread_id=binding.thread_id)
+        return RedirectResponse(url=redirect_to or "/profile", status_code=303)
+
+    @application.post("/profiles/{profile_id}/chat-bindings/{chat_id}/bot-ids/remove")
+    async def remove_chat_binding_bot_id(
+        request: Request,
+        profile_id: int,
+        chat_id: int,
+        bot_id: int = Form(...),
+        thread_id: str = Form(""),
+        redirect_to: str = Form("/profile"),
+    ) -> RedirectResponse:
+        if not _profile_belongs_to_session(request, profile_id):
+            raise HTTPException(status_code=403, detail="Profile not available in current session")
+        profile = storage.get_profile(profile_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="Profile not found")
+        normalized_thread_id = _parse_optional_int(thread_id)
+        binding = storage.get_chat_binding(profile_id, chat_id, thread_id=normalized_thread_id)
+        if not binding:
+            raise HTTPException(status_code=404, detail="Chat binding not found")
+        storage.remove_chat_binding_bot_id(profile_id, chat_id, bot_id, thread_id=binding.thread_id)
+        return RedirectResponse(url=redirect_to or "/profile", status_code=303)
 
     @application.post("/modules/{module_key}/settings")
     async def save_module_setting(
@@ -5622,6 +5960,34 @@ def create_app() -> FastAPI:
         try:
             sect_game.ensure_tables(db)
             sect_game.configure_companion_greet_auto(
+                db,
+                chat_id,
+                enabled == "1",
+                profile_id=active_profile.id,
+            )
+            if enabled == "1":
+                sect_game.set_enabled(db, chat_id, True, profile_id=active_profile.id)
+                sect_game.sync_common_sect_state(storage, db, active_profile.id, chat_id)
+            session = sect_game.get_session(db, chat_id, profile_id=active_profile.id)
+        finally:
+            db.close()
+        if not session:
+            raise HTTPException(status_code=404, detail="Sect session not found")
+        return RedirectResponse(url="/modules/sect", status_code=303)
+
+    @application.post("/runtime/sect/companion-assist-toggle")
+    async def toggle_companion_assist_auto(
+        request: Request, chat_id: int = Form(...), enabled: str = Form(...)
+    ) -> RedirectResponse:
+        active_profile = _get_request_profile(request)
+        if not active_profile:
+            return RedirectResponse(url="/login", status_code=303)
+        if str(active_profile.sect_name or "").strip() != "星宫":
+            raise HTTPException(status_code=400, detail="仅星宫角色可用")
+        db = CompatDb(storage)
+        try:
+            sect_game.ensure_tables(db)
+            sect_game.configure_companion_assist_auto(
                 db,
                 chat_id,
                 enabled == "1",

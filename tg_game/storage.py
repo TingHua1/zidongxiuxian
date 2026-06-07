@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Iterable, Optional
 
+from tg_game.config import ALLOWED_GAME_BOT_IDS
 from tg_game.models import ChatBinding, FeatureModule, ModuleSetting, PlayerProfile
 
 
@@ -29,6 +30,107 @@ def _normalize_optional_int(value: object) -> Optional[int]:
         return int(text)
     except (TypeError, ValueError):
         return None
+
+
+def _json_dumps_compact(value) -> str:
+    return json.dumps(value or [], ensure_ascii=False, separators=(",", ":"))
+
+
+DEFAULT_CHAT_BINDING_BOT_IDS = tuple(sorted(int(value) for value in ALLOWED_GAME_BOT_IDS))
+CHAT_BINDING_BOT_IDS_DEFAULT_MIGRATION_KEY = "chat_binding_bot_ids_default_migration_v2"
+
+
+def _normalize_bot_id_list(value: object) -> list[int]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            parsed = [part.strip() for part in text.split(",")]
+        else:
+            if isinstance(parsed, list):
+                return [int(x) for x in parsed if _normalize_optional_int(x) is not None]
+            parsed = [parsed]
+        result = []
+        for item in parsed:
+            normalized = _normalize_optional_int(item)
+            if normalized is not None:
+                result.append(normalized)
+        return sorted(list(dict.fromkeys(result)))
+    if isinstance(value, (list, tuple, set)):
+        result = []
+        for item in value:
+            normalized = _normalize_optional_int(item)
+            if normalized is not None:
+                result.append(normalized)
+        return sorted(list(dict.fromkeys(result)))
+    normalized = _normalize_optional_int(value)
+    return [normalized] if normalized is not None else []
+
+
+def _merge_bot_id_lists(*values: object) -> list[int]:
+    merged: list[int] = []
+    for value in values:
+        for bot_id in _normalize_bot_id_list(value):
+            if bot_id not in merged:
+                merged.append(bot_id)
+    return merged
+
+
+def _normalize_bot_username_map(value: object) -> dict[int, str]:
+    if value is None:
+        return {}
+    parsed = value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return {}
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            return {}
+    if not isinstance(parsed, dict):
+        return {}
+    result: dict[int, str] = {}
+    for raw_bot_id, raw_username in parsed.items():
+        bot_id = _normalize_optional_int(raw_bot_id)
+        username = _normalize_bot_username(raw_username)
+        if bot_id is not None and username:
+            result[int(bot_id)] = username
+    return result
+
+
+def _json_dumps_bot_username_map(value: dict[int, str]) -> str:
+    normalized = {}
+    for bot_id, username in sorted((value or {}).items()):
+        normalized_bot_id = _normalize_optional_int(bot_id)
+        normalized_username = _normalize_bot_username(username)
+        if normalized_bot_id is not None and normalized_username:
+            normalized[str(int(normalized_bot_id))] = normalized_username
+    return json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+
+
+def _merge_bot_username_maps(*values: object) -> dict[int, str]:
+    merged: dict[int, str] = {}
+    for value in values:
+        for bot_id, username in _normalize_bot_username_map(value).items():
+            if username:
+                merged[int(bot_id)] = username
+    return merged
+
+
+def _guess_bot_ids_from_username(bot_username: str) -> list[int]:
+    normalized = str(bot_username or "").strip().lower().lstrip("@")
+    mapping = {
+        "fanrenxiuxian_bot": list(DEFAULT_CHAT_BINDING_BOT_IDS),
+        "fanren_xiuxian_bot": list(DEFAULT_CHAT_BINDING_BOT_IDS),
+        "luoxueyao_bot": list(DEFAULT_CHAT_BINDING_BOT_IDS),
+    }
+    return list(mapping.get(normalized, []))
 
 
 class CompatDb:
@@ -105,9 +207,12 @@ class Storage:
                     chat_type TEXT NOT NULL DEFAULT 'group',
                     bot_username TEXT NOT NULL DEFAULT '',
                     bot_id INTEGER,
+                    bot_ids TEXT NOT NULL DEFAULT '[]',
+                    bot_usernames TEXT NOT NULL DEFAULT '{}',
                     telegram_user_id TEXT NOT NULL DEFAULT '',
                     is_active INTEGER NOT NULL DEFAULT 1,
                     created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL DEFAULT 0,
                     FOREIGN KEY (profile_id) REFERENCES profiles(id)
                 );
 
@@ -556,11 +661,67 @@ class Storage:
                     "chat_type": "TEXT NOT NULL DEFAULT 'group'",
                     "bot_username": "TEXT NOT NULL DEFAULT ''",
                     "bot_id": "INTEGER",
+                    "bot_ids": "TEXT NOT NULL DEFAULT '[]'",
+                    "bot_usernames": "TEXT NOT NULL DEFAULT '{}'",
                     "telegram_user_id": "TEXT NOT NULL DEFAULT ''",
                     "is_active": "INTEGER NOT NULL DEFAULT 1",
                     "created_at": "REAL NOT NULL DEFAULT 0",
+                    "updated_at": "REAL NOT NULL DEFAULT 0",
                 },
             )
+            existing_chat_rows = conn.execute(
+                "SELECT id, bot_id, bot_ids FROM chat_bindings"
+            ).fetchall()
+            for row in existing_chat_rows:
+                existing_ids = _normalize_bot_id_list(row["bot_ids"])
+                normalized_ids = existing_ids or _merge_bot_id_lists(row["bot_id"])
+                if normalized_ids:
+                    conn.execute(
+                        "UPDATE chat_bindings SET bot_ids=? WHERE id=?",
+                        (_json_dumps_compact(normalized_ids), row["id"]),
+                    )
+            migration_done = conn.execute(
+                "SELECT value FROM app_runtime_state WHERE key=?",
+                (CHAT_BINDING_BOT_IDS_DEFAULT_MIGRATION_KEY,),
+            ).fetchone()
+            if migration_done is None:
+                chat_groups = conn.execute(
+                    """
+                    SELECT chat_id, thread_id
+                    FROM chat_bindings
+                    GROUP BY chat_id, COALESCE(thread_id, 0)
+                    """
+                ).fetchall()
+                now = time.time()
+                for group in chat_groups:
+                    group_rows = conn.execute(
+                        """
+                        SELECT id, bot_id, bot_ids
+                        FROM chat_bindings
+                        WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0)
+                        """,
+                        (group["chat_id"], group["thread_id"]),
+                    ).fetchall()
+                    migrated_ids = _merge_bot_id_lists(
+                        DEFAULT_CHAT_BINDING_BOT_IDS,
+                        *[row["bot_ids"] for row in group_rows],
+                        *[row["bot_id"] for row in group_rows],
+                    )
+                    if not migrated_ids:
+                        continue
+                    for row in group_rows:
+                        conn.execute(
+                            "UPDATE chat_bindings SET bot_ids=?, updated_at=? WHERE id=?",
+                            (_json_dumps_compact(migrated_ids), now, row["id"]),
+                        )
+                conn.execute(
+                    """
+                    INSERT INTO app_runtime_state(key, value, updated_at)
+                    VALUES (?, '1', ?)
+                    ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+                    """,
+                    (CHAT_BINDING_BOT_IDS_DEFAULT_MIGRATION_KEY, now),
+                )
             self._ensure_columns(
                 conn,
                 "outgoing_commands",
@@ -910,6 +1071,15 @@ class Storage:
         )
 
     def _row_to_chat(self, row: sqlite3.Row) -> ChatBinding:
+        bot_id = _normalize_optional_int(row["bot_id"])
+        bot_ids = _normalize_bot_id_list(
+            row["bot_ids"] if "bot_ids" in row.keys() else []
+        )
+        if not bot_ids:
+            bot_ids = _merge_bot_id_lists(bot_id)
+        bot_usernames = _normalize_bot_username_map(
+            row["bot_usernames"] if "bot_usernames" in row.keys() else {}
+        )
         return ChatBinding(
             id=row["id"],
             profile_id=row["profile_id"],
@@ -917,7 +1087,9 @@ class Storage:
             thread_id=row["thread_id"],
             chat_type=row["chat_type"],
             bot_username=row["bot_username"],
-            bot_id=_normalize_optional_int(row["bot_id"]),
+            bot_id=bot_id,
+            bot_ids=bot_ids,
+            bot_usernames=bot_usernames,
             telegram_user_id=row["telegram_user_id"],
             is_active=_bool_from_row(row["is_active"]),
             created_at=row["created_at"],
@@ -1155,30 +1327,92 @@ class Storage:
             if existing is None and len(existing_rows) == 1:
                 existing = existing_rows[0]
             if existing:
+                shared_rows = conn.execute(
+                    """
+                    SELECT * FROM chat_bindings
+                    WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0)
+                    """,
+                    (chat_id, thread_id),
+                ).fetchall()
+                existing_bot_ids = _merge_bot_id_lists(
+                    *[
+                        row["bot_ids"]
+                        if "bot_ids" in row.keys() and _normalize_bot_id_list(row["bot_ids"])
+                        else row["bot_id"]
+                        for row in shared_rows
+                    ],
+                    _guess_bot_ids_from_username(existing["bot_username"] if "bot_username" in existing.keys() else ""),
+                )
+                new_bot_ids = _merge_bot_id_lists(
+                    existing_bot_ids,
+                    _guess_bot_ids_from_username(normalized_bot_username),
+                )
+                if not new_bot_ids:
+                    new_bot_ids = _merge_bot_id_lists(normalized_bot_id)
+                new_bot_usernames = _merge_bot_username_maps(
+                    *[row["bot_usernames"] if "bot_usernames" in row.keys() else {} for row in shared_rows],
+                    {normalized_bot_id: normalized_bot_username}
+                    if normalized_bot_id is not None and normalized_bot_username
+                    else {},
+                )
                 conn.execute(
                     """
                     UPDATE chat_bindings
-                    SET chat_type=?, bot_username=?, bot_id=?, telegram_user_id=?, is_active=?
+                    SET chat_type=?, bot_username=?, bot_id=?, bot_ids=?, bot_usernames=?, telegram_user_id=?, is_active=?, updated_at=?
                     WHERE id=?
                     """,
                     (
                         chat_type,
                         normalized_bot_username,
                         normalized_bot_id,
+                        _json_dumps_compact(new_bot_ids),
+                        _json_dumps_bot_username_map(new_bot_usernames),
                         telegram_user_id,
                         1 if is_active else 0,
+                        now,
                         existing["id"],
                     ),
                 )
+                for row in shared_rows:
+                    if row["id"] == existing["id"]:
+                        continue
+                    conn.execute(
+                        "UPDATE chat_bindings SET bot_ids=?, bot_usernames=?, updated_at=? WHERE id=?",
+                        (_json_dumps_compact(new_bot_ids), _json_dumps_bot_username_map(new_bot_usernames), now, row["id"]),
+                    )
                 binding_id = existing["id"]
             else:
+                shared_rows = conn.execute(
+                    """
+                    SELECT * FROM chat_bindings
+                    WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0)
+                    """,
+                    (chat_id, thread_id),
+                ).fetchall()
+                initial_bot_ids = _merge_bot_id_lists(
+                    DEFAULT_CHAT_BINDING_BOT_IDS,
+                    *[
+                        row["bot_ids"]
+                        if "bot_ids" in row.keys() and _normalize_bot_id_list(row["bot_ids"])
+                        else row["bot_id"]
+                        for row in shared_rows
+                    ],
+                    normalized_bot_id,
+                    _guess_bot_ids_from_username(normalized_bot_username),
+                )
+                initial_bot_usernames = _merge_bot_username_maps(
+                    *[row["bot_usernames"] if "bot_usernames" in row.keys() else {} for row in shared_rows],
+                    {normalized_bot_id: normalized_bot_username}
+                    if normalized_bot_id is not None and normalized_bot_username
+                    else {},
+                )
                 cursor = conn.execute(
                     """
                     INSERT INTO chat_bindings (
                         profile_id, chat_id, thread_id, chat_type, bot_username,
-                        bot_id,
+                        bot_id, bot_ids, bot_usernames,
                         telegram_user_id, is_active, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         profile_id,
@@ -1187,12 +1421,20 @@ class Storage:
                         chat_type,
                         normalized_bot_username,
                         normalized_bot_id,
+                        _json_dumps_compact(initial_bot_ids),
+                        _json_dumps_bot_username_map(initial_bot_usernames),
                         telegram_user_id,
                         1 if is_active else 0,
                         now,
                     ),
                 )
                 binding_id = cursor.lastrowid
+                if initial_bot_ids:
+                    for row in shared_rows:
+                        conn.execute(
+                            "UPDATE chat_bindings SET bot_ids=?, bot_usernames=?, updated_at=? WHERE id=?",
+                            (_json_dumps_compact(initial_bot_ids), _json_dumps_bot_username_map(initial_bot_usernames), now, row["id"]),
+                        )
         return self.get_binding_by_id(binding_id)
 
     def get_binding_by_id(self, binding_id: int) -> Optional[ChatBinding]:
@@ -1205,10 +1447,33 @@ class Storage:
     def set_chat_binding_thread_id(
         self, profile_id: int, chat_id: int, thread_id: Optional[int]
     ) -> None:
+        if thread_id is None:
+            return
+        now = time.time()
         with self.connect() as conn:
+            existing = conn.execute(
+                """
+                SELECT id FROM chat_bindings
+                WHERE profile_id=? AND chat_id=? AND thread_id=?
+                ORDER BY is_active DESC, id ASC
+                LIMIT 1
+                """,
+                (profile_id, chat_id, int(thread_id)),
+            ).fetchone()
+            if existing:
+                return
             conn.execute(
-                "UPDATE chat_bindings SET thread_id=? WHERE profile_id=? AND chat_id=?",
-                (thread_id, profile_id, chat_id),
+                """
+                UPDATE chat_bindings
+                SET thread_id=?, updated_at=?
+                WHERE id=(
+                    SELECT id FROM chat_bindings
+                    WHERE profile_id=? AND chat_id=? AND thread_id IS NULL
+                    ORDER BY is_active DESC, id ASC
+                    LIMIT 1
+                )
+                """,
+                (int(thread_id), now, profile_id, chat_id),
             )
 
     def sync_env_chat_binding(
@@ -1233,6 +1498,173 @@ class Storage:
             telegram_user_id=telegram_user_id,
             is_active=True,
         )
+
+    def get_chat_binding_bot_ids(
+        self, profile_id: int, chat_id: int, thread_id: Optional[int] = None
+    ) -> list[int]:
+        binding = self.get_chat_binding(profile_id, chat_id, thread_id=thread_id)
+        if not binding:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM chat_bindings WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0) ORDER BY is_active DESC, created_at ASC, id ASC LIMIT 1",
+                    (int(chat_id), thread_id),
+                ).fetchone()
+            binding = self._row_to_chat(row) if row else None
+        if not binding:
+            return list(DEFAULT_CHAT_BINDING_BOT_IDS)
+        bot_ids = _merge_bot_id_lists(binding.bot_ids)
+        return bot_ids or list(DEFAULT_CHAT_BINDING_BOT_IDS)
+
+    def set_chat_binding_bot_ids(
+        self,
+        profile_id: int,
+        chat_id: int,
+        bot_ids: list[int],
+        thread_id: Optional[int] = None,
+    ) -> Optional[ChatBinding]:
+        normalized_ids = _merge_bot_id_lists(bot_ids)
+        binding = self.get_chat_binding(profile_id, chat_id, thread_id=thread_id)
+        if not binding:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM chat_bindings WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0) ORDER BY is_active DESC, created_at ASC, id ASC LIMIT 1",
+                    (int(chat_id), thread_id),
+                ).fetchone()
+            binding = self._row_to_chat(row) if row else None
+        if not binding:
+            return None
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE chat_bindings
+                SET bot_ids=?, updated_at=?
+                WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0)
+                """,
+                (_json_dumps_compact(normalized_ids), time.time(), int(chat_id), thread_id),
+            )
+        return self.get_binding_by_id(binding.id)
+
+    def get_chat_binding_bot_usernames(
+        self, profile_id: int, chat_id: int, thread_id: Optional[int] = None
+    ) -> dict[int, str]:
+        binding = self.get_chat_binding(profile_id, chat_id, thread_id=thread_id)
+        if not binding:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM chat_bindings WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0) ORDER BY is_active DESC, created_at ASC, id ASC LIMIT 1",
+                    (int(chat_id), thread_id),
+                ).fetchone()
+            binding = self._row_to_chat(row) if row else None
+        if not binding:
+            return {}
+        bot_ids = self.get_chat_binding_bot_ids(profile_id, chat_id, thread_id=thread_id)
+        username_map = dict(getattr(binding, "bot_usernames", {}) or {})
+        with self.connect() as conn:
+            for bot_id in bot_ids:
+                if username_map.get(int(bot_id)):
+                    continue
+                row = conn.execute(
+                    """
+                    SELECT sender_username
+                    FROM bound_messages
+                    WHERE chat_id=? AND sender_id=? AND sender_username IS NOT NULL AND sender_username<>''
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1
+                    """,
+                    (int(chat_id), int(bot_id)),
+                ).fetchone()
+                username = _normalize_bot_username(row["sender_username"] if row else "")
+                if username:
+                    username_map[int(bot_id)] = username
+            conn.execute(
+                """
+                UPDATE chat_bindings
+                SET bot_usernames=?, updated_at=?
+                WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0)
+                """,
+                (
+                    _json_dumps_bot_username_map(username_map),
+                    time.time(),
+                    int(chat_id),
+                    thread_id,
+                ),
+            )
+        return username_map
+
+    def add_chat_binding_bot_id(
+        self,
+        profile_id: int,
+        chat_id: int,
+        bot_id: object,
+        bot_username: str = "",
+        thread_id: Optional[int] = None,
+    ) -> Optional[ChatBinding]:
+        normalized = _normalize_optional_int(bot_id)
+        if normalized is None:
+            return self.get_chat_binding(profile_id, chat_id, thread_id=thread_id)
+        binding = self.get_chat_binding(profile_id, chat_id, thread_id=thread_id)
+        if not binding:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM chat_bindings WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0) ORDER BY is_active DESC, created_at ASC, id ASC LIMIT 1",
+                    (int(chat_id), thread_id),
+                ).fetchone()
+            binding = self._row_to_chat(row) if row else None
+        if not binding:
+            return None
+        bot_ids = _merge_bot_id_lists(binding.bot_ids, normalized)
+        username_map = dict(getattr(binding, "bot_usernames", {}) or {})
+        normalized_username = _normalize_bot_username(bot_username)
+        if normalized_username:
+            username_map[int(normalized)] = normalized_username
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE chat_bindings
+                SET bot_ids=?, bot_usernames=?, bot_id=COALESCE(bot_id, ?), updated_at=?
+                WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0)
+                """,
+                (_json_dumps_compact(bot_ids), _json_dumps_bot_username_map(username_map), normalized, time.time(), int(chat_id), thread_id),
+            )
+        return self.get_binding_by_id(binding.id)
+
+    def remove_chat_binding_bot_id(
+        self,
+        profile_id: int,
+        chat_id: int,
+        bot_id: object,
+        thread_id: Optional[int] = None,
+    ) -> Optional[ChatBinding]:
+        normalized = _normalize_optional_int(bot_id)
+        binding = self.get_chat_binding(profile_id, chat_id, thread_id=thread_id)
+        if not binding:
+            with self.connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM chat_bindings WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0) ORDER BY is_active DESC, created_at ASC, id ASC LIMIT 1",
+                    (int(chat_id), thread_id),
+                ).fetchone()
+            binding = self._row_to_chat(row) if row else None
+        if not binding:
+            return None
+        if normalized is None:
+            return binding
+        bot_ids = [value for value in _merge_bot_id_lists(binding.bot_ids) if value != normalized]
+        username_map = dict(getattr(binding, "bot_usernames", {}) or {})
+        username_map.pop(int(normalized), None)
+        with self.connect() as conn:
+            conn.execute(
+                """
+                UPDATE chat_bindings
+                SET bot_ids=?, bot_usernames=?, bot_id=CASE WHEN bot_id=? THEN NULL ELSE bot_id END, updated_at=?
+                WHERE chat_id=? AND COALESCE(thread_id, 0)=COALESCE(?, 0)
+                """,
+                (_json_dumps_compact(bot_ids), _json_dumps_bot_username_map(username_map), normalized, time.time(), int(chat_id), thread_id),
+            )
+        return self.get_binding_by_id(binding.id)
+
+    def resolve_bot_id_from_username(self, bot_username: str) -> Optional[int]:
+        bot_ids = _guess_bot_ids_from_username(bot_username)
+        return bot_ids[0] if bot_ids else None
 
     def get_primary_chat_binding(
         self, profile_id: int, bot_username: str = ""
@@ -2424,12 +2856,15 @@ class Storage:
                 WHERE profile_id=? AND chat_id=?
             """
             params: list[object] = [int(profile_id), int(chat_id)]
+            normalized_bot_username = str(bot_username or "").strip().lower().lstrip("@")
+            if normalized_bot_username:
+                query += " AND LOWER(bot_username)=?"
+                params.append(normalized_bot_username)
             if thread_id is not None:
-                query += " AND thread_id=?"
+                query += " ORDER BY CASE WHEN thread_id=? THEN 0 ELSE 1 END, updated_at DESC, id DESC LIMIT 1"
                 params.append(int(thread_id))
             else:
-                query += " AND thread_id IS NULL"
-            query += " ORDER BY updated_at DESC, id DESC LIMIT 1"
+                query += " ORDER BY updated_at DESC, id DESC LIMIT 1"
             row = conn.execute(query, params).fetchone()
         return dict(row) if row else None
 
@@ -2814,10 +3249,10 @@ class Storage:
                     created_at, updated_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(profile_id, chat_id, message_id) DO UPDATE SET
-                    thread_id=excluded.thread_id,
-                    reply_to_msg_id=excluded.reply_to_msg_id,
-                    sender_id=excluded.sender_id,
-                    sender_username=excluded.sender_username,
+                    thread_id=COALESCE(excluded.thread_id, bound_messages.thread_id),
+                    reply_to_msg_id=COALESCE(excluded.reply_to_msg_id, bound_messages.reply_to_msg_id),
+                    sender_id=COALESCE(excluded.sender_id, bound_messages.sender_id),
+                    sender_username=COALESCE(NULLIF(excluded.sender_username, ''), bound_messages.sender_username),
                     direction=excluded.direction,
                     is_bot=excluded.is_bot,
                     text=excluded.text,
@@ -3013,23 +3448,28 @@ class Storage:
         return dict(row) if row else None
 
     def is_known_bot_sender(
-        self, chat_id: int, sender_id: Optional[int], bot_username: str = ""
+        self,
+        chat_id: int,
+        sender_id: Optional[int],
+        bot_username: str = "",
+        profile_id: Optional[int] = None,
     ) -> bool:
         normalized_sender_id = int(sender_id or 0)
         if not normalized_sender_id:
             return False
+        if profile_id is not None:
+            bot_ids = self.get_chat_binding_bot_ids(profile_id, chat_id)
+            if normalized_sender_id in bot_ids:
+                return True
         normalized_bot = str(bot_username or "").strip().lower().lstrip("@")
-        query = (
-            "SELECT 1 FROM bound_messages WHERE chat_id=? AND sender_id=? AND (is_bot=1"
-        )
-        params = [int(chat_id), normalized_sender_id]
         if normalized_bot:
-            query += " OR lower(sender_username)=?"
-            params.append(normalized_bot)
-        query += ") ORDER BY updated_at DESC, id DESC LIMIT 1"
-        with self.connect() as conn:
-            row = conn.execute(query, params).fetchone()
-        return row is not None
+            query = (
+                "SELECT 1 FROM bound_messages WHERE chat_id=? AND sender_id=? AND (is_bot=1 OR lower(sender_username)=?) ORDER BY updated_at DESC, id DESC LIMIT 1"
+            )
+            with self.connect() as conn:
+                row = conn.execute(query, (int(chat_id), normalized_sender_id, normalized_bot)).fetchone()
+            return row is not None
+        return False
 
     def delete_bound_messages(
         self,
