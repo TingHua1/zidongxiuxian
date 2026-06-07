@@ -4131,7 +4131,11 @@ def create_app() -> FastAPI:
         character_state = _build_character_view(profile_state.get("payload") or {})
         rift_failure_state = profile_state.get("rift_failure_state")
         external_session_notice = _build_external_session_notice(external_account)
-        shared_template_context = _build_shared_template_context(active_profile)
+        try:
+            bot_page = int(request.query_params.get("bot_page") or 1)
+        except (TypeError, ValueError):
+            bot_page = 1
+        shared_template_context = _build_shared_template_context(active_profile, bot_page=bot_page)
         return templates.TemplateResponse(
             request,
             "profile.html",
