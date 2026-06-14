@@ -485,10 +485,18 @@
         </div>
         <div class="stack-list compact-stack">
             <div class="kv-row"><span>自动状态</span><strong>{{ '自动' if xinggong_state.auto_companion_assist_enabled else '手动' }}</strong></div>
-            <div class="kv-row"><span>状态文案</span><strong style="font-family: var(--font-mono);">{{ xinggong_state.companion_assist_status_display or '可助阵' }}</strong></div>
-            <div class="kv-row"><span>助阵CD</span><strong style="font-family: var(--font-mono);">{{ xinggong_state.companion_assist_cooldown_display or '可助阵' }}</strong></div>
+            <div class="kv-row"><span>当前状态</span><strong class="companion-assist-status" style="font-family: var(--font-mono);">{{ xinggong_state.companion_assist_status_display or '可助阵' }}</strong></div>
+            <div class="kv-row"><span>冷却至</span><strong class="companion-assist-cooldown-until" style="font-family: var(--font-mono);">{{ xinggong_state.companion_assist_cooldown_display or '可助阵' }}</strong></div>
+            <div class="kv-row">
+                <span>CD倒计时</span>
+                <strong class="companion-assist-countdown"
+                        data-remaining-seconds="{{ xinggong_state.companion_assist_cooldown_remaining_seconds or 0 }}"
+                        style="font-family: var(--font-mono); color: {% if xinggong_state.companion_assist_cooldown_remaining_seconds %}var(--accent-gold){% else %}var(--accent-green){% endif %};">
+                    {{ xinggong_state.companion_assist_cooldown_remaining_display or '可助阵' }}
+                </strong>
+            </div>
             <div class="kv-row"><span>待助阵窗</span><strong style="font-family: var(--font-mono);">{{ xinggong_state.companion_assist_pending_window_display or '-' }}</strong></div>
-            <div class="kv-row"><span>星力加持</span><strong>{{ '已同步' if xinggong_state.star_formation_view.available else '未提供' }}</strong></div>
+            <div class="kv-row"><span>加持数据</span><strong>{{ '已同步' if xinggong_state.star_formation_view.available else '未提供' }}</strong></div>
         </div>
         <div class="action-row top-gap" style="flex-wrap: wrap; gap: 10px;">
             <form method="post" action="/runtime/sect/companion-assist-toggle">
@@ -497,7 +505,7 @@
                 <button type="submit">{{ '关闭自动助阵' if sect_session and sect_session.auto_companion_assist_enabled else '开启自动助阵' }}</button>
             </form>
         </div>
-        <p class="muted top-gap">自动助阵会监听启阵回包，在 60 秒窗口内对原消息 reply 发送 <code>.助阵</code>；冷却以最近一次星力加持时间为准。</p>
+        <p class="muted top-gap">自动助阵会监听启阵回包，在 60 秒窗口内对原消息 reply 发送 <code>.助阵</code>；冷却以最近一次助阵时间为准。</p>
     </div>
     <div class="detail-card">
         <div class="section-header compact">
@@ -506,15 +514,38 @@
         </div>
         {% if xinggong_state.star_formation_view and xinggong_state.star_formation_view.available %}
         <div class="stack-list compact-stack">
-            {% if xinggong_state.star_formation_view.entries %}
-            {% for item in xinggong_state.star_formation_view.entries %}
+            {% if xinggong_state.star_formation_view.active_buff %}
+            <div class="kv-row"><span>当前Buff</span><strong>{{ '生效中' if xinggong_state.star_formation_view.active_buff_is_active else '已结束' }}</strong></div>
+            {% endif %}
+            {% if xinggong_state.star_formation_view.active_entries %}
+            {% for item in xinggong_state.star_formation_view.active_entries %}
             <div class="kv-row" style="align-items: flex-start; gap: 14px;">
                 <span>{{ item.label }}</span>
                 <strong style="text-align: right; font-family: var(--font-mono);">{{ item.value }}</strong>
             </div>
             {% endfor %}
-            {% else %}
+            {% endif %}
+            {% if xinggong_state.star_formation_view.profile_entries %}
+            <div class="kv-row"><span>星力档案</span><strong>已同步</strong></div>
+            {% for item in xinggong_state.star_formation_view.profile_entries %}
+            <div class="kv-row" style="align-items: flex-start; gap: 14px;">
+                <span>{{ item.label }}</span>
+                <strong style="text-align: right; font-family: var(--font-mono);">{{ item.value }}</strong>
+            </div>
+            {% endfor %}
+            {% endif %}
+            {% if not xinggong_state.star_formation_view.active_entries and not xinggong_state.star_formation_view.profile_entries %}
             <div class="kv-row"><span>加持明细</span><strong>接口未提供</strong></div>
+            {% endif %}
+            {% if xinggong_state.star_formation_view.active_buff_expiry_time %}
+            <div class="kv-row">
+                <span>Buff倒计时</span>
+                <strong class="star-formation-buff-countdown"
+                        data-remaining-seconds="{{ xinggong_state.star_formation_view.active_buff_remaining_seconds or 0 }}"
+                        style="font-family: var(--font-mono); color: {% if xinggong_state.star_formation_view.active_buff_remaining_seconds %}var(--accent-gold){% else %}var(--text-muted){% endif %};">
+                    {{ xinggong_state.star_formation_view.active_buff_remaining_display or '已结束' }}
+                </strong>
+            </div>
             {% endif %}
             <div class="kv-row"><span>上次星力加持</span><strong style="font-family: var(--font-mono);">{{ xinggong_state.last_star_formation_time_display or '-' }}</strong></div>
         </div>
@@ -523,6 +554,49 @@
         {% endif %}
     </div>
 </section>
+<script>
+(function() {
+    function fmtCountdown(seconds, readyText) {
+        var s = Math.max(parseInt(seconds || '0', 10), 0);
+        if (s <= 0) return readyText;
+        var h = Math.floor(s / 3600);
+        var m = Math.floor((s % 3600) / 60);
+        var sec = s % 60;
+        var parts = [];
+        if (h > 0) parts.push(h + '时');
+        if (m > 0 || h > 0) parts.push(m + '分');
+        parts.push(sec + '秒');
+        return '剩余' + parts.join('');
+    }
+    function tickCountdown(selector, readyText, readyColor) {
+        var nodes = document.querySelectorAll(selector);
+        for (var i = 0; i < nodes.length; i++) {
+            var el = nodes[i];
+            var remaining = Math.max(parseInt(el.getAttribute('data-remaining-seconds') || '0', 10), 0);
+            el.textContent = fmtCountdown(remaining, readyText);
+            if (remaining <= 0) {
+                if (readyColor) el.style.color = readyColor;
+                continue;
+            }
+            remaining = Math.max(remaining - 1, 0);
+            el.setAttribute('data-remaining-seconds', remaining);
+        }
+    }
+    function tickAll() {
+        tickCountdown('.companion-assist-countdown', '可助阵', 'var(--accent-green)');
+        tickCountdown('.star-formation-buff-countdown', '已结束', 'var(--text-muted)');
+        var assistCountdown = document.querySelector('.companion-assist-countdown');
+        if (assistCountdown && parseInt(assistCountdown.getAttribute('data-remaining-seconds') || '0', 10) <= 0) {
+            var assistStatus = document.querySelector('.companion-assist-status');
+            var assistUntil = document.querySelector('.companion-assist-cooldown-until');
+            if (assistStatus && assistStatus.textContent.trim() === '冷却中') assistStatus.textContent = '可助阵';
+            if (assistUntil) assistUntil.textContent = '可助阵';
+        }
+    }
+    tickAll();
+    setInterval(tickAll, 1000);
+})();
+</script>
 {% endif %}
 
 {% if current_sect_feature and current_sect_feature.actions %}

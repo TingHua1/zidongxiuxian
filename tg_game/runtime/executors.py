@@ -37,6 +37,9 @@ DIVINATION_BATCH_COMMAND_INTERVAL_SECONDS = 60
 DIVINATION_BATCH_POLL_SECONDS = 5
 FANREN_RECENT_REPLY_WINDOW_SECONDS = 30
 COMPANION_AUTO_POLL_SECONDS = 5
+COMPANION_HEART_TRIBULATION_EMPTY_SLEEP_SECONDS = 5
+COMPANION_HEART_TRIBULATION_ACTIVE_POLL_SECONDS = 2
+COMPANION_HEART_TRIBULATION_IDLE_SLEEP_MAX_SECONDS = 60
 COMPANION_AUTO_POST_SEND_GRACE_SECONDS = 1800
 COMPANION_PANEL_COMMAND = ".我的侍妾"
 COMPANION_HEART_TRIBULATION_COMMAND = ".共历心劫"
@@ -54,8 +57,16 @@ COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE = "await_round1_edit"
 COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE = "await_round2_edit"
 COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE = "await_settlement_edit"
 COMPANION_HEART_TRIBULATION_FAILED_STATE = "failed_stopped"
-COMPANION_HEART_TRIBULATION_ROUND_RETRY_SECONDS = 10
+COMPANION_HEART_TRIBULATION_ROUND_RETRY_SECONDS = 20
 COMPANION_HEART_TRIBULATION_ROUND_RETRY_MAX = 1
+COMPANION_HEART_TRIBULATION_ACTIVE_STATES = {
+    COMPANION_HEART_TRIBULATION_SENDING_PANEL_STATE,
+    COMPANION_HEART_TRIBULATION_AWAIT_PANEL_STATE,
+    COMPANION_HEART_TRIBULATION_AWAIT_TRIBULATION_STATE,
+    COMPANION_HEART_TRIBULATION_AWAIT_ROUND1_EDIT_STATE,
+    COMPANION_HEART_TRIBULATION_AWAIT_ROUND2_EDIT_STATE,
+    COMPANION_HEART_TRIBULATION_AWAIT_SETTLEMENT_STATE,
+}
 COMPANION_AUTO_FEATURES = {
     "dream_seek": {
         "command": ".入梦寻图",
@@ -629,8 +640,11 @@ async def _run_companion_heart_tribulation_scheduler(
             tasks = storage.list_active_companion_heart_tribulation_tasks(int(profile_id))
             now = time.time()
             if not tasks:
-                await asyncio.sleep(COMPANION_AUTO_POLL_SECONDS)
+                await asyncio.sleep(COMPANION_HEART_TRIBULATION_EMPTY_SLEEP_SECONDS)
                 continue
+
+            has_active_workflow = False
+            earliest_idle_next_run_at: Optional[float] = None
 
             for task in tasks:
                 task_id = int(task.get("id") or 0)
@@ -642,6 +656,9 @@ async def _run_companion_heart_tribulation_scheduler(
 
                 if workflow_state == COMPANION_HEART_TRIBULATION_FAILED_STATE:
                     continue
+
+                if workflow_state in COMPANION_HEART_TRIBULATION_ACTIVE_STATES:
+                    has_active_workflow = True
 
                 if workflow_state in {
                     COMPANION_HEART_TRIBULATION_SENDING_PANEL_STATE,
@@ -774,8 +791,11 @@ async def _run_companion_heart_tribulation_scheduler(
                     continue
 
                 if next_run_at > now:
+                    if earliest_idle_next_run_at is None or next_run_at < earliest_idle_next_run_at:
+                        earliest_idle_next_run_at = next_run_at
                     continue
 
+                has_active_workflow = True
                 fresh_payload = await asyncio.to_thread(
                     _refresh_companion_payload, storage, int(profile_id)
                 )
@@ -807,6 +827,8 @@ async def _run_companion_heart_tribulation_scheduler(
                         step_deadline_at=0,
                         last_error="",
                     )
+                    if earliest_idle_next_run_at is None or resolved_next_run_at < earliest_idle_next_run_at:
+                        earliest_idle_next_run_at = resolved_next_run_at
                     continue
 
                 run_id = secrets.token_hex(8)
@@ -879,7 +901,16 @@ async def _run_companion_heart_tribulation_scheduler(
                     text=COMPANION_PANEL_COMMAND,
                     detail={"run_id": run_id},
                 )
-            await asyncio.sleep(COMPANION_AUTO_POLL_SECONDS)
+            if has_active_workflow:
+                sleep_seconds = COMPANION_HEART_TRIBULATION_ACTIVE_POLL_SECONDS
+            elif earliest_idle_next_run_at is not None:
+                sleep_seconds = min(
+                    COMPANION_HEART_TRIBULATION_IDLE_SLEEP_MAX_SECONDS,
+                    max(1.0, earliest_idle_next_run_at - time.time()),
+                )
+            else:
+                sleep_seconds = COMPANION_HEART_TRIBULATION_EMPTY_SLEEP_SECONDS
+            await asyncio.sleep(sleep_seconds)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

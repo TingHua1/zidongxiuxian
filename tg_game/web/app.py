@@ -2571,6 +2571,10 @@ def create_app() -> FastAPI:
                 "star_name": "星辰名称",
                 "effect": "加持效果",
                 "status": "状态",
+                "description": "加持说明",
+                "expiry_time": "加持到期",
+                "success_rate_buff": "闭关成功率",
+                "yield_multiplier": "收益倍率",
             }
             key_text = str(key or "").strip()
             if key_text in mapping:
@@ -2593,9 +2597,57 @@ def create_app() -> FastAPI:
                 return text
             return str(value)
 
+        def _format_remaining_seconds(seconds: float) -> str:
+            remaining = max(int(seconds or 0), 0)
+            if remaining <= 0:
+                return "已结束"
+            hours, rem = divmod(remaining, 3600)
+            minutes, sec = divmod(rem, 60)
+            if hours > 0:
+                return f"剩余{hours}时{minutes}分{sec}秒"
+            if minutes > 0:
+                return f"剩余{minutes}分{sec}秒"
+            return f"剩余{sec}秒"
+
+        def _friendly_star_buff_value(key: str, value):
+            if key == "success_rate_buff":
+                try:
+                    numeric = float(value or 0)
+                except (TypeError, ValueError):
+                    return _friendly_value(key, value)
+                text = str(int(numeric)) if numeric.is_integer() else f"{numeric:g}"
+                return f"+{text}%"
+            if key == "yield_multiplier":
+                try:
+                    numeric = float(value or 0)
+                except (TypeError, ValueError):
+                    return _friendly_value(key, value)
+                return f"{numeric:g}倍"
+            return _friendly_value(key, value)
+
         star_formation_raw = (payload or {}).get("star_formation")
         star_formation = _coerce_json_value(star_formation_raw)
+        active_buffs = _coerce_json_value((payload or {}).get("active_buffs"))
+        active_star_formation = _coerce_json_value(
+            active_buffs.get("star_formation") if isinstance(active_buffs, dict) else None
+        )
+        now = time.time()
+        active_star_formation_items = []
         star_formation_items = []
+        if isinstance(active_star_formation, dict):
+            for key in ("description", "success_rate_buff", "yield_multiplier", "expiry_time"):
+                if key not in active_star_formation:
+                    continue
+                value = active_star_formation.get(key)
+                if isinstance(value, (dict, list)):
+                    continue
+                active_star_formation_items.append(
+                    {
+                        "key": f"active_buffs.star_formation.{key}",
+                        "label": _friendly_title(key),
+                        "value": _friendly_star_buff_value(key, value),
+                    }
+                )
         if isinstance(star_formation, dict):
             for key, value in star_formation.items():
                 if key == "last_star_formation_time":
@@ -2614,12 +2666,17 @@ def create_app() -> FastAPI:
             if isinstance(star_formation, dict)
             else None
         )
+        active_star_formation_expiry_ts = (
+            _coerce_time_timestamp(active_star_formation.get("expiry_time"))
+            if isinstance(active_star_formation, dict)
+            else 0.0
+        )
         root_last_star_formation_time = (
             (payload or {}).get("last_star_formation_time")
             if isinstance(payload, dict)
             else None
         )
-        session_last_companion_assist_time = (
+        session_last_companion_assist_time_ts = _coerce_time_timestamp(
             (sect_session or {}).get("last_companion_assist_time")
             if sect_session
             else None
@@ -2627,19 +2684,31 @@ def create_app() -> FastAPI:
         last_star_formation_time_ts = max(
             _coerce_time_timestamp(nested_last_star_formation_time),
             _coerce_time_timestamp(root_last_star_formation_time),
-            _coerce_time_timestamp(session_last_companion_assist_time),
         )
         last_star_formation_time = (
             last_star_formation_time_ts if last_star_formation_time_ts > 0 else None
         )
+        active_buff_remaining_seconds = (
+            max(int(active_star_formation_expiry_ts - now), 0)
+            if active_star_formation_expiry_ts > 0
+            else 0
+        )
         star_formation_view = {
-            "available": bool(star_formation_items or star_formation or last_star_formation_time),
+            "available": bool(active_star_formation_items or star_formation_items or star_formation or active_star_formation or last_star_formation_time),
             "raw": star_formation,
-            "entries": star_formation_items,
+            "active_buff": active_star_formation,
+            "active_entries": active_star_formation_items,
+            "profile_entries": star_formation_items,
+            "entries": [*active_star_formation_items, *star_formation_items],
             "last_star_formation_time": last_star_formation_time,
             "last_star_formation_time_display": _format_time_value(
                 last_star_formation_time
             ),
+            "active_buff_expiry_time": active_star_formation_expiry_ts,
+            "active_buff_expiry_display": _format_time_value(active_star_formation_expiry_ts),
+            "active_buff_remaining_seconds": active_buff_remaining_seconds,
+            "active_buff_remaining_display": _format_remaining_seconds(active_buff_remaining_seconds),
+            "active_buff_is_active": active_buff_remaining_seconds > 0,
         }
 
         STAR_DURATIONS = {
@@ -2650,7 +2719,6 @@ def create_app() -> FastAPI:
             "帝魂星": {"hours": 48, "requirement": "星宫双圣"},
         }
 
-        now = time.time()
         plots = []
         for plot_id in sorted(plots_raw.keys(), key=lambda k: int(k) if k.isdigit() else 0):
             plot = plots_raw[plot_id]
@@ -2763,8 +2831,8 @@ def create_app() -> FastAPI:
         assist_next_time = float((sect_session or {}).get("companion_assist_next_check_time") or 0)
         assist_pending_msg_id = int((sect_session or {}).get("companion_assist_pending_reply_msg_id") or 0)
         assist_pending_at = float((sect_session or {}).get("companion_assist_pending_at") or 0)
-        if last_star_formation_time_ts > 0:
-            assist_cd_end = last_star_formation_time_ts + sect_game.COMPANION_ASSIST_COOLDOWN_SECONDS
+        if session_last_companion_assist_time_ts > 0:
+            assist_cd_end = session_last_companion_assist_time_ts + sect_game.COMPANION_ASSIST_COOLDOWN_SECONDS
         else:
             assist_cd_end = 0
         if assist_cd_end and assist_cd_end > now:
@@ -2773,6 +2841,7 @@ def create_app() -> FastAPI:
             assist_status = "待助阵"
         else:
             assist_status = "可助阵"
+        assist_cd_remaining_seconds = max(int(assist_cd_end - now), 0) if assist_cd_end else 0
 
         return {
             "platform_size": int(star_platform.get("size") or 0),
@@ -2801,6 +2870,13 @@ def create_app() -> FastAPI:
             "companion_assist_cooldown_display": (
                 _format_datetime_display_seconds(assist_cd_end) if assist_cd_end else "可助阵"
             ),
+            "companion_assist_cooldown_remaining_seconds": assist_cd_remaining_seconds,
+            "companion_assist_cooldown_remaining_display": (
+                _format_remaining_seconds(assist_cd_remaining_seconds)
+                if assist_cd_remaining_seconds
+                else "可助阵"
+            ),
+            "companion_assist_cooldown_end_time": assist_cd_end,
             "last_star_formation_time": last_star_formation_time_ts,
             "last_star_formation_time_display": _format_datetime_display_seconds(last_star_formation_time),
         }
